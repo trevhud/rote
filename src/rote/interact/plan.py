@@ -358,11 +358,49 @@ def apply_plan(plan: Plan) -> list[Outcome]:
 FileState = str | None
 
 
+def _digest(data: bytes | None) -> FileState:
+    return None if data is None else hashlib.sha256(data).hexdigest()
+
+
 def file_state(path: Path) -> FileState:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return _digest(path.read_bytes())
     except FileNotFoundError:
         return None
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """A file as one read saw it: its bytes (None when absent) and their state.
+
+    A command that merges into a file (the MCP registry, the user config)
+    parses :attr:`data` and hands this same snapshot to
+    :func:`write_file_action`, so the content it writes and the stale check
+    at apply describe the same bytes. Reading the file twice, once to merge
+    and once for the check, would let an edit landing between the two reads
+    be overwritten by a merge that never saw it."""
+
+    path: Path
+    data: bytes | None = field(repr=False)
+
+    @property
+    def existed(self) -> bool:
+        return self.data is not None
+
+    @property
+    def state(self) -> FileState:
+        return _digest(self.data)
+
+    def text(self) -> str | None:
+        return None if self.data is None else self.data.decode("utf-8")
+
+
+def snapshot(path: Path) -> Snapshot:
+    """Read ``path`` once (absent is a state, not an error)."""
+    try:
+        return Snapshot(path, path.read_bytes())
+    except FileNotFoundError:
+        return Snapshot(path, None)
 
 
 class StaleFile(RuntimeError):
@@ -402,19 +440,24 @@ def write_file_action(
     *,
     id: str,
     title: str,
-    path: Path,
+    read: Snapshot,
     content: str,
     summary: str,
     replaces: bool,
     file_mode: int = 0o644,
     command: str | None = None,
 ) -> Action:
-    """An action that writes ``content`` to ``path`` atomically, and only
-    if the file is still as it was when the plan was made: a plan approved
-    as "create" must not replace a file that appeared while the person read
-    it, and one approved against a file's content must not overwrite an
-    edit made since."""
-    state = file_state(path)
+    """An action that writes ``content`` to ``read.path`` atomically, and only
+    if the file is still as ``read`` saw it.
+
+    ``read`` is the caller's own read of the file, the one ``content`` was
+    built from (a merge), or the one it decided ``replaces`` from. A plan
+    approved as "create" must not replace a file that appeared while the
+    person read it, and one approved against a file's content must not
+    overwrite an edit made since, including one made between the caller's
+    read and this call."""
+    state = read.state
+    path = read.path
 
     def run() -> Path:
         atomic_write_text(path, content, file_mode=file_mode, expect=state)
@@ -427,7 +470,7 @@ def write_file_action(
             FileWrite(
                 path=path,
                 summary=summary,
-                existed=state is not None,
+                existed=read.existed,
                 replaces=replaces,
                 file_mode=file_mode,
             ),

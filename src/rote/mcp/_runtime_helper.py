@@ -14,7 +14,8 @@ What it does, mirroring the rote CLI's behavior exactly:
 - **Auth resolution**: the rote token store
   (``~/.local/share/rote/mcp-tokens/<server>.json``, written by
   ``rote mcp login``) through a durable OAuth provider that refreshes
-  in place; else static headers from the registry entry; else an
+  in place; else static headers from the registry entry, each ``${VAR}``
+  in them filled from the environment (:func:`expand_headers`); else an
   unauthenticated client.
 - **Never interactive**: emitted workflows run unattended, so this
   module must never open a browser. Anything that would require a human
@@ -41,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -276,6 +278,61 @@ def resolve_url(server: str, pipeline_url: str | None) -> str:
         f'it with "rote mcp add {server} <url>". This is configuration, so '
         "the step is not retried."
     )
+
+
+#: An environment reference in a registry header value: rote's one
+#: placeholder form, ``${NAME}`` (``rote mcp import`` writes it for a
+#: client's ``Bearer ${GITHUB_TOKEN}``). The TS twin is
+#: ``rote.adapters._ts_common._HEADER_TEMPLATE_TS``; both follow one rule.
+HEADER_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def expand_headers(
+    server: str, headers: Mapping[str, str], environ: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """``headers`` with every ``${NAME}`` replaced by that variable's value.
+
+    The rule, the same in every runtime helper: only ``${NAME}`` is a
+    reference (no default, no ``$NAME``, no nesting), each is replaced once
+    and the value is never expanded again, and text around the references
+    is kept as written (``Bearer ${TOKEN}``). A variable that is unset or
+    empty raises :class:`RoteMcpConfigError` naming it: a header is never
+    sent with an empty value, and no retry or login can set a variable. So
+    does a value holding a line break or NUL, which no header may carry.
+    A header with no reference is sent as it is."""
+    env = os.environ if environ is None else environ
+    expanded: dict[str, str] = {}
+    for name, template in headers.items():
+
+        def fill(match: re.Match[str], name: str = name) -> str:
+            var = match.group(1)
+            value = env.get(var) or ""
+            if not value:
+                raise RoteMcpConfigError(
+                    f"MCP server '{server}': header '{name}' needs {var}, which is not set. "
+                    f"Set {var} in the environment the run starts in (rote never sends a "
+                    "header with an empty value). This is configuration, so the step is not "
+                    "retried."
+                )
+            if any(c in value for c in "\r\n\0"):
+                raise RoteMcpConfigError(
+                    f"MCP server '{server}': header '{name}': {var} holds a line break or "
+                    "NUL, which no header value may carry. This is configuration, so the "
+                    "step is not retried."
+                )
+            return value
+
+        expanded[name] = HEADER_REFERENCE.sub(fill, template)
+    return expanded
+
+
+def registry_headers(server: str) -> dict[str, str] | None:
+    """The registry's static headers for ``server``, expanded, or None."""
+    entry = _registry_servers().get(server)
+    headers = entry.get("headers") if isinstance(entry, dict) else None
+    if not isinstance(headers, dict) or not headers:
+        return None
+    return expand_headers(server, headers)
 
 
 class _TokenKV:
@@ -634,11 +691,10 @@ def mcp_client(
         return _UnattendedClient(
             StreamableHttpTransport(url, auth=oauth, httpx_client_factory=factory)
         )
-    headers = entry.get("headers")
     return _UnattendedClient(
         StreamableHttpTransport(
             url,
-            headers=dict(headers) if isinstance(headers, dict) and headers else None,
+            headers=registry_headers(server),
             httpx_client_factory=factory,
         )
     )
@@ -879,3 +935,28 @@ async def agent_tool_refusals(
         raise translated from exc
     refusals = {tool: write_refusal(server, url, tool, listed) for tool in tools}
     return {tool: why for tool, why in refusals.items() if why is not None}
+
+
+def main(argv: Sequence[str]) -> int:
+    """``python _rote_mcp.py headers <server>``: print the server's registry
+    headers, filled, as one JSON object (exit 1 naming the variable when one
+    is unset). The agent loop hands ``claude -p`` this as a ``headersHelper``,
+    so a header value is never on a command line."""
+    import sys
+
+    if len(argv) != 2 or argv[0] != "headers":
+        print("usage: python _rote_mcp.py headers <server>", file=sys.stderr)
+        return 2
+    try:
+        headers = registry_headers(argv[1])
+    except RoteMcpConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(headers or {}))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

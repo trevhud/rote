@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from rote.clients import ClientContext, ImportCandidate, ordered_sources, source
-from rote.clients.claude_code import ClaudeCodeSource
+from rote.clients.claude_code import ClaudeCodeSource, _url_denied
 
 SECRET = "sk-literal-NOT-A-REAL-KEY"
 DEFAULT_SECRET = "sk-default-NOT-REAL"
@@ -396,6 +396,41 @@ def test_denied_servers_are_blocked_by_name_or_url(tmp_path: Path) -> None:
     # Claude Code would match port 443 only; rote reads the deny wider.
     assert found["staging"].blocked is not None and "serverUrl" in found["staging"].blocked
     assert found["fine"].blocked is None
+
+
+@pytest.mark.parametrize(
+    ("url", "pattern"),
+    [
+        # The scheme is ignored: an https deny covers the http spelling.
+        ("http://deny.example.com/mcp", "https://deny.example.com/mcp"),
+        ("https://deny.example.com/mcp", "http://deny.example.com/*"),
+        # One trailing slash is ignored on either side.
+        ("https://deny.example.com/mcp", "https://deny.example.com/mcp/"),
+        ("https://deny.example.com/mcp/", "https://deny.example.com/mcp"),
+        # A pattern with no path, or "/*", covers the bare host.
+        ("https://deny.example.com", "https://deny.example.com/*"),
+        ("https://deny.example.com/", "https://deny.example.com"),
+        # Ports and case, as before.
+        ("https://Deny.Example.com:8443/MCP", "https://deny.example.com/mcp"),
+    ],
+)
+def test_a_url_deny_matches_every_spelling_of_the_endpoint(url: str, pattern: str) -> None:
+    """review6: the matcher failed open on a scheme or a trailing slash, so a
+    server the user's policy denies was importable."""
+    assert _url_denied(url, pattern) is True
+
+
+@pytest.mark.parametrize(
+    ("url", "pattern"),
+    [
+        ("https://deny.example.com/other", "https://deny.example.com/mcp"),
+        ("https://deny.example.com/mcp/x", "https://deny.example.com/mcp/"),
+        ("https://notdeny.example.com/mcp", "https://deny.example.com/*"),
+        ("https://deny.example.com.evil.io/mcp", "https://deny.example.com/*"),
+    ],
+)
+def test_a_url_deny_does_not_reach_other_endpoints(url: str, pattern: str) -> None:
+    assert _url_denied(url, pattern) is False
 
 
 def test_managed_policy_files_are_read_from_the_system_dir(tmp_path: Path) -> None:

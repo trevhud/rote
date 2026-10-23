@@ -20,6 +20,7 @@ from rote.config import (
     ConfigError,
     load_config_file,
     load_layers,
+    parse_config_text,
     project_config_path,
     resolve,
     user_config_path,
@@ -188,6 +189,133 @@ def test_unset_everywhere_resolves_to_none(tmp_path: Path, monkeypatch: pytest.M
     resolved = resolve("model", None, layers=layers)
     assert resolved.value is None
     assert resolved.source == "built-in default"
+
+
+# ───────── List settings (work_domains) ─────────
+
+
+def test_a_list_setting_round_trips_and_is_normalized(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    write_config(path, {"runtime": "dbos", "work_domains": ("acme.example", "on")})
+    # `on` is quoted on disk: bare, YAML 1.1 would load it as True.
+    assert 'work_domains: ["acme.example", "on"]' in path.read_text(encoding="utf-8")
+    assert load_config_file(path) == {"runtime": "dbos", "work_domains": ("acme.example", "on")}
+    path.write_text("work_domains: [ACME.example., acme.example, Example.ORG]\n", encoding="utf-8")
+    assert load_config_file(path) == {"work_domains": ("acme.example", "example.org")}
+    path.write_text("work_domains: []\n", encoding="utf-8")
+    assert load_config_file(path) == {"work_domains": ()}
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("work_domains: acme.example\n", "must be a list"),
+        ("work_domains: [3]\n", "items must be strings"),
+        ("work_domains: ['https://acme.example']\n", "no scheme, path or port"),
+        ("work_domains: ['acme.example/mcp']\n", "no scheme, path or port"),
+        ("work_domains: ['acme.example:443']\n", "no scheme, path or port"),
+        ("work_domains: ['*.acme.example']\n", "no wildcard"),
+        ("work_domains: ['acme corp.com']\n", "only letters, digits"),
+        ("work_domains: ['']\n", "it is empty"),
+        ("work_domains: ['10.0.0.1']\n", "an IP address, not a domain"),
+        ("runtime: [dbos]\n", "must be a non-empty string"),
+    ],
+)
+def test_a_list_setting_is_strict(tmp_path: Path, text: str, problem: str) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match=problem):
+        load_config_file(path)
+
+
+def test_a_list_setting_is_the_union_of_every_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project rote.yaml cannot switch off the user's work domains: every
+    layer adds, none removes."""
+    from rote.config import resolve_list
+
+    layers = _layers(
+        monkeypatch, tmp_path, user="work_domains: [acme.example]\n", project="work_domains: []\n"
+    )
+    resolved = resolve_list("work_domains", layers=layers)
+    assert resolved.values == ("acme.example",)
+    assert resolved.is_set
+    assert [s.split(" ")[0] for s in resolved.sources] == ["project", "user"]
+    monkeypatch.setenv("ROTE_WORK_DOMAINS", "corp.example, acme.example,")
+    resolved = resolve_list("work_domains", ["flag.example"], layers=layers)
+    assert resolved.values == ("flag.example", "corp.example", "acme.example")
+    monkeypatch.setenv("ROTE_WORK_DOMAINS", "https://bad.example")
+    with pytest.raises(ConfigError, match="ROTE_WORK_DOMAINS"):
+        resolve_list("work_domains", layers=layers)
+    # Empty is refused, as for a string setting: "no items" is an answer
+    # nobody gave.
+    monkeypatch.setenv("ROTE_WORK_DOMAINS", " ")
+    with pytest.raises(ConfigError, match="must name at least one item"):
+        resolve_list("work_domains", layers=layers)
+    # The two resolvers refuse each other's keys rather than guess.
+    with pytest.raises(ValueError, match="resolve_list"):
+        resolve("work_domains", None, layers=layers)
+    with pytest.raises(ValueError, match="use resolve"):
+        resolve_list("runtime", layers=layers)
+
+
+def test_a_setting_is_edited_in_place_keeping_comments(tmp_path: Path) -> None:
+    from rote.config import set_in_place
+
+    path = tmp_path / "config.yaml"
+    text = (
+        "# my notes\n"
+        "runtime: temporal  # why I picked it\n"
+        "work_domains:\n"
+        "  - old.example\n"
+        "  - other.example\n"
+        "# trailing note\n"
+        "model: m\n"
+    )
+    edited = set_in_place(text, "work_domains", ("old.example", "new.example"), path)
+    assert edited is not None
+    assert edited.splitlines()[:2] == ["# my notes", "runtime: temporal  # why I picked it"]
+    assert edited.splitlines()[3:] == ["# trailing note", "model: m"]
+    assert parse_config_text(edited, path)["work_domains"] == ("old.example", "new.example")
+    quoted = set_in_place('"work_domains": [a.example]\n', "work_domains", ("b.example",), path)
+    assert quoted is not None and quoted.count("work_domains") == 1
+    appended = set_in_place("runtime: dbos  # mine", "work_domains", (), path)
+    assert appended is not None and appended.startswith("runtime: dbos  # mine\nwork_domains: []")
+    # A layout the line edit cannot read back is refused, never half-written.
+    assert set_in_place("{runtime: dbos}\n", "work_domains", ("a.example",), path) is None
+
+
+def test_an_unanswered_list_setting_is_not_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.config import resolve_list
+
+    resolved = resolve_list("work_domains", layers=_layers(monkeypatch, tmp_path))
+    assert (resolved.values, resolved.is_set, resolved.source) == ((), False, "not set")
+
+
+def test_config_shows_work_domains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _layers(monkeypatch, tmp_path)
+    assert cli_main(["config", "--json"]) == 0
+    unset = json.loads(capsys.readouterr().out)["settings"]["work_domains"]
+    assert unset == {"value": None, "source": "not set"}
+    assert cli_main(["config"]) == 0
+    assert "not set (rote mcp import asks once)" in capsys.readouterr().out
+
+    _layers(monkeypatch, tmp_path, user="work_domains: [acme.example, corp.example]\n")
+    assert cli_main(["config", "--json"]) == 0
+    shown = json.loads(capsys.readouterr().out)["settings"]["work_domains"]
+    assert shown["value"] == ["acme.example", "corp.example"]
+    assert shown["source"].startswith("user ")
+    assert cli_main(["config"]) == 0
+    assert "acme.example, corp.example" in capsys.readouterr().out
+
+    _layers(monkeypatch, tmp_path, user="work_domains: []\n")
+    assert cli_main(["config", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["settings"]["work_domains"]["value"] == []
 
 
 # ───────── `rote config` CLI ─────────

@@ -226,6 +226,13 @@ _SECRET_MIN_ENTROPY = 3.5
 #: A run this long of only hex digits is a key, a hash or a UUID, any of
 #: which can be the credential in a hosted MCP URL.
 _HEX_RUN = re.compile(r"[0-9a-fA-F]{32,}")
+#: What separates the words of a slug. A key's random body is one part:
+#: ``sk-ak-<body>``, ``ghp_<body>``, ``xoxb-<team>-<bot>-<body>``.
+_PART_SEPARATORS = re.compile(r"[-_.]")
+#: The shortest part that can be a key's random body. A slug's parts are
+#: words and versions (``server``, ``2024``, ``v2``), which never mix
+#: letters and digits at this length.
+_RANDOM_PART_MIN_LENGTH = 8
 
 
 def _entropy(text: str) -> float:
@@ -234,14 +241,40 @@ def _entropy(text: str) -> float:
     return -sum(n / total * math.log2(n / total) for n in counts.values())
 
 
+#: A key written in groups (``A7F2K-9QXM3-PL8RT``) has no long part, but
+#: many short ones that each mix letters and digits. A slug has at most one
+#: or two (``v2``, ``2fa``).
+_RANDOM_GROUPS_MIN = 3
+
+
+def _mixes(part: str) -> bool:
+    return any(c.isalpha() for c in part) and any(c.isdigit() for c in part)
+
+
+def _random_part(segment: str) -> bool:
+    """Whether ``segment`` holds a key's random body: one
+    ``-``/``_``/``.``-separated part long enough that mixes letters and
+    digits, or :data:`_RANDOM_GROUPS_MIN` or more parts that each mix them."""
+    parts = _PART_SEPARATORS.split(segment)
+    mixed = [part for part in parts if _mixes(part)]
+    return (
+        any(len(part) >= _RANDOM_PART_MIN_LENGTH for part in mixed)
+        or len(mixed) >= _RANDOM_GROUPS_MIN
+    )
+
+
 def url_secret_risk(url: str) -> str | None:
     """Why ``url``'s path looks like it carries a credential, or None.
 
     Decided by the string's form, not by a word list: a segment of at
-    least :data:`_SECRET_MIN_LENGTH` characters that mixes letters and
-    digits and reads as random (entropy at or above
-    :data:`_SECRET_MIN_ENTROPY`), or a long hex run (with UUID dashes
-    removed). Hosted MCP servers put keys there (Zapier:
+    least :data:`_SECRET_MIN_LENGTH` characters that reads as random
+    (entropy at or above :data:`_SECRET_MIN_ENTROPY`) and has one part,
+    split on ``-``, ``_`` and ``.``, of at least
+    :data:`_RANDOM_PART_MIN_LENGTH` characters mixing letters and digits;
+    or a long hex run (with UUID dashes removed). The part rule is what
+    keeps slugs importable: ``my-awesome-server-2024`` mixes letters and
+    digits and is long and varied, but only across words. Hosted MCP
+    servers put keys there (Zapier:
     ``/api/mcp/s/<key>/sse``), and a key in the path is copied with the
     URL, so it is never imported without the user's word. The reason
     never quotes the segment."""
@@ -253,8 +286,7 @@ def url_secret_risk(url: str) -> str | None:
         compact = segment.replace("-", "")
         long_mixed = (
             len(segment) >= _SECRET_MIN_LENGTH
-            and any(c.isalpha() for c in segment)
-            and any(c.isdigit() for c in segment)
+            and _random_part(segment)
             and _entropy(segment) >= _SECRET_MIN_ENTROPY
         )
         if long_mixed or _HEX_RUN.fullmatch(compact):

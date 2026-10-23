@@ -255,6 +255,7 @@ def mcp_servers_for_pipeline(pipeline: Pipeline) -> tuple[dict[str, dict[str, An
     unrepresentative rather than silently measured).
     """
     from rote.mcp import access_token_state, load_registry, read_token_file
+    from rote.mcp.registry import has_references
 
     registry = load_registry()
     servers: dict[str, dict[str, Any]] = {}
@@ -276,8 +277,13 @@ def mcp_servers_for_pipeline(pipeline: Pipeline) -> tuple[dict[str, dict[str, An
             "type": _TRANSPORT_TO_MCP_TYPE[binding.transport],
             "url": url,
         }
-        if entry is not None and entry.headers:
+        if entry is not None and entry.headers and not has_references(entry.headers):
             config["headers"] = dict(entry.headers)
+        elif entry is not None and entry.headers:
+            # Filled when the client connects (the runtime helpers' rule).
+            config["headersHelper"] = (
+                f"{shlex.quote(sys.executable)} -m rote mcp headers {shlex.quote(binding.server)}"
+            )
         else:
             doc = read_token_file(binding.server)
             if doc is not None and access_token_state(doc)[0] is not None:

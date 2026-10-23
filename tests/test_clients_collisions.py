@@ -50,3 +50,16 @@ def test_unused_or_blocked_entries_take_no_part() -> None:
         _c("acme.crm", "https://c.example/mcp", blocked="stdio"),
     ]
     assert find_collisions(candidates, {}) == ()
+
+
+def test_two_spellings_of_one_endpoint_are_one_server() -> None:
+    """Case, a default port and a trailing slash do not make a second server."""
+    spelled = [
+        _c("acme-crm", "https://A.example/mcp/"),
+        _c("acme_crm", "https://a.example:443/mcp"),
+    ]
+    assert find_collisions(spelled, {}) == ()
+    assert find_collisions([spelled[0]], {"acme_crm": "https://a.example/mcp"}) == ()
+    # The path still counts.
+    [collision] = find_collisions([spelled[0]], {"acme_crm": "https://a.example/other"})
+    assert collision.kind == "registered-elsewhere"

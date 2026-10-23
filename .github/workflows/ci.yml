@@ -198,6 +198,7 @@ jobs:
             tests/test_holdout_ts_e2e.py \
             tests/test_mcp_ts_e2e.py \
             tests/test_mcp_text_payload_parity_e2e.py \
+            tests/test_mcp_header_template_parity_e2e.py \
             tests/test_mcp_read_only_parity_e2e.py \
             tests/test_mcp_ts_server_e2e.py \
             tests/test_mcp_era_matrix_e2e.py \

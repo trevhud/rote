@@ -102,6 +102,12 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         monkeypatch.setenv(key, value)
     for key in isolation.CLOUD_CREDENTIAL_ENV:
         monkeypatch.delenv(key, raising=False)
+    # The config layers' env twins (ROTE_RUNTIME, ROTE_WORK_DOMAINS, ...):
+    # a developer's exported default must not change what a test resolves.
+    from rote.config import CONFIG_KEYS
+
+    for config_key in CONFIG_KEYS:
+        monkeypatch.delenv(config_key.env, raising=False)
     # `rote compile` now always constructs its JSONL progress sink (the
     # <out>/progress.jsonl sidecar), whose price enrichment does a live
     # catalog fetch. No unit test may touch the network for it — tests

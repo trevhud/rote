@@ -47,7 +47,8 @@ def action_required(
         reason = "missing_answer"
         placeholder = f"<{'|'.join(error.choices)}>" if error.choices else "<value>"
         missing = [error.flag]
-        command = next_command(argv, [error.flag, placeholder])
+        given = [error.flag, placeholder] if error.takes_value else error.flag.split()
+        command = next_command(argv, given)
         extra: dict[str, Any] = {"question": error.question, "choices": list(error.choices)}
     else:
         reason = "confirmation_required"

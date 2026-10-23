@@ -35,9 +35,12 @@ One durable credential layer, four consumers:
   the same names pipelines carry in `mcp.server` — mapped to endpoints,
   optional pre-registered `client_id`/`client_secret` (see
   [Client registration](#client-registration)), optional scopes,
-  optional static headers (API-key schemes). Written `0600`;
-  overridable via `ROTE_MCP_CONFIG`. Unknown fields are kept, because
-  every rote version on the machine shares the file.
+  optional static headers (API-key schemes). A header value may hold
+  `${NAME}` references, filled from the environment at every connection
+  by one rule in every helper (see [Header templates](#header-templates)).
+  Written `0600`; overridable via `ROTE_MCP_CONFIG`. Unknown fields are
+  kept, because every rote version on the machine shares the file.
+  `rote mcp import` fills it from your AI clients' configs.
 - **Learned auth** (`mcp-auth-learned.json` beside the registry,
   `rote.mcp.learned`): whether each server needs a login at all
   (`oauth` or `none`), keyed by name and normalized URL so a repoint
@@ -261,6 +264,42 @@ implementation, no drift; enforced by test). The emitted step calls
 shared store when the user has run `rote mcp login`, static registry
 headers when configured, plain client otherwise. Emitted apps never
 import rote.
+
+### Header templates
+
+`rote mcp import` copies a client's `Authorization: Bearer ${GITHUB_TOKEN}`
+as the template, never the value, so the registry holds no secret and the
+token stays in the environment that already has it. Every place that sends
+a registry header fills it by one rule: `expand_headers` in
+`rote.mcp._runtime_helper` (the emitted Python helper, the agent loop's
+`--mcp-config`, `rote mcp headers`, compile-time tool listing) and its twin
+`expandHeaders` (`_HEADER_TEMPLATE_TS`, spliced into the Node helper).
+
+- Only `${NAME}` is a reference (`[A-Za-z_][A-Za-z0-9_]*`). `$NAME`,
+  `${NAME:-default}` and `${1X}` are text. A value is never expanded again,
+  and `$` in a value is kept as is.
+- An unset or empty variable is a `RoteMcpConfigError` naming the server,
+  the header and the variable: a header is never sent empty, and the step
+  is not retried (configuration does not change between attempts). So is a
+  value with a line break or NUL.
+- The Workers helper has no registry (its credentials are provisioned
+  OAuth secrets) and the binding helper authenticates through the
+  platform, so neither has a static header to fill. A server that
+  authenticates with a header (an API key, `Bearer ${TOKEN}`) therefore
+  cannot authenticate on Cloudflare Workers: the Workers helper sends only
+  an OAuth access token it refreshes from the provisioned secrets.
+- The Python agent loop's `claude -p --mcp-config` is argv, which `ps`
+  shows, so a header there is a `headersHelper` running the emitted helper
+  file (`python extracted/_rote_mcp.py headers <server>`), never a value. A
+  server whose variable is unset is skipped unless the loop's own tools are
+  pinned to it, which raises the config error (the TS `bindAgentTools`
+  skips the same way).
+- Skill runs (`rote run` on a skill, `rote eval --run`) hand `claude -p` a
+  `headersHelper` for a templated header, so the filled value never lands
+  in the `--mcp-config` file.
+
+`tests/test_mcp_header_template_parity_e2e.py` runs the TS rule on the
+Python unit test's table and both helpers against one real server.
 
 ## Park-on-auth (all four MCP-capable runtimes)
 
@@ -527,8 +566,9 @@ Parking on such a request and resuming with the persisted
 ## eval --run
 
 `mcp_servers_for_pipeline` builds the `claude -p --mcp-config` and now
-injects auth: static registry headers verbatim, or — for logged-in
-servers — a `headersHelper` invoking
+injects auth: static registry headers verbatim (a `headersHelper` when a
+header holds a `${NAME}` template), or, for logged-in servers, a
+`headersHelper` invoking
 `<python> -m rote mcp headers <name>`. Claude Code re-runs the helper
 on every connection and once more on a 401, so tokens refresh mid-run
 on long trials (measured browser-automation runs park an agent for

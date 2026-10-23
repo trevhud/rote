@@ -256,7 +256,7 @@ async def registry_server_specs(
     a reason through ``on_skip`` — never an error.
     """
     from rote.mcp import McpAuthError, fresh_access_token, load_registry, read_token_file
-    from rote.mcp._runtime_helper import stored_for_url
+    from rote.mcp._runtime_helper import RoteMcpConfigError, expand_headers, stored_for_url
     from rote.mcp.learned import learned_auth
     from rote.mcp.tokens import access_token_state
 
@@ -271,7 +271,12 @@ async def registry_server_specs(
             _skip(name, f"transport {entry.transport!r} is not supported for live compiler tools")
             continue
         if entry.headers:
-            specs.append({"name": name, "url": entry.url, "headers": dict(entry.headers)})
+            try:
+                headers = expand_headers(name, entry.headers)
+            except RoteMcpConfigError as e:
+                _skip(name, str(e))
+                continue
+            specs.append({"name": name, "url": entry.url, "headers": headers})
             continue
         doc = read_token_file(name)
         if doc is not None and not stored_for_url(doc, entry.url):

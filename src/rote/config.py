@@ -18,6 +18,14 @@ value is a loud :class:`ConfigError` at load time, never a silent
 skip — a typo'd ``runtime: clouflare`` must not quietly fall back to
 the built-in default.
 
+Most settings are one string, and the highest layer wins. A **list**
+setting (``work_domains``) is different on purpose: every layer adds to
+it and none removes (:func:`resolve_list`). It is a safety list, the
+domains whose MCP servers ``rote mcp import`` never preselects, so a
+committed project ``rote.yaml`` saying ``work_domains: []`` must not
+switch off the user's own. Claude Code merges its ``deniedMcpServers``
+from every scope for the same reason.
+
 The built-in default layer is *not* stored here — it stays with the
 command (e.g. compile's login-derived runtime default), because it can
 depend on runtime state a config file can't see.
@@ -25,9 +33,13 @@ depend on runtime state a config file can't see.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -36,6 +48,10 @@ from rote.xdg import config_home
 
 class ConfigError(RuntimeError):
     """A config file or ROTE_* env var carries an unusable value."""
+
+
+#: One setting's value: a string, or a tuple for a list setting.
+ConfigValue = str | tuple[str, ...]
 
 
 def _runtime_choices() -> tuple[str, ...]:
@@ -92,6 +108,9 @@ class ConfigKey:
     # "runtime" | "agent" | "inference" | "effort" | "decider" | "tiebreak" | "structure",
     # resolved on demand
     lazy_choices: str | None = None
+    #: "str": one value, the highest layer wins. "list": every layer adds
+    #: (see the module docstring); the env twin is comma-separated.
+    kind: Literal["str", "list"] = "str"
 
     def valid_choices(self) -> tuple[str, ...] | None:
         if self.lazy_choices == "runtime":
@@ -179,6 +198,15 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         description="who serves (and pays for) emitted judges; unset = auto-detect",
         lazy_choices="inference",
     ),
+    ConfigKey(
+        name="work_domains",
+        env="ROTE_WORK_DOMAINS",
+        description=(
+            "your work domains: rote mcp import never preselects a server on them "
+            "(a list; every layer adds to it)"
+        ),
+        kind="list",
+    ),
 )
 
 _KEYS_BY_NAME: dict[str, ConfigKey] = {k.name: k for k in CONFIG_KEYS}
@@ -208,6 +236,8 @@ def project_config_path(cwd: Path | None = None) -> Path | None:
 
 
 def _validate_value(key: ConfigKey, value: object, origin: str) -> str:
+    if key.kind != "str":
+        raise ConfigError(f"{origin}: `{key.name}` is a list setting, not a string")
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{origin}: `{key.name}` must be a non-empty string, got {value!r}")
     value = value.strip()
@@ -219,23 +249,85 @@ def _validate_value(key: ConfigKey, value: object, origin: str) -> str:
     return value
 
 
-def load_config_file(path: Path) -> dict[str, str]:
+_DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def domain_problem(value: str) -> str | None:
+    """Why ``value`` is not a domain name (``example.com``), or None.
+
+    A domain alone: no scheme, path, port, wildcard or address, because
+    the work check (``rote.clients.normalize.is_work_host``) matches the
+    domain and every host under it, and ``*.example.com`` would match
+    nothing."""
+    if not value:
+        return "it is empty"
+    if "://" in value or any(c in value for c in "/?#@:"):
+        return "give the domain alone, like example.com (no scheme, path or port)"
+    if "*" in value:
+        return "no wildcard: example.com already covers every host under it"
+    labels = value.split(".")
+    if len(value) > 253 or not all(_DOMAIN_LABEL.fullmatch(label) for label in labels):
+        return "only letters, digits, hyphens and dots, like example.com"
+    if all(label.isdigit() for label in labels):
+        return "an IP address, not a domain"
+    return None
+
+
+def normalize_domain(value: str) -> str:
+    """``value`` lowercased, with surrounding spaces and dots removed."""
+    return value.strip().lower().strip(".")
+
+
+def _validate_list(key: ConfigKey, value: object, origin: str) -> tuple[str, ...]:
+    if key.kind != "list":
+        raise ConfigError(f"{origin}: `{key.name}` is a string setting, not a list")
+    if not isinstance(value, list):
+        raise ConfigError(
+            f"{origin}: `{key.name}` must be a list (`{key.name}: [example.com]`), got {value!r}"
+        )
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError(f"{origin}: `{key.name}` items must be strings, got {item!r}")
+        domain = normalize_domain(item)
+        problem = domain_problem(domain)
+        if problem is not None:
+            raise ConfigError(f"{origin}: `{key.name}` item {item!r} is not a domain: {problem}")
+        if domain not in items:
+            items.append(domain)
+    return tuple(items)
+
+
+def _validate_any(key: ConfigKey, value: object, origin: str) -> ConfigValue:
+    if key.kind == "list":
+        return _validate_list(key, value, origin)
+    return _validate_value(key, value, origin)
+
+
+def load_config_file(path: Path) -> dict[str, ConfigValue]:
     """Parse and validate one config file. Unknown keys are errors."""
+    return parse_config_text(path.read_text(encoding="utf-8"), path)
+
+
+def parse_config_text(text: str, path: Path) -> dict[str, ConfigValue]:
+    """:func:`load_config_file` on text already read (``path`` names it in
+    errors). For a caller that merges into the file and checks at write time
+    that it still holds the bytes it parsed."""
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise ConfigError(f"{path}: not valid YAML: {e}") from e
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: expected a mapping of settings, got {type(raw).__name__}")
-    values: dict[str, str] = {}
+    values: dict[str, ConfigValue] = {}
     for name, value in raw.items():
         key = _KEYS_BY_NAME.get(str(name))
         if key is None:
             known = ", ".join(k.name for k in CONFIG_KEYS)
             raise ConfigError(f"{path}: unknown setting `{name}` — known settings: {known}")
-        values[key.name] = _validate_value(key, value, str(path))
+        values[key.name] = _validate_any(key, value, str(path))
     return values
 
 
@@ -244,9 +336,9 @@ class ConfigLayers:
     """The two file layers, loaded and validated once per command."""
 
     user_path: Path
-    user: dict[str, str]
+    user: dict[str, ConfigValue]
     project_path: Path | None
-    project: dict[str, str]
+    project: dict[str, ConfigValue]
 
 
 def load_layers(cwd: Path | None = None) -> ConfigLayers:
@@ -273,6 +365,8 @@ def resolve(key_name: str, flag_value: str | None, *, layers: ConfigLayers) -> R
     opinion" — the command applies its built-in default.
     """
     key = _KEYS_BY_NAME[key_name]
+    if key.kind != "str":
+        raise ValueError(f"`{key_name}` is a list setting: use resolve_list")
     if flag_value is not None:
         return Resolved(value=flag_value, source="flag")
     env_value = os.environ.get(key.env)
@@ -280,31 +374,136 @@ def resolve(key_name: str, flag_value: str | None, *, layers: ConfigLayers) -> R
         return Resolved(value=_validate_value(key, env_value, key.env), source=f"env {key.env}")
     if key.name in layers.project:
         assert layers.project_path is not None
-        return Resolved(value=layers.project[key.name], source=f"project {layers.project_path}")
+        project_value = layers.project[key.name]
+        assert isinstance(project_value, str)
+        return Resolved(value=project_value, source=f"project {layers.project_path}")
     if key.name in layers.user:
-        return Resolved(value=layers.user[key.name], source=f"user {layers.user_path}")
+        user_value = layers.user[key.name]
+        assert isinstance(user_value, str)
+        return Resolved(value=user_value, source=f"user {layers.user_path}")
     return Resolved(value=None, source="built-in default")
 
 
-def render_config(values: dict[str, str], *, origin: str = "config") -> str:
+@dataclass(frozen=True)
+class ResolvedList:
+    """A list setting: every layer's items, in layer order, and who set it."""
+
+    values: tuple[str, ...]
+    #: The layers that hold the key. An empty list counts: it was answered.
+    sources: tuple[str, ...]
+
+    @property
+    def is_set(self) -> bool:
+        return bool(self.sources)
+
+    @property
+    def source(self) -> str:
+        return " + ".join(self.sources) if self.sources else "not set"
+
+
+def parse_list_env(key: ConfigKey, raw: str) -> tuple[str, ...]:
+    """A list setting's env twin: comma-separated, blank items ignored. An
+    empty value is refused, as it is for a string setting: it would read as
+    "no items", which is an answer nobody gave."""
+    if not raw.strip():
+        raise ConfigError(f"{key.env}: `{key.name}` must name at least one item when set")
+    return _validate_list(key, [v for v in raw.split(",") if v.strip()], key.env)
+
+
+def resolve_list(
+    key_name: str, flag_values: Sequence[str] = (), *, layers: ConfigLayers
+) -> ResolvedList:
+    """A list setting: the union of the flag, env, project and user layers.
+
+    No layer removes another's items (see the module docstring). Flag
+    values are validated here, like a file's."""
+    key = _KEYS_BY_NAME[key_name]
+    if key.kind != "list":
+        raise ValueError(f"`{key_name}` is a string setting: use resolve")
+    values: list[str] = []
+    sources: list[str] = []
+
+    def add(items: Sequence[str], source: str) -> None:
+        sources.append(source)
+        values.extend(item for item in items if item not in values)
+
+    if flag_values:
+        add(_validate_list(key, list(flag_values), "flag"), "flag")
+    env_value = os.environ.get(key.env)
+    if env_value is not None:
+        add(parse_list_env(key, env_value), f"env {key.env}")
+    for layer, label in (
+        (layers.project, f"project {layers.project_path}"),
+        (layers.user, f"user {layers.user_path}"),
+    ):
+        if key.name in layer:
+            items = layer[key.name]
+            assert isinstance(items, tuple)
+            add(items, label)
+    return ResolvedList(values=tuple(values), sources=tuple(sources))
+
+
+def _render_value(value: ConfigValue) -> str:
+    if isinstance(value, tuple):
+        # Each item double-quoted (JSON is YAML): a domain label such as
+        # `on` or `no` would otherwise load as a YAML 1.1 boolean.
+        return "[" + ", ".join(json.dumps(item) for item in value) + "]"
+    return value
+
+
+def render_config(values: Mapping[str, ConfigValue], *, origin: str = "config") -> str:
     """A config file's text the way ``rote init`` presents it: one
     commented line per setting, keys in registry order. Validates first."""
     for name, value in values.items():
         key = _KEYS_BY_NAME.get(name)
         if key is None:
             raise ConfigError(f"cannot write unknown setting `{name}`")
-        _validate_value(key, value, origin)
+        _validate_any(key, list(value) if isinstance(value, tuple) else value, origin)
     lines = [
-        "# rote defaults — written by `rote init`, read by every command.",
-        "# Precedence: flag > ROTE_* env > project rote.yaml > this file.",
+        "# rote defaults: written by `rote init` and `rote mcp import`, read by every command.",
+        "# Precedence: flag > ROTE_* env > project rote.yaml > this file (lists: all add).",
     ]
     for key in CONFIG_KEYS:
         if key.name in values:
-            lines.append(f"{key.name}: {values[key.name]}  # {key.description}")
+            lines.append(render_setting_line(key.name, values[key.name]))
     return "\n".join(lines) + "\n"
 
 
-def write_config(path: Path, values: dict[str, str]) -> None:
+def render_setting_line(name: str, value: ConfigValue) -> str:
+    """One setting's line, as :func:`render_config` writes it."""
+    return f"{name}: {_render_value(value)}  # {_KEYS_BY_NAME[name].description}"
+
+
+def set_in_place(text: str, name: str, value: ConfigValue, path: Path) -> str | None:
+    """``text`` with only setting ``name``'s line (and a block list under
+    it) replaced by ``value``, or appended; every other line, comments
+    included, kept as written. None when the result does not read back as
+    the same settings with ``name`` set to ``value`` (an unusual layout the
+    line edit cannot handle), so the caller can plan a marked replacement
+    instead."""
+    lines = text.splitlines(keepends=True)
+    line = render_setting_line(name, value) + "\n"
+    head = re.compile(rf"""^["']?{re.escape(name)}["']?\s*:""")
+    start = next((i for i, row in enumerate(lines) if head.match(row)), None)
+    if start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(line)
+    else:
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and lines[end][0] in " \t-":
+            end += 1
+        lines[start:end] = [line]
+    edited = "".join(lines)
+    try:
+        expected = {**parse_config_text(text, path), name: value}
+        got = parse_config_text(edited, path)
+    except ConfigError:
+        return None
+    return edited if got == expected else None
+
+
+def write_config(path: Path, values: Mapping[str, ConfigValue]) -> None:
     """Write :func:`render_config`'s text to ``path`` atomically."""
     from rote.interact.plan import atomic_write_text
 

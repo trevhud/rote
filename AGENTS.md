@@ -185,6 +185,21 @@ and with `--json` prints `{"status": "action_required", "missing": [...],
 "next": [{"command": ...}]}`: relay the question to the user, then run
 `next`.
 
+`rote mcp import` copies MCP servers from the user's AI clients (Claude
+Code today) into rote's registry the same way. `rote mcp import --json`
+stops with the servers it found (names, hosts, scopes, never URLs) and
+`missing: ["--only"]`; relay the pick, then run `--only a,b --json` to get
+the plan (`confirmation_required`), show it, and add `--yes` to apply it.
+`--servers-for <skill dir>` preselects what a skill needs, and the first
+time also needs `--work-domain <domain>` (or `--work-domain none`): servers
+on a work domain are never preselected. Only the user's answer counts: CI
+that sets `ROTE_WORK_DOMAINS` (or a project `rote.yaml` with
+`work_domains`) still passes `--work-domain`, or has `work_domains` in the
+user config, for `--servers-for`. A server whose URL may carry a key,
+or whose client trust could not be checked, needs its own
+`--allow-url-secret <name>` / `--allow-untrusted <name>`. Logins need a
+person; tell the user to run `rote mcp login <name>`.
+
 ## The compile default follows the login state
 
 If the machine has a rote-cloud login (`rote login`; credential at
