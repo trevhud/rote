@@ -1688,6 +1688,20 @@ def test_a_gate_waited_for_through_another_step_clears_it(skill: Any) -> None:
     assert len(_gate_findings(answer, skill)) == 1
 
 
+def test_a_loop_step_reading_the_gate_does_not_clear_it() -> None:
+    """A loop's own steps are called by its agent, so their reads order nothing."""
+    answer = _gated()
+    answer["nodes"] += [
+        node("follow_up", 4, "agent_loop", reads=["render_digest"], mandatory=False),
+        node("each_reply", 4, "pure_function", reads=["approve_digest"], in_loop="follow_up"),
+    ]
+    flagged = [gate for gate, _ in structure._gates_nothing_waits_for(answer["nodes"])]
+    assert flagged == ["approve_digest"]
+    # The negative half: the loop itself waiting for the gate clears it.
+    answer["nodes"][-2]["reads"] = ["render_digest", "approve_digest"]
+    assert structure._gates_nothing_waits_for(answer["nodes"]) == []
+
+
 def test_a_final_sign_off_after_every_step_is_kept(skill: Any) -> None:
     """The BDR gold's shape: the run's last step is the person's sign-off."""
     answer = good_answer()

@@ -753,8 +753,8 @@ def _check_run_outputs(answer: dict[str, Any]) -> list[str]:
 def _gates_nothing_waits_for(nodes: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
     """Each gate no later step waits for, with the run's exit nodes.
 
-    A step waits for a gate when it reaches it through ``reads`` or
-    ``after``, directly or through other steps. A gate nothing waits for is
+    A gate blocks something when a later step lists it in ``reads`` or
+    ``after``; that step, and every step after it, then waits. A gate nothing waits for is
     still right when it is the run's only exit: then every other step comes
     before it, and the person's answer is the run's final sign-off, as the
     BDR gold's ``manual_enrollment_handoff`` is. Any other exit runs without
