@@ -3,7 +3,7 @@
 No network and no inference: everything here reads the committed files.
 The strongest check is the replay: the MCP calls the recorded pipeline run
 made become the recorded-call stubs of rote's own prefix plan and runner
-(:func:`rote.compiler.prefix.build_plan`, :mod:`rote.compiler._prefix_runner`,
+(:func:`rote.compiler.prefix.prefix_plan`, :mod:`rote.compiler._prefix_runner`,
 the interpreter verification uses, which mirrors the emitted step bodies),
 and the compiled code must
 return the recorded digest. So the reference and the committed code cannot
@@ -25,7 +25,7 @@ import pytest
 from rote import demo
 from rote.adapters import get_adapter
 from rote.compiler.grounding import Sample
-from rote.compiler.prefix import RUNNER_PATH, build_plan
+from rote.compiler.prefix import RUNNER_PATH, prefix_plan
 from rote.contracts import implementation_status
 from rote.eval.baseline import ObservedToolCall
 from rote.ir import Pipeline, load_pipeline
@@ -116,7 +116,7 @@ def test_every_field_resolves_and_the_equal_ones_agree() -> None:
 def _replay(compiled: Path, ref: demo.Reference) -> dict[str, dict[str, Any]]:
     """The prefix runner's report for the compiled code on the recording.
 
-    The plan comes from :func:`rote.compiler.prefix.build_plan` and runs in
+    The plan comes from :func:`rote.compiler.prefix.prefix_plan` and runs in
     :mod:`rote.compiler._prefix_runner`, exactly as verification runs it,
     minus the sandbox (this is the repo's own committed code, and
     :func:`run_prefix` drops each step's output from its verdict)."""
@@ -125,7 +125,7 @@ def _replay(compiled: Path, ref: demo.Reference) -> dict[str, dict[str, Any]]:
         ObservedToolCall(c.server, c.tool, c.arguments, json.dumps(c.result))
         for c in ref.tool_calls
     )
-    plan = build_plan(
+    plan = prefix_plan(
         pipeline,
         compiled,
         Sample(payload=ref.input, source="reference.json"),

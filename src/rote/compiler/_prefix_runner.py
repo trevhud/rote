@@ -3,7 +3,7 @@
 rote copies this file's source into a scratch dir and runs it with
 ``python -S`` inside the OS sandbox the generated tests use, with the
 deliverable dir on ``PYTHONPATH``. It imports nothing from rote: the plan
-it executes (``plan.json``, built by :mod:`rote.compiler.prefix`) already
+it executes (``plan.json``, built by :func:`rote.plan.build_plan`) already
 says, per node, which function to call and where each argument comes
 from. That keeps the semantics in one place (rote's plan builder, which
 mirrors the emitted step bodies) and this file a dumb interpreter.

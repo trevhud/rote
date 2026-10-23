@@ -15,10 +15,12 @@ A judge, an agent loop, an unanswered gate, an unrecorded tool call or a stub en
 the prefix on its branch: nodes that need its output are reported as not
 reached, never guessed at.
 
-:func:`build_plan` turns the IR into a plan that mirrors the emitted step
+:func:`prefix_plan` turns the IR into a plan that mirrors the emitted step
 bodies (payload from ``inputs:``, an omitted optional field left out,
 constants merged last, one call per element for ``fan_out``, results
-through ``_serialize``). The plan runs in :mod:`rote.compiler._prefix_runner`,
+through ``_serialize``), through :func:`rote.plan.build_plan`, the one plan
+builder a compiled skill's driver runs too. The plan runs in
+:mod:`rote.compiler._prefix_runner`,
 a stdlib-only script, under the same sandbox and environment as the
 generated tests (:func:`rote.compiler.verify.run_confined`). A raised
 exception or a binding the upstream result cannot satisfy becomes an
@@ -34,13 +36,8 @@ from typing import Any, Literal
 
 from rote.compiler.grounding import Sample
 from rote.contracts import ContractFinding, NodeImplementation
-from rote.ir import (
-    CONSTANT_ARGUMENT_KINDS,
-    NodeKind,
-    Pipeline,
-    fan_out_element_param,
-    parse_input_ref,
-)
+from rote.ir import NodeKind, Pipeline
+from rote.plan import build_plan
 
 #: Wall-clock cap on one prefix run. The prefix is pure functions over one
 #: sample, milliseconds of work; hitting this is an unbounded loop.
@@ -69,12 +66,7 @@ class PrefixRun:
         return {"status": self.status, "summary": self.summary, "steps": self.steps}
 
 
-def _module_of(impl: str) -> tuple[str, str]:
-    rel, _, symbol = impl.partition(":")
-    return rel.removesuffix(".py").replace("/", "."), symbol
-
-
-def build_plan(
+def prefix_plan(
     pipeline: Pipeline,
     root: Path,
     sample: Sample,
@@ -82,98 +74,21 @@ def build_plan(
     observations: tuple[Any, ...] = (),
     tools: dict[tuple[str, str], Any] | None = None,
 ) -> dict[str, Any]:
-    """The JSON plan :mod:`rote.compiler._prefix_runner` executes."""
-    from rote.adapters._common import mcp_tool_arguments
-    from rote.probe import parse_tool_result
+    """The JSON plan :mod:`rote.compiler._prefix_runner` executes.
 
-    status = {i.node_id: i.status for i in implementations}
-    answers = _gate_answers(pipeline, sample)
-    recorded: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for o in observations:
-        declared = (tools or {}).get((o.server, o.tool))
-        output = parse_tool_result(o.result, getattr(declared, "output_schema", None))
-        if output is not None and not o.is_error:
-            recorded.setdefault((o.server, o.tool), []).append({"input": o.input, "output": output})
-    steps: list[dict[str, Any]] = []
-    for wave in pipeline.execution_waves():
-        for node in wave:
-            bindings: list[list[Any]] = []
-            for param, ref in (node.inputs or {}).items():
-                parsed = parse_input_ref(ref)
-                if parsed.node_id is None:
-                    source = "input" if parsed.field is None else "input_field"
-                    bindings.append([param, source, None, parsed.field])
-                else:
-                    bindings.append([param, "node", parsed.node_id, parsed.field])
-            step: dict[str, Any] = {"id": node.id, "bindings": bindings}
-            if node.kind is NodeKind.HITL_GATE and node.id in answers:
-                # The sample says what the person answered: the gate's result,
-                # so the nodes after it run on the sample too.
-                step |= {"kind": "gate", "payload": answers[node.id]}
-            elif node.mcp is not None:
-                declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
-                try:
-                    # One call per element, as every emitter fans an MCP node.
-                    fan = fan_out_element_param(node, pipeline) if node.fan_out else None
-                except ValueError as e:
-                    step |= {"kind": "skip", "reason": f"fan_out: {e}"}
-                    steps.append(step)
-                    continue
-                step |= {
-                    "kind": "mcp",
-                    "args": mcp_tool_arguments(node),
-                    "fan_param": fan,
-                    "observed": recorded.get((node.mcp.server, node.mcp.tool), []),
-                    "probe_shapes": probe_shapes(getattr(declared, "output_schema", None)),
-                }
-            elif (
-                node.kind is NodeKind.PURE_FUNCTION
-                and node.impl is not None
-                and status.get(node.id) == "implemented"
-            ):
-                module, symbol = _module_of(node.impl)
-                try:
-                    fan = fan_out_element_param(node, pipeline) if node.fan_out else None
-                except ValueError as e:
-                    step |= {"kind": "skip", "reason": f"fan_out: {e}"}
-                    steps.append(step)
-                    continue
-                step |= {
-                    "kind": "call",
-                    "module": module,
-                    "symbol": symbol,
-                    "constants": node.constants if node.kind in CONSTANT_ARGUMENT_KINDS else None,
-                    "fan_param": fan,
-                }
-            else:
-                reason = str(node.kind)
-                if node.kind is NodeKind.PURE_FUNCTION:
-                    reason = f"pure_function {status.get(node.id, 'without impl')}"
-                step |= {"kind": "skip", "reason": reason}
-            steps.append(step)
-    return {"root": str(root.resolve()), "sample": sample.payload, "steps": steps}
-
-
-#: What an MCP result may be when the tool declares no output schema: a bare
-#: JSON list (Gmail's search_threads) or text (Drive's read_file_content).
-UNDECLARED_SHAPES = ("list", "text")
-_SHAPE_OF_TYPE = {"array": "list", "string": "text", "object": "object"}
-
-
-def probe_shapes(output_schema: dict[str, Any] | None) -> list[str]:
-    """The result shapes to probe a consumer with: the declared one, else both
-    shapes an undeclared result is known to take.
-
-    FastMCP wraps a non-object result as ``{"result": ...}`` and marks it
-    ``x-fastmcp-wrap-result``; rote's MCP helper unwraps it, so the declared
-    shape is the inner one."""
-    schema = output_schema
-    if isinstance(schema, dict) and schema.get("x-fastmcp-wrap-result"):
-        schema = (schema.get("properties") or {}).get("result")
-    kind = schema.get("type") if isinstance(schema, dict) else None
-    if isinstance(kind, str) and kind in _SHAPE_OF_TYPE:
-        return [_SHAPE_OF_TYPE[kind]]
-    return list(UNDECLARED_SHAPES)
+    :func:`rote.plan.build_plan` in recorded mode (the one plan builder a
+    compiled skill's driver also runs), plus where the deliverable lives and
+    the sample to run it on.
+    """
+    plan = build_plan(
+        pipeline,
+        mcp="recorded",
+        implementations={i.node_id: i.status for i in implementations},
+        observations=observations,
+        tools=tools,
+        gate_answers=_gate_answers(pipeline, sample),
+    )
+    return {"root": str(root.resolve()), "sample": sample.payload, **plan}
 
 
 def _gate_answers(pipeline: Pipeline, sample: Sample) -> dict[str, dict[str, Any]]:
@@ -403,7 +318,7 @@ def run_prefix(
     """
     from rote.compiler.verify import run_confined
 
-    plan = build_plan(pipeline, root, sample, implementations, observations, tools)
+    plan = prefix_plan(pipeline, root, sample, implementations, observations, tools)
 
     def _args(scratch: Path) -> list[str]:
         runner = scratch / RUNNER_PATH.name
