@@ -54,7 +54,8 @@ exactly the gate and its edges.
 
 ## Run it
 
-From the repo root, after `uv tool install 'rote-cli[dbos]'` (or `pip install` into a venv):
+From the repo root, after `uv tool install rote-cli` (or `pip install rote-cli` into a venv).
+The DBOS commands need the dbos extra; the first one offers to install it.
 
 ```sh
 # Plain Python, no gate: a draft report.

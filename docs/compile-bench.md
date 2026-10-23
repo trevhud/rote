@@ -20,7 +20,7 @@ compile that takes 10 minutes should measure one fixed version of rote.
 ```sh
 uv build --wheel --out-dir /tmp/bench/wheel
 uv venv --python 3.11 /tmp/bench/venv
-uv pip install --python /tmp/bench/venv/bin/python "/tmp/bench/wheel/rote_cli-*.whl[dbos,mcp,api,temporal]"
+uv pip install --python /tmp/bench/venv/bin/python "/tmp/bench/wheel/rote_cli-*.whl[dbos,serve,api,temporal]"
 mkdir -p /tmp/bench/cwd && cd /tmp/bench/cwd
 
 # The fast loop: one small skill, about $2.5 and 10 minutes.

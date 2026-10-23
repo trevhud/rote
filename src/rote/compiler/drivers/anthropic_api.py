@@ -603,7 +603,7 @@ class AnthropicApiDriver(CompilerDriver):
             try:
                 await live.__aenter__()
             except RuntimeError as e:
-                # The mcp extra is missing but mcp_servers were requested:
+                # fastmcp is missing but mcp_servers were requested:
                 # compiling without the requested tools would be a silently
                 # wrong run, not a degraded one.
                 raise DriverError(str(e)) from e

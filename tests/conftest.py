@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from rote import extras as rote_extras
 from rote import isolation
 from rote.ir import Pipeline, load_pipeline
 from tests import _node_trees as node_trees
@@ -275,6 +276,33 @@ def _no_inference_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
         return real_which(cmd, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(shutil, "which", _which_without_subscription_clis)
+
+
+#: rote.extras' real ``direct_url.json`` reader, before the fixture below
+#: hides it (tests/test_install_extra.py checks it against this checkout).
+REAL_DIRECT_URL_SOURCE = rote_extras._direct_url_source
+
+
+@pytest.fixture(autouse=True)
+def _released_install_and_no_installs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests see rote as a user does, and never install a package.
+
+    The suite runs from an editable checkout, so ``rote.extras`` would
+    derive ``pip install -e <checkout>[...]`` hints. Tests assert the hints
+    a PyPI install prints, so the checkout's ``direct_url.json`` is hidden
+    (the uv-tool and uvx contexts come from ``sys.prefix`` and stay
+    testable). And no test may run an installer: one that approves an
+    install plan would otherwise change the suite's own environment. A test
+    of the install flow patches ``_run_installer`` with its own fake.
+    """
+    import rote.setup.install_extra
+
+    monkeypatch.setattr(rote_extras, "_direct_url_source", lambda: None)
+
+    def _no_installs(argv: object) -> None:
+        raise AssertionError(f"a test tried to install packages: {argv!r}")
+
+    monkeypatch.setattr(rote.setup.install_extra, "_run_installer", _no_installs)
 
 
 @pytest.fixture(scope="session", autouse=True)

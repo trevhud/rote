@@ -159,7 +159,6 @@ def test_temporal_runtime_omits_optional_and_names_missing_required(tmp_path: Pa
 @pytest.mark.slow
 def test_dbos_runtime_omits_optional_and_names_missing_required(tmp_path: Path) -> None:
     """Slow: launches a real DBOS runtime (system-DB migrations, queues)."""
-    pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
     app = _emit("dbos", tmp_path)
 
     run = run_pipeline_trial(app, _FULL, timeout_seconds=120)

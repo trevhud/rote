@@ -151,7 +151,6 @@ def test_temporal_runtime_passes_each_nodes_own_constants(tmp_path: Path) -> Non
 @pytest.mark.slow
 def test_dbos_runtime_passes_each_nodes_own_constants(tmp_path: Path) -> None:
     """Slow: launches a real DBOS runtime (system-DB migrations, queues)."""
-    pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
     run = run_pipeline_trial(_emit("dbos", tmp_path), {"region": "west"}, timeout_seconds=120)
     assert run.error is None, run.error
     assert run.output == _EXPECTED

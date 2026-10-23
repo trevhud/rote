@@ -3,8 +3,9 @@
 Asks where compiled pipelines run (rote cloud or a local runtime), which
 compiler driver and model compile them, and who decides a local
 compile's structure (the structure pass, the decision model that checks
-it, the tie-break). Then it shows a plan (the config file it writes, and a
-rote cloud login when one was asked for) and applies it only on a yes.
+it, the tie-break). Then it shows a plan (the config file it writes, the
+chosen runtime's extra when rote's environment lacks it, and a rote cloud
+login when one was asked for) and applies it only on a yes.
 
 Built on :mod:`rote.interact`, so every question has a flag
 (``--deploy``, ``--runtime``, ``--agent``, ``--model``, ``--structure``,
@@ -22,10 +23,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from rote.config import CONFIG_KEYS, render_config, user_config_path
-from rote.extras import install_hint
+from rote.extras import RUNTIME_EXTRAS, dependency_hint, install_hint, installer, is_installed
 from rote.interact.output import Output
 from rote.interact.plan import Action, Contact, Launch, Plan, snapshot, write_file_action
 from rote.interact.prompter import Choice, Prompter
+from rote.setup.install_extra import install_extra_action
 
 #: Runtime menu: (name, one-line pitch). Order = recommendation order,
 #: matching the compile default (dbos) first for the local path.
@@ -150,9 +152,12 @@ def build_plan(
         mark = "✓" if driver["available"] else "✗"
         suffix = "" if driver["available"] else f" ({driver['reason']})"
         out.say(f"  {mark} {driver['name']}{suffix}")
-    missing = [r["name"] for r in report["runtimes"] if not r["installed"]]
-    if missing:
-        out.say(f"Runtime extras not installed ({install_hint('<name>')}): {', '.join(missing)}")
+    for dep in report.get("dependencies", []):
+        if not dep["installed"]:
+            out.warn(f"this install lacks {dependency_hint(str(dep['module']))}")
+    for runtime in report["runtimes"]:
+        if not runtime["installed"]:
+            out.say(f"  extra not installed: {runtime['name']} ({install_hint(runtime['name'])})")
 
     values: dict[str, str] = {}
 
@@ -256,6 +261,19 @@ def build_plan(
         )
     ]
     notes: list[str] = []
+    runtime_extra = RUNTIME_EXTRAS.get(values["runtime"])
+    if runtime_extra is not None and not is_installed(runtime_extra):
+        # The runtime runs in rote's own environment, so the default is
+        # only usable once its extra is there. Same plan, same consent.
+        install = install_extra_action(runtime_extra)
+        if install is not None:
+            actions.append(install)
+        else:
+            found = installer((runtime_extra,))
+            notes.append(
+                f"the {values['runtime']} runtime needs the {runtime_extra} extra, which "
+                f"rote cannot install here ({found.why_not}): {found.hint}"
+            )
     if deploy == "rote-cloud":
         credential = load_credential()
         if credential is not None:

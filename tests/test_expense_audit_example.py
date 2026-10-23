@@ -358,7 +358,6 @@ def test_gated_run_on_dbos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The durable path: park on controller_review, resume, file final."""
-    pytest.importorskip("dbos")
     report_dir = tmp_path / "reports"
     monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(report_dir))
     app = tmp_path / "expense-audit-dbos"

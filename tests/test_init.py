@@ -31,7 +31,14 @@ def _quiet_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
     tests don't probe the developer's real PATH for claude/codex CLIs."""
     monkeypatch.setattr(
         "rote.cli._build_doctor_report",
-        lambda: {"version": "0", "python": "3", "drivers": [], "runtimes": [], "ok": True},
+        lambda: {
+            "version": "0",
+            "python": "3",
+            "drivers": [],
+            "dependencies": [],
+            "runtimes": [],
+            "ok": True,
+        },
     )
     monkeypatch.setattr("rote.compiler.drivers.available_drivers", lambda: _FAKE_DRIVERS)
     for var in ("ROTE_CLEF_ACCOUNT_ID", "ROTE_CLEF_API_TOKEN", "TYPESAFE_API_KEY"):
