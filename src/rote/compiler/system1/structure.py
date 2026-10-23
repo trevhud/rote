@@ -297,7 +297,9 @@ Per node:
   ids, labels): a snake_case name and the value copied exactly as the skill
   writes it ("$2,500", "60 days").
 - gate: for a hitl_gate, a snake_case signal name, the keys the person sends
-  back, and the timeout if the skill states one. Else empty.
+  back, and the timeout if the skill states one. Else empty. The step the
+  approval guards waits for it: that node reads the gate, or lists it in
+  after. A final sign-off comes after every other step.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty.
 - confidence: how sure you are of this node, 0 to 1. why: one short clause.
@@ -679,6 +681,7 @@ def check(
         out += _check_gates(answer, sample)
     out += _check_run_outputs(answer)
     out += _check_split_steps(answer)
+    out += _check_gate_waiters(answer)
     return out
 
 
@@ -744,6 +747,51 @@ def _check_run_outputs(answer: dict[str, Any]) -> list[str]:
         "node that reads its producer and returns it"
         for key in answer.get("run_outputs") or []
         if str(key) not in returned
+    ]
+
+
+def _gates_nothing_waits_for(nodes: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
+    """Each gate no later step waits for, with the run's exit nodes.
+
+    A gate blocks something when a later step lists it in ``reads`` or
+    ``after``; that step, and every step after it, then waits. A gate nothing waits for is
+    still right when it is the run's only exit: then every other step comes
+    before it, and the person's answer is the run's final sign-off, as the
+    BDR gold's ``manual_enrollment_handoff`` is. Any other exit runs without
+    waiting for the answer. Only top-level nodes order a run: a loop's own
+    nodes are called by its agent, so their reads order nothing."""
+    top = [n for n in nodes if not n.get("in_loop")]
+    ids = {str(n.get("id")) for n in top}
+    waited: set[str] = set()
+    for n in top:
+        for dep in [*(n.get("reads") or []), *(n.get("after") or [])]:
+            if str(dep) in ids and str(dep) != str(n.get("id")):
+                waited.add(str(dep))
+    exits = [str(n.get("id")) for n in top if str(n.get("id")) not in waited]
+    return [
+        (str(n.get("id")), exits)
+        for n in top
+        if n.get("kind") == "hitl_gate"
+        and str(n.get("id")) not in waited
+        and exits != [str(n.get("id"))]
+    ]
+
+
+def _check_gate_waiters(answer: dict[str, Any]) -> list[str]:
+    """A gate that blocks nothing: the step it guards does not wait for it.
+
+    Found by an audit of 15 default compiles: the skill's reference run
+    waited for the person, the compiled run did not. Decided from the data
+    flow only; which step the gate guards is the model's to say, from the
+    skill."""
+    return [
+        f"node {gate}: no later step waits for this gate: none reads it or lists it in "
+        "after, so the work its approval guards can run before the person answers, or "
+        "without the answer. Find the step in the skill that this approval guards, and add "
+        f"{gate!r} to that node's reads (when it uses the person's answer) or to its after "
+        "(with after_quote). If the approval is the run's final sign-off, it comes after "
+        f"every other step, so it is the only exit node; the exit nodes now are {exits}"
+        for gate, exits in _gates_nothing_waits_for(list(answer.get("nodes") or []))
     ]
 
 
@@ -1410,6 +1458,14 @@ def resolve(
         nodes.append(n)
     if sample is not None and sample.gates:
         notes += _gates_from_sample(nodes, sample)
+    # Which step a gate guards is a reading of the skill, so no ordering is
+    # added here; the gap is listed for a reviewer.
+    notes += [
+        f"`{gate}`: no later step waits for this gate, so the work its approval guards "
+        f"can run before the person answers (exit nodes: {exits}). rote does not guess "
+        "which step it guards: that step must read the gate, or list it in after"
+        for gate, exits in _gates_nothing_waits_for(nodes)
+    ]
     return {**answer, "nodes": nodes}, notes
 
 
