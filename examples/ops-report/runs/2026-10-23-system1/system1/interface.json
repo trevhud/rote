@@ -1,0 +1,1588 @@
+{
+ "dock_email_summary": {
+  "description": "Counts Approved versus Requested dock appointments from the dock-activity email threads and lists the outstanding requests not yet approved.",
+  "output_fields": [
+   {
+    "description": "Number of Approved appointments",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "approved_count",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Number of Requested appointments",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "requested_count",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Requests not yet approved",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "outstanding_requests",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Gmail thread id",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "outstanding_requests[].thread_id",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Email subject of the request",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "outstanding_requests[].subject",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Email sender",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "outstanding_requests[].sender",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Email date",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "outstanding_requests[].date",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Snippet of latest message",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "outstanding_requests[].snippet",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Number of outstanding requests",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "outstanding_count",
+    "required": true,
+    "type": "integer"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "approved_count": {
+     "description": "Number of Approved appointments",
+     "type": "integer"
+    },
+    "outstanding_count": {
+     "description": "Number of outstanding requests",
+     "type": "integer"
+    },
+    "outstanding_requests": {
+     "description": "Requests not yet approved",
+     "items": {
+      "properties": {
+       "date": {
+        "description": "Email date",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "sender": {
+        "description": "Email sender",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "snippet": {
+        "description": "Snippet of latest message",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "subject": {
+        "description": "Email subject of the request",
+        "type": "string"
+       },
+       "thread_id": {
+        "description": "Gmail thread id",
+        "type": [
+         "string",
+         "null"
+        ]
+       }
+      },
+      "required": [
+       "subject"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "requested_count": {
+     "description": "Number of Requested appointments",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "approved_count",
+    "requested_count",
+    "outstanding_requests",
+    "outstanding_count"
+   ],
+   "type": "object"
+  }
+ },
+ "dock_emails_search": {
+  "description": "Searches Gmail for dock-activity threads from the last day and returns the matching threads as an array.",
+  "output_fields": [
+   {
+    "description": "Matching Gmail threads, newest first (inferred from tool description)",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Thread id",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "[].id",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Thread subject",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "[].subject",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Sender of the thread",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "[].sender",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Date of the thread",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "[].date",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Snippet of the latest message",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "[].snippet",
+    "required": true,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "description": "Matching Gmail threads, newest first (inferred from tool description)",
+   "items": {
+    "properties": {
+     "date": {
+      "description": "Date of the thread",
+      "type": "string"
+     },
+     "id": {
+      "description": "Thread id",
+      "type": "string"
+     },
+     "sender": {
+      "description": "Sender of the thread",
+      "type": "string"
+     },
+     "snippet": {
+      "description": "Snippet of the latest message",
+      "type": "string"
+     },
+     "subject": {
+      "description": "Thread subject",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "subject",
+     "sender",
+     "date",
+     "snippet"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  }
+ },
+ "dock_pending_read": {
+  "description": "Reads the Dock Pending Log spreadsheet from Google Drive and returns its content as CSV text.",
+  "output_fields": [
+   {
+    "description": "CSV text of the dock pending log's first tab, with a header row including Resolved, site and issue type columns (inferred: the tool returns spreadsheet content as text)",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "",
+    "required": true,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "description": "CSV text of the dock pending log's first tab, with a header row including Resolved, site and issue type columns (inferred: the tool returns spreadsheet content as text)",
+   "type": "string"
+  }
+ },
+ "dock_pending_summary": {
+  "description": "Counts the open dock pending log rows where Resolved = FALSE, in total, by site and by issue type.",
+  "output_fields": [
+   {
+    "description": "Total open rows where Resolved = FALSE",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "dock_pending_total",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Open count keyed by site (EAST1, WEST2, etc.)",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "dock_pending_by_site",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Open count keyed by issue type (PO Number, Pallet/Piece Count Discrepancy)",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "dock_pending_by_issue_type",
+    "required": true,
+    "type": "object"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "dock_pending_by_issue_type": {
+     "description": "Open count keyed by issue type (PO Number, Pallet/Piece Count Discrepancy)",
+     "properties": {},
+     "type": "object"
+    },
+    "dock_pending_by_site": {
+     "description": "Open count keyed by site (EAST1, WEST2, etc.)",
+     "properties": {},
+     "type": "object"
+    },
+    "dock_pending_total": {
+     "description": "Total open rows where Resolved = FALSE",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "dock_pending_total",
+    "dock_pending_by_site",
+    "dock_pending_by_issue_type"
+   ],
+   "type": "object"
+  }
+ },
+ "executive_report": {
+  "description": "Assembles the executive operations report with a KPI header, three sections, and a reminder to open the live \"ops-report\" artifact.",
+  "output_fields": [
+   {
+    "description": "The assembled executive report",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Report date",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.report_date",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "KPI header values",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.kpi_header",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Count of active sites",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.kpi_header.active_sites",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Total open dock pending rows",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.kpi_header.dock_pending_count",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Average completion % across sites, null if none",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "executive_report.kpi_header.avg_completion_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Count of open dwell tickets",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.kpi_header.open_dwell_tickets",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Section 1: appointment tiles, Gmail summary, pending log table",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_1_dock_compliance",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Dock appointment completion counts from manual data",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_1_dock_compliance.appointment_tiles",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Dock email summary as produced upstream",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_1_dock_compliance.gmail_summary",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Dock pending summary as produced upstream",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_1_dock_compliance.pending_log_table",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Section 2: sorter metrics and container flow",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_2_missort_loss",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Sorter metrics with flags per site",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "executive_report.section_2_missort_loss.sorter_metrics",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Container flow rows by site with completion %",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "executive_report.section_2_missort_loss.container_flow_table",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Section 3: dwell alerts and open tickets",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.section_3_dwell",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Color-coded BI dashboard dwell alerts",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "executive_report.section_3_dwell.dwell_alerts",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Open dwell tickets with flags",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "executive_report.section_3_dwell.open_dwell_impact_log",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Reminder to open the live ops-report artifact for charts",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "executive_report.artifact_reminder",
+    "required": true,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "executive_report": {
+     "description": "The assembled executive report",
+     "properties": {
+      "artifact_reminder": {
+       "description": "Reminder to open the live ops-report artifact for charts",
+       "type": "string"
+      },
+      "kpi_header": {
+       "description": "KPI header values",
+       "properties": {
+        "active_sites": {
+         "description": "Count of active sites",
+         "type": "integer"
+        },
+        "avg_completion_pct": {
+         "description": "Average completion % across sites, null if none",
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "dock_pending_count": {
+         "description": "Total open dock pending rows",
+         "type": "integer"
+        },
+        "open_dwell_tickets": {
+         "description": "Count of open dwell tickets",
+         "type": "integer"
+        }
+       },
+       "required": [
+        "active_sites",
+        "dock_pending_count",
+        "avg_completion_pct",
+        "open_dwell_tickets"
+       ],
+       "type": "object"
+      },
+      "report_date": {
+       "description": "Report date",
+       "type": "string"
+      },
+      "section_1_dock_compliance": {
+       "description": "Section 1: appointment tiles, Gmail summary, pending log table",
+       "properties": {
+        "appointment_tiles": {
+         "description": "Dock appointment completion counts from manual data",
+         "properties": {},
+         "type": "object"
+        },
+        "gmail_summary": {
+         "description": "Dock email summary as produced upstream",
+         "properties": {},
+         "type": "object"
+        },
+        "pending_log_table": {
+         "description": "Dock pending summary as produced upstream",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "required": [
+        "appointment_tiles",
+        "gmail_summary",
+        "pending_log_table"
+       ],
+       "type": "object"
+      },
+      "section_2_missort_loss": {
+       "description": "Section 2: sorter metrics and container flow",
+       "properties": {
+        "container_flow_table": {
+         "description": "Container flow rows by site with completion %",
+         "items": {
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "sorter_metrics": {
+         "description": "Sorter metrics with flags per site",
+         "items": {
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "sorter_metrics",
+        "container_flow_table"
+       ],
+       "type": "object"
+      },
+      "section_3_dwell": {
+       "description": "Section 3: dwell alerts and open tickets",
+       "properties": {
+        "dwell_alerts": {
+         "description": "Color-coded BI dashboard dwell alerts",
+         "items": {
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "open_dwell_impact_log": {
+         "description": "Open dwell tickets with flags",
+         "items": {
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "dwell_alerts",
+        "open_dwell_impact_log"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "report_date",
+      "kpi_header",
+      "section_1_dock_compliance",
+      "section_2_missort_loss",
+      "section_3_dwell",
+      "artifact_reminder"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "executive_report"
+   ],
+   "type": "object"
+  }
+ },
+ "manual_data_flags": {
+  "description": "Applies the skill's manual-data rules to the duty manager's inputs, giving appointment escalations, sorter flags and current dwell alerts.",
+  "output_fields": [
+   {
+    "description": "Dock appointment counts by color",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_completion",
+    "required": true,
+    "type": "object"
+   },
+   {
+    "description": "Green (Complete) count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_completion.green",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Red (No Call/No Show) count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_completion.red",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Grey (Canceled) count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_completion.grey",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Other color (Non-Compliant) count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_completion.non_compliant",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Non-Compliant appointments that must be escalated",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "appointment_escalations",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Escalation category",
+    "enum": [
+     "Non-Compliant"
+    ],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_escalations[].category",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Number of Non-Compliant appointments",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_escalations[].count",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Whether escalation is required",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "appointment_escalations[].escalate",
+    "required": true,
+    "type": "boolean"
+   },
+   {
+    "description": "Per-site sorter metrics with flags raised",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "sorter_flags",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Site name",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].site",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Volume output",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].volume",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Prior day volume",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].prior_day_volume",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Fail rate percent",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].fail_rate_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Day-over-day volume change percent",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].volume_change_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Fail rate above 5% (action needed)",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].fail_rate_flag",
+    "required": true,
+    "type": "boolean"
+   },
+   {
+    "description": "Volume dropped over 15% (divert adjustment may be needed)",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "sorter_flags[].volume_drop_flag",
+    "required": true,
+    "type": "boolean"
+   },
+   {
+    "description": "Human-readable flag messages",
+    "enum": [],
+    "items": "string",
+    "nullable": false,
+    "path": "sorter_flags[].flags",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Current dwell entries with alert level",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "current_dwell_alerts",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Shipper/brand name",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "current_dwell_alerts[].shipper",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Carrier",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "current_dwell_alerts[].carrier",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Site",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "current_dwell_alerts[].site",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Orders/packages dwelling",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "current_dwell_alerts[].packages",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Brand alert level, null if none",
+    "enum": [
+     "Missort Warning",
+     "Missort Alert"
+    ],
+    "items": "",
+    "nullable": true,
+    "path": "current_dwell_alerts[].brand_alert",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Brand alert color, null if none",
+    "enum": [
+     "light red",
+     "bright red"
+    ],
+    "items": "",
+    "nullable": true,
+    "path": "current_dwell_alerts[].brand_color",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Carrier alert, null if none",
+    "enum": [
+     "Possible Misload Alert"
+    ],
+    "items": "",
+    "nullable": true,
+    "path": "current_dwell_alerts[].carrier_alert",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Carrier alert color, null if none",
+    "enum": [
+     "darkest red"
+    ],
+    "items": "",
+    "nullable": true,
+    "path": "current_dwell_alerts[].carrier_color",
+    "required": false,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "appointment_completion": {
+     "description": "Dock appointment counts by color",
+     "properties": {
+      "green": {
+       "description": "Green (Complete) count",
+       "type": "integer"
+      },
+      "grey": {
+       "description": "Grey (Canceled) count",
+       "type": "integer"
+      },
+      "non_compliant": {
+       "description": "Other color (Non-Compliant) count",
+       "type": "integer"
+      },
+      "red": {
+       "description": "Red (No Call/No Show) count",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "green",
+      "red",
+      "grey",
+      "non_compliant"
+     ],
+     "type": "object"
+    },
+    "appointment_escalations": {
+     "description": "Non-Compliant appointments that must be escalated",
+     "items": {
+      "properties": {
+       "category": {
+        "description": "Escalation category",
+        "enum": [
+         "Non-Compliant"
+        ],
+        "type": "string"
+       },
+       "count": {
+        "description": "Number of Non-Compliant appointments",
+        "type": "integer"
+       },
+       "escalate": {
+        "description": "Whether escalation is required",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "category",
+       "count",
+       "escalate"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "current_dwell_alerts": {
+     "description": "Current dwell entries with alert level",
+     "items": {
+      "properties": {
+       "brand_alert": {
+        "description": "Brand alert level, null if none",
+        "enum": [
+         "Missort Warning",
+         "Missort Alert"
+        ],
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "brand_color": {
+        "description": "Brand alert color, null if none",
+        "enum": [
+         "light red",
+         "bright red"
+        ],
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "carrier": {
+        "description": "Carrier",
+        "type": "string"
+       },
+       "carrier_alert": {
+        "description": "Carrier alert, null if none",
+        "enum": [
+         "Possible Misload Alert"
+        ],
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "carrier_color": {
+        "description": "Carrier alert color, null if none",
+        "enum": [
+         "darkest red"
+        ],
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "packages": {
+        "description": "Orders/packages dwelling",
+        "type": "integer"
+       },
+       "shipper": {
+        "description": "Shipper/brand name",
+        "type": "string"
+       },
+       "site": {
+        "description": "Site",
+        "type": "string"
+       }
+      },
+      "required": [
+       "shipper",
+       "carrier",
+       "site",
+       "packages"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "sorter_flags": {
+     "description": "Per-site sorter metrics with flags raised",
+     "items": {
+      "properties": {
+       "fail_rate_flag": {
+        "description": "Fail rate above 5% (action needed)",
+        "type": "boolean"
+       },
+       "fail_rate_pct": {
+        "description": "Fail rate percent",
+        "type": "number"
+       },
+       "flags": {
+        "description": "Human-readable flag messages",
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "prior_day_volume": {
+        "description": "Prior day volume",
+        "type": "number"
+       },
+       "site": {
+        "description": "Site name",
+        "type": "string"
+       },
+       "volume": {
+        "description": "Volume output",
+        "type": "number"
+       },
+       "volume_change_pct": {
+        "description": "Day-over-day volume change percent",
+        "type": "number"
+       },
+       "volume_drop_flag": {
+        "description": "Volume dropped over 15% (divert adjustment may be needed)",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "site",
+       "volume",
+       "prior_day_volume",
+       "fail_rate_pct",
+       "volume_change_pct",
+       "fail_rate_flag",
+       "volume_drop_flag",
+       "flags"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "appointment_completion",
+    "appointment_escalations",
+    "sorter_flags",
+    "current_dwell_alerts"
+   ],
+   "type": "object"
+  }
+ },
+ "open_dwell_filter": {
+  "description": "Filters the dwell ticket log to rows whose Open/Closed column is \"Open\", reports each ticket's details, and flags missort and misload thresholds.",
+  "output_fields": [
+   {
+    "description": "Open dwell tickets, one per open row",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "open_dwell_tickets",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Ticket date",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].date",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Facility of the ticket",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].facility",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Number of packages",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].packages",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Client impact text",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].client_impact",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Carrier impact text",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].carrier_impact",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Issue description",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "open_dwell_tickets[].issue_description",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Number of open dwell tickets",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "open_ticket_count",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Threshold flags raised on open tickets",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "dwell_ticket_flags",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Date of the flagged ticket",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "dwell_ticket_flags[].date",
+    "required": false,
+    "type": "string"
+   },
+   {
+    "description": "Facility of the flagged ticket",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "dwell_ticket_flags[].facility",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Flag name raised",
+    "enum": [
+     "Missort Warning",
+     "Missort Alert",
+     "Possible Misload Alert"
+    ],
+    "items": "",
+    "nullable": false,
+    "path": "dwell_ticket_flags[].flag",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Package or carrier count that triggered the flag",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "dwell_ticket_flags[].value",
+    "required": true,
+    "type": "integer"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "dwell_ticket_flags": {
+     "description": "Threshold flags raised on open tickets",
+     "items": {
+      "properties": {
+       "date": {
+        "description": "Date of the flagged ticket",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "facility": {
+        "description": "Facility of the flagged ticket",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "flag": {
+        "description": "Flag name raised",
+        "enum": [
+         "Missort Warning",
+         "Missort Alert",
+         "Possible Misload Alert"
+        ],
+        "type": "string"
+       },
+       "value": {
+        "description": "Package or carrier count that triggered the flag",
+        "type": "integer"
+       }
+      },
+      "required": [
+       "facility",
+       "flag",
+       "value"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "open_dwell_tickets": {
+     "description": "Open dwell tickets, one per open row",
+     "items": {
+      "properties": {
+       "carrier_impact": {
+        "description": "Carrier impact text",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "client_impact": {
+        "description": "Client impact text",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "date": {
+        "description": "Ticket date",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "facility": {
+        "description": "Facility of the ticket",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "issue_description": {
+        "description": "Issue description",
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "packages": {
+        "description": "Number of packages",
+        "type": [
+         "integer",
+         "null"
+        ]
+       }
+      },
+      "required": [
+       "date",
+       "facility",
+       "packages",
+       "client_impact",
+       "carrier_impact",
+       "issue_description"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "open_ticket_count": {
+     "description": "Number of open dwell tickets",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "open_dwell_tickets",
+    "open_ticket_count",
+    "dwell_ticket_flags"
+   ],
+   "type": "object"
+  }
+ },
+ "open_dwell_read": {
+  "description": "Reads the dwell ticket log tab \"Dwell Log - Form Responses\" from Google Drive and returns its content as CSV text.",
+  "output_fields": [
+   {
+    "description": "CSV text of the Dwell Log tab, header row first, including the Open/Closed column",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "",
+    "required": true,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "description": "CSV text of the Dwell Log tab, header row first, including the Open/Closed column",
+   "type": "string"
+  }
+ },
+ "shipment_containers_read": {
+  "description": "Reads the shipment containers spreadsheet from Google Drive and returns its first tab (the facility summary table with a COMPLETION % column) as CSV text.",
+  "output_fields": [
+   {
+    "description": "CSV text of the sheet, inferred from the tool returning file content as text",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "",
+    "required": true,
+    "type": "string"
+   }
+  ],
+  "output_schema": {
+   "description": "CSV text of the sheet, inferred from the tool returning file content as text",
+   "type": "string"
+  }
+ },
+ "shipment_containers_summary": {
+  "description": "Parses the shipment container facility summary into per-site active, loaded, staged, shipped counts and completion %, and flags sites below the completion threshold.",
+  "output_fields": [
+   {
+    "description": "Container flow rows, one per site",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "site_container_flow",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Site name",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].site",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Active container count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].active",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Loaded container count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].loaded",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Staged container count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].staged",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Shipped container count",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].shipped",
+    "required": true,
+    "type": "integer"
+   },
+   {
+    "description": "Completion percent for the site",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].completion_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "True when completion is below the flag threshold",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "site_container_flow[].below_threshold",
+    "required": true,
+    "type": "boolean"
+   },
+   {
+    "description": "Week-over-week completion change, if available",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "site_container_flow[].wow_trend",
+    "required": false,
+    "type": "number"
+   },
+   {
+    "description": "Sites with completion below 75%",
+    "enum": [],
+    "items": "object",
+    "nullable": false,
+    "path": "low_completion_sites",
+    "required": true,
+    "type": "array"
+   },
+   {
+    "description": "Flagged site name",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "low_completion_sites[].site",
+    "required": true,
+    "type": "string"
+   },
+   {
+    "description": "Completion percent of flagged site",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "low_completion_sites[].completion_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Average completion % across sites for the KPI header; null if no sites",
+    "enum": [],
+    "items": "",
+    "nullable": true,
+    "path": "average_completion_pct",
+    "required": true,
+    "type": "number"
+   },
+   {
+    "description": "Number of sites in the table, for the Active sites KPI",
+    "enum": [],
+    "items": "",
+    "nullable": false,
+    "path": "active_site_count",
+    "required": true,
+    "type": "integer"
+   }
+  ],
+  "output_schema": {
+   "properties": {
+    "active_site_count": {
+     "description": "Number of sites in the table, for the Active sites KPI",
+     "type": "integer"
+    },
+    "average_completion_pct": {
+     "description": "Average completion % across sites for the KPI header; null if no sites",
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "low_completion_sites": {
+     "description": "Sites with completion below 75%",
+     "items": {
+      "properties": {
+       "completion_pct": {
+        "description": "Completion percent of flagged site",
+        "type": "number"
+       },
+       "site": {
+        "description": "Flagged site name",
+        "type": "string"
+       }
+      },
+      "required": [
+       "site",
+       "completion_pct"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "site_container_flow": {
+     "description": "Container flow rows, one per site",
+     "items": {
+      "properties": {
+       "active": {
+        "description": "Active container count",
+        "type": "integer"
+       },
+       "below_threshold": {
+        "description": "True when completion is below the flag threshold",
+        "type": "boolean"
+       },
+       "completion_pct": {
+        "description": "Completion percent for the site",
+        "type": "number"
+       },
+       "loaded": {
+        "description": "Loaded container count",
+        "type": "integer"
+       },
+       "shipped": {
+        "description": "Shipped container count",
+        "type": "integer"
+       },
+       "site": {
+        "description": "Site name",
+        "type": "string"
+       },
+       "staged": {
+        "description": "Staged container count",
+        "type": "integer"
+       },
+       "wow_trend": {
+        "description": "Week-over-week completion change, if available",
+        "type": [
+         "number",
+         "null"
+        ]
+       }
+      },
+      "required": [
+       "site",
+       "active",
+       "loaded",
+       "staged",
+       "shipped",
+       "completion_pct",
+       "below_threshold"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "site_container_flow",
+    "low_completion_sites",
+    "average_completion_pct",
+    "active_site_count"
+   ],
+   "type": "object"
+  }
+ }
+}

@@ -1,0 +1,12 @@
+[
+ {
+  "server": "gmail",
+  "tool": "search_threads",
+  "output_schema": null
+ },
+ {
+  "server": "google_drive",
+  "tool": "read_file_content",
+  "output_schema": null
+ }
+]

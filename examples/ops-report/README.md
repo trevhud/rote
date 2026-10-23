@@ -36,8 +36,17 @@ examples/ops-report/
 │   ├── sample-input.json  # the sample run `rote compile` grounds its contracts in
 │   └── mcp-tools.json     # Gmail's and Drive's tools/list, which grounds its tool arguments
 ├── fidelity/              # the bench's fidelity cases and recorded skill runs
-└── expected/pipeline.yaml # the compiled IR (regression baseline)
+├── expected/pipeline.yaml # the compiled IR (regression baseline)
+└── runs/                  # real `rote compile` outputs, oldest first
 ```
+
+`runs/2026-10-23-system1/` is the current compile: it runs both fidelity
+cases on their fixtures (`tests/test_bench_fidelity.py` checks it). The
+older runs are records of what earlier compilers wrote and do not all run.
+`runs/2026-10-18-implements-pure-functions/`, for one, predates
+tool-result grounding: it reads `fetch_*.output.content`, but the Drive
+tool returns the CSV itself as text, so every run dies with a `TypeError`
+before the gate.
 
 ## Try it
 
