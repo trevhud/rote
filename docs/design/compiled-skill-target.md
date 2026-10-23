@@ -675,6 +675,9 @@ number:
   and facility but drops its ID, so `open_ticket_alerts` reads
   `EAST1 2026-10-18` where the original reads `DW-101`. The DBOS runtime
   from the same compile runs the same module and loses the same field.
+  The two extra outstanding requests (`PO-4471`, `PO-4462`) come from the
+  compile's `dock_email_summary` too, also identical in the DBOS runtime. It
+  lists every request thread and never matches one to its later approval.
 - **Cost from a single run is noise.** The same compiled docs-digest run
   cost $0.092 cold and $0.043 warm. The eval reports means over trials
   with the cache state recorded.
