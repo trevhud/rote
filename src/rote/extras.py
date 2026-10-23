@@ -69,11 +69,13 @@ class Extra:
     #: The top-level module it brings. A ``ModuleNotFoundError`` naming it
     #: is translated into this extra's install hint.
     module: str
-    #: Set when :attr:`module` is importable without the extra, so only the
-    #: distribution proves it is installed. fastmcp: the slim client is a
-    #: base dependency and imports as ``fastmcp`` too; the serve extra is
-    #: the full ``fastmcp`` distribution, which adds the server half.
-    distribution: str | None = None
+    #: Set when :attr:`module` is importable without the extra, as
+    #: ``(distribution, its extra)``: the extra is installed when every
+    #: requirement of that extra of that distribution is. fastmcp: the slim
+    #: client is a base dependency and imports as ``fastmcp`` too, and the
+    #: server half is ``fastmcp-slim[server]``, whether it came from the
+    #: full ``fastmcp`` (the serve extra) or ``fastmcp-slim[client,server]``.
+    requires_extra_of: tuple[str, str] | None = None
 
 
 #: Optional extra name -> what proves it is installed. Kept in step with
@@ -81,7 +83,11 @@ class Extra:
 EXTRAS: dict[str, Extra] = {
     "dbos": Extra("the dbos runtime (rote run, rote serve's dbos backend)", "dbos"),
     "temporal": Extra("the temporal runtime (rote run's local worker)", "temporalio"),
-    "serve": Extra("rote serve and the bench's fixture MCP servers", "fastmcp", "fastmcp"),
+    "serve": Extra(
+        "rote serve and the bench's fixture MCP servers",
+        "fastmcp",
+        ("fastmcp-slim", "server"),
+    ),
     "api": Extra("the api compiler driver", "anthropic"),
     "openai-api": Extra("the openai-api compiler driver", "openai"),
 }
@@ -116,7 +122,7 @@ BASE_MODULES: dict[str, BaseDependency] = {
 #: proven by its distribution shares its module with the base install, so a
 #: missing module there is a broken install, not a missing extra.
 _MODULE_TO_EXTRA: dict[str, str] = {
-    extra.module: name for name, extra in EXTRAS.items() if extra.distribution is None
+    extra.module: name for name, extra in EXTRAS.items() if extra.requires_extra_of is None
 }
 
 _MISSING_MODULE_RE = re.compile(r"ModuleNotFoundError: No module named '([A-Za-z0-9_.]+)'")
@@ -128,7 +134,7 @@ class MissingDependencyError(RuntimeError):
 
 # ───────── How this rote was installed ─────────
 
-InstallKind = Literal["uv-tool", "uvx", "pip"]
+InstallKind = Literal["uv-tool", "uvx", "pipx", "pip"]
 
 
 @dataclass(frozen=True)
@@ -141,6 +147,8 @@ class _Context:
     with_requirements: tuple[str, ...] = ()
     #: The interpreter a uv tool was installed with (``--python``), if named.
     python: str | None = None
+    #: The pipx venv's name (``rote-cli``, or with pipx's ``--suffix``).
+    venv: str | None = None
     #: Where rote-cli came from when not PyPI: an editable checkout's path
     #: (``editable``) or any other direct URL (``other``).
     source: tuple[Literal["editable", "other"], str] | None = None
@@ -186,10 +194,40 @@ def _install_context() -> _Context:
             else:
                 withs.append(simple)
         python = tool.get("python") if isinstance(tool.get("python"), str) else None
-        return _Context("uv-tool", existing, tuple(withs), python, source)
+        return _Context("uv-tool", existing, tuple(withs), python, source=source)
     if any(part.startswith("archive-v") for part in prefix.parts):
         return _Context("uvx")
+    pipx_metadata = prefix / "pipx_metadata.json"
+    if pipx_metadata.is_file():
+        return _pipx_context(pipx_metadata)
     return _Context("pip", source=_direct_url_source())
+
+
+#: A pipx main package recorded as a plain requirement on rote-cli.
+_PIPX_SPEC_RE = re.compile(
+    rf"^\s*{re.escape(DISTRIBUTION)}\s*(?:\[([A-Za-z0-9_,\s-]*)\])?\s*(?:[<>=!~].*)?$"
+)
+
+
+def _pipx_context(path: Any) -> _Context:
+    """A pipx venv: ``pipx_metadata.json`` records the main package as the
+    requirement pipx installed (``rote-cli[temporal]==0.16.0`` after an
+    inject of the app's own extra), so its extras are what to keep."""
+    import json
+
+    venv = path.parent.name
+    try:
+        main = json.loads(path.read_text(encoding="utf-8"))["main_package"]
+        recorded = str(main["package_or_url"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return _Context("pipx", venv=venv, source=("other", "an unreadable pipx_metadata.json"))
+    match = _PIPX_SPEC_RE.match(recorded)
+    if match is None:
+        return _Context("pipx", venv=venv, source=("other", recorded))
+    existing = tuple(
+        e.strip() for e in (match.group(1) or "").split(",") if e.strip() not in ("", *ALIAS_EXTRAS)
+    )
+    return _Context("pipx", existing, venv=venv)
 
 
 def _simple_requirement(requirement: dict[str, Any]) -> str | None:
@@ -308,6 +346,24 @@ def installer(extras: Iterable[str] = (), *, reinstall: bool = False) -> Install
         if uv is None:
             return Installer(hint, None, "uv is not on PATH")
         return Installer(hint, (uv, *words))
+    if ctx.kind == "pipx":
+        # `pipx inject <venv> 'rote-cli[extra]'` installs into the app's own
+        # venv and rewrites the main package's record to the new
+        # requirement (checked against pipx 1.11 and 1.18), so a later
+        # `pipx reinstall` keeps the extra. Plain pip in the venv would work
+        # once and be lost on that reinstall.
+        venv = ctx.venv or DISTRIBUTION
+        if reinstall:
+            words = ["reinstall", venv]
+        else:
+            words = ["inject", venv, spec((*ctx.existing, *wanted))]
+        hint = _join(["pipx", *words])
+        if ctx.source is not None:
+            return Installer(hint, None, f"this pipx app was installed from {ctx.source[1]}")
+        pipx = shutil.which("pipx")
+        if pipx is None:
+            return Installer(hint, None, "pipx is not on PATH")
+        return Installer(hint, (pipx, *words))
 
     # pip-style environment.
     if ctx.source is not None and ctx.source[0] == "editable":
@@ -317,15 +373,25 @@ def installer(extras: Iterable[str] = (), *, reinstall: bool = False) -> Install
         target = ["-e", f"{ctx.source[1]}[{names}]" if names else ctx.source[1]]
     else:
         target = [spec(wanted)]
-    hint = _join(["pip", "install", *target])
+    pip_hint = _join(["pip", "install", *target])
     if ctx.source is not None and ctx.source[0] == "other":
-        return Installer(hint, None, f"rote-cli was installed from {ctx.source[1]}, not PyPI")
-    if importlib.util.find_spec("pip") is not None:
-        return Installer(hint, (sys.executable, "-m", "pip", "install", *target))
+        return Installer(pip_hint, None, f"rote-cli was installed from {ctx.source[1]}, not PyPI")
+    if _has_pip():
+        return Installer(pip_hint, (sys.executable, "-m", "pip", "install", *target))
+    # A venv uv made has no pip, so `pip install` would reach some other
+    # environment's pip: the hint is the command that targets this one.
+    words = ["pip", "install", "--python", sys.executable, *target]
     uv = shutil.which("uv")
     if uv is not None:
-        return Installer(hint, (uv, "pip", "install", "--python", sys.executable, *target))
-    return Installer(hint, None, "this environment has no pip, and uv is not on PATH")
+        return Installer(_join(["uv", *words]), (uv, *words))
+    return Installer(
+        _join(["uv", *words]), None, "this environment has no pip, and uv is not on PATH"
+    )
+
+
+def _has_pip() -> bool:
+    """Whether this interpreter has pip (a venv ``uv venv`` made does not)."""
+    return importlib.util.find_spec("pip") is not None
 
 
 def _quote(word: str) -> str:
@@ -377,14 +443,40 @@ def module_is_importable(module: str) -> bool:
 def is_installed(extra: str) -> bool:
     """Whether optional ``extra`` is installed, without importing it."""
     spec = EXTRAS[extra]
-    if spec.distribution is None:
+    if spec.requires_extra_of is None:
         return module_is_importable(spec.module)
-    from importlib.metadata import PackageNotFoundError, distribution
+    return _extra_requirements_installed(*spec.requires_extra_of)
+
+
+def _extra_requirements_installed(dist: str, extra: str) -> bool:
+    """Whether every requirement of ``dist``'s ``extra`` is installed, read
+    from ``dist``'s metadata (no import). A requirement gated on more than
+    the extra (``beartype; python_version >= "3.15" and extra == ...``) is
+    not checked: evaluating its marker needs ``packaging``, which is not in
+    the standard library."""
+    from importlib.metadata import PackageNotFoundError, distribution, requires
 
     try:
-        distribution(spec.distribution)
+        requirements = requires(dist) or []
     except PackageNotFoundError:
         return False
+    names: list[str] = []
+    gate = re.compile(rf"""extra\s*==\s*["']{re.escape(extra)}["']""")
+    for requirement in requirements:
+        req, _, marker = requirement.partition(";")
+        if not gate.search(marker):
+            continue
+        rest = gate.sub("", marker).replace("and", " ").strip(" ()")
+        if rest:
+            continue
+        names.append(re.split(r"[<>=!~\[ (]", req.strip(), maxsplit=1)[0])
+    if not names:
+        return False
+    for name in names:
+        try:
+            distribution(name)
+        except PackageNotFoundError:
+            return False
     return True
 
 

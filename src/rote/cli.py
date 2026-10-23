@@ -208,6 +208,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     args.runtime = runtime_rv.value or "dbos"
+    _note_missing_runtime_extra("emit", args.runtime)
 
     try:
         pipeline = load_pipeline(pipeline_path)
@@ -667,11 +668,22 @@ def _no_mcp_driver(agent: str | None) -> str:
     return agent
 
 
+def _note_missing_runtime_extra(command: str, runtime: str | None) -> None:
+    """One stderr line when ``runtime``'s extra is missing, for a command
+    that only writes the runtime's code (compile, emit, init): it does its
+    work without the extra, so it neither asks nor stops."""
+    from rote.setup.install_extra import missing_extra_note
+
+    note = missing_extra_note(runtime)
+    if note is not None:
+        print(f"rote {command}: note: {note}", file=sys.stderr)
+
+
 def _ensure_runtime_extra(
-    args: argparse.Namespace, runtime: str | None, purpose: str, *, optional: bool
+    args: argparse.Namespace, runtime: str | None, purpose: str
 ) -> int | None:
-    """Offer to install ``runtime``'s extra when it is missing
-    (:func:`rote.setup.install_extra.ensure_extra`).
+    """Offer to install ``runtime``'s extra when it is missing, for a
+    command that runs the runtime (:func:`rote.setup.install_extra.ensure_extra`).
 
     None means go on; an int is the exit code to return. Reads the
     command's ``--json`` / ``--yes`` / ``--agent-mode`` when it has them."""
@@ -694,7 +706,7 @@ def _ensure_runtime_extra(
         print(f"error: {e}", file=sys.stderr)
         return 2
     argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
-    return ensure_extra(extra, purpose, mode=mode, out=Output(mode), argv=argv, optional=optional)
+    return ensure_extra(extra, purpose, mode=mode, out=Output(mode), argv=argv)
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
@@ -894,12 +906,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # The runtime's extra (dbos, temporal), offered before the agent spends
-    # money. Emitting needs none of it, so a person who declines still gets
-    # the compile; `rote run` on the result asks again.
-    code = _ensure_runtime_extra(args, args.runtime, f"the {args.runtime} runtime", optional=True)
-    if code is not None:
-        return code
+    # Emitting needs none of the runtime's extra, so a missing one is a
+    # note, never a stop: `rote run` on the result offers the install.
+    _note_missing_runtime_extra("compile", args.runtime)
 
     out_dir = Path(args.out)
     compiled_dir = out_dir / "compiled"
@@ -3979,9 +3988,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # that cannot start should say so before asking for anything. A
         # missing runtime extra is offered as an install first; preflight
         # still refuses one that stayed missing.
-        code = _ensure_runtime_extra(
-            args, target.runtime, f"running a {target.runtime} app", optional=False
-        )
+        code = _ensure_runtime_extra(args, target.runtime, f"running a {target.runtime} app")
         if code is not None:
             return code
         preflight_pipeline(target, allow_stubs=args.allow_stubs)

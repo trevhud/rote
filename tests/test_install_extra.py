@@ -11,7 +11,6 @@ command and makes the module importable (conftest forbids a real install).
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import shlex
 import sys
@@ -24,8 +23,6 @@ import rote.setup.install_extra as install_extra
 from rote import __version__
 from rote.cli import main as cli_main
 from rote.extras import EXTRAS, installer
-from rote.interact.mode import Mode
-from rote.interact.output import Output
 from rote.interact.prompter import Answer, ScriptedPrompter
 
 UV = "/opt/fake/bin/uv"
@@ -55,17 +52,6 @@ class FakeInstaller:
             self.missing.clear()
 
 
-@pytest.fixture
-def pip_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A plain venv with pip: the installer is this interpreter's pip."""
-    real_find_spec = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name, *a: object() if name == "pip" else real_find_spec(name, *a),
-    )
-
-
 def _pip(extra: str) -> tuple[str, ...]:
     return (sys.executable, "-m", "pip", "install", f"rote-cli[{extra}]=={__version__}")
 
@@ -83,7 +69,6 @@ def _dbos_app(tmp_path: Path) -> Path:
 
 def test_run_without_yes_shows_the_plan_and_installs_nothing(
     tmp_path: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -119,7 +104,6 @@ def test_run_without_yes_shows_the_plan_and_installs_nothing(
 
 def test_run_with_yes_installs_then_goes_on(
     tmp_path: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -145,7 +129,6 @@ def test_run_with_yes_installs_then_goes_on(
 
 def test_an_install_that_does_not_land_is_a_failure(
     tmp_path: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -168,7 +151,6 @@ def test_an_install_that_does_not_land_is_a_failure(
 
 def test_a_person_who_declines_a_run_install_stops_the_run(
     tmp_path: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -203,7 +185,7 @@ def test_an_installed_extra_asks_nothing(
     assert capsys.readouterr().err.strip() == "error: reached preflight"
 
 
-# ───────── rote compile ─────────
+# ───────── compile, emit, init: a note, never a stop ─────────
 
 
 def _skill(tmp_path: Path) -> Path:
@@ -213,54 +195,58 @@ def _skill(tmp_path: Path) -> Path:
     return skill
 
 
-def test_compile_asks_before_the_agent_spends_anything(
+class _ReachedCompiler(BaseException):
+    """Raised from Compiler.__init__: the compile went on to the compiler."""
+
+
+def _note(command: str, runtime: str, extra: str) -> str:
+    return (
+        f"rote {command}: note: running {runtime} apps needs the {extra} extra, which this "
+        "install lacks; `rote run` offers to install it, or: "
+        f"pip install 'rote-cli[{extra}]=={__version__}'"
+    )
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_compile_never_stops_for_a_missing_runtime_extra(
+    missing: bool,
     tmp_path: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    fake = FakeInstaller(monkeypatch, "temporalio")
+    """Emitting temporal code needs no temporalio. `compile --json` without
+    --yes once exited 2 over it; now it reaches the compiler with a note,
+    and with the extra installed it says nothing about it."""
+    fake = FakeInstaller(monkeypatch, *(["temporalio"] if missing else []))
 
-    def no_compile(*a: object, **k: object) -> None:
-        raise AssertionError("the compiler ran before the install was confirmed")
+    def reached(*a: object, **k: object) -> None:
+        raise _ReachedCompiler
 
-    monkeypatch.setattr("rote.compiler.Compiler.__init__", no_compile)
-    skill = _skill(tmp_path)
-    out = tmp_path / "out"
-    argv = ["compile", str(skill), "--local", "--runtime", "temporal", "--out", str(out), "--json"]
-    rc = cli_main(argv)
-    assert rc == 2
+    monkeypatch.setattr("rote.compiler.Compiler.__init__", reached)
+    argv = ["compile", str(_skill(tmp_path)), "--local", "--runtime", "temporal"]
+    with pytest.raises(_ReachedCompiler):
+        cli_main([*argv, "--out", str(tmp_path / "out"), "--json"])
+    err = capsys.readouterr().err
     assert fake.calls == []
-    assert not out.exists()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "confirmation_required"
-    assert payload["next"] == [{"command": shlex.join(["rote", *argv, "--yes"])}]
-    assert payload["plan"]["title"] == "Install the temporal extra: the temporal runtime needs it"
+    assert "Plan:" not in err
+    assert (_note("compile", "temporal", "temporal") in err.splitlines()) is missing
 
 
-def test_a_declined_compile_install_still_compiles(
-    pip_env: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("missing", [True, False])
+def test_emit_notes_a_missing_extra_and_succeeds(
+    missing: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Emitting temporal code needs no temporalio, so a person who says no
-    gets the compile; ensure_extra says go on."""
-    fake = FakeInstaller(monkeypatch, "temporalio")
-    err = io.StringIO()
-    mode = Mode.resolve(env={}, stdin=io.StringIO(), stdout=io.StringIO(), stderr=err)
-    prompter = ScriptedPrompter([Answer("confirm", "--yes", False)])
-    monkeypatch.setattr("rote.interact.prompter.prompter_for", lambda m: prompter)
-    out = Output(mode, stdout=io.StringIO(), stderr=err)
-    code = install_extra.ensure_extra(
-        "temporal", "the temporal runtime", mode=mode, out=out, argv=[], optional=True
-    )
-    assert code is None
+    fake = FakeInstaller(monkeypatch, *(["dbos"] if missing else []))
+    pipeline = Path(__file__).parent.parent / "examples/expense-audit/expected/pipeline.yaml"
+    rc = cli_main(["emit", str(pipeline), "--runtime", "dbos", "--out", str(tmp_path / "app")])
+    assert rc == 0
     assert fake.calls == []
-    assert err.getvalue().strip().splitlines()[-1] == (
-        "not installed; going on. Running the result needs it: "
-        f"pip install 'rote-cli[temporal]=={__version__}'"
-    )
+    assert (tmp_path / "app" / "main.py").is_file()
+    assert (_note("emit", "dbos", "dbos") in capsys.readouterr().err.splitlines()) is missing
 
-
-# ───────── rote init ─────────
 
 _INIT_FLAGS = [
     "--deploy",
@@ -292,59 +278,51 @@ def init_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return config
 
 
-def test_init_puts_the_install_in_the_same_plan(
+@pytest.mark.parametrize("missing", [True, False])
+def test_init_saves_the_default_and_only_notes_the_extra(
+    missing: bool,
     init_env: Path,
-    pip_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    fake = FakeInstaller(monkeypatch, "temporalio")
-    rc = cli_main(["init", *_INIT_FLAGS, "--json"])
-    assert rc == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert [a["id"] for a in payload["plan"]["actions"]] == ["write-config", "install-temporal"]
-    assert fake.calls == []
-    assert not init_env.exists()
-
+    fake = FakeInstaller(monkeypatch, *(["temporalio"] if missing else []))
     rc = cli_main(["init", *_INIT_FLAGS, "--json", "--yes"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert fake.calls == [_pip("temporal")]
+    assert fake.calls == []
     assert init_env.exists()
-    assert [(o["id"], o["status"]) for o in payload["outcomes"]] == [
-        ("write-config", "done"),
-        ("install-temporal", "done"),
-    ]
-
-
-def test_init_plans_no_install_when_the_extra_is_there(
-    init_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    FakeInstaller(monkeypatch)
-    assert cli_main(["init", *_INIT_FLAGS, "--json"]) == 2
-    payload = json.loads(capsys.readouterr().out)
     assert [a["id"] for a in payload["plan"]["actions"]] == ["write-config"]
+    note = (
+        "running temporal apps needs the temporal extra, which this install lacks; "
+        f"`rote run` offers to install it, or: pip install 'rote-cli[temporal]=={__version__}'"
+    )
+    assert payload["plan"]["notes"] == ([note] if missing else [])
 
 
 # ───────── rote serve ─────────
+
+
+def _without_distribution(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    import importlib.metadata
+
+    real = importlib.metadata.distribution
+
+    def distribution(name: str) -> importlib.metadata.Distribution:
+        if name in names:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
 
 
 def test_serve_on_the_slim_client_names_the_serve_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The base install's fastmcp is the slim client: it imports as
-    ``fastmcp`` but cannot serve. ``rote serve`` never prompts (stdio is
-    the MCP transport), so it names the fix."""
-    import importlib.metadata
-
-    real = importlib.metadata.distribution
-
-    def slim_only(name: str) -> importlib.metadata.Distribution:
-        if name == "fastmcp":
-            raise importlib.metadata.PackageNotFoundError(name)
-        return real(name)
-
-    monkeypatch.setattr(importlib.metadata, "distribution", slim_only)
+    ``fastmcp`` but cannot serve (cyclopts is one of the server half's
+    requirements). ``rote serve`` never prompts (stdio is the MCP
+    transport), so it names the fix."""
+    _without_distribution(monkeypatch, "fastmcp", "cyclopts")
     assert cli_main(["serve"]) == 2
     assert capsys.readouterr().err.strip() == (
         "error: rote serve needs the serve extra (fastmcp's server half): "
@@ -352,13 +330,19 @@ def test_serve_on_the_slim_client_names_the_serve_extra(
     )
 
 
-def test_serve_extra_is_proven_by_the_full_distribution() -> None:
-    """The dev environment has full fastmcp, so serve reads installed; the
-    marker is the distribution, not the shared ``fastmcp`` module."""
+def test_serve_accepts_the_slim_server_extra_without_full_fastmcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fastmcp-slim[client,server]`` serves as well as full fastmcp: the
+    check reads the server half's requirements, not one distribution name."""
     from rote.extras import is_installed
 
-    assert EXTRAS["serve"].distribution == "fastmcp"
+    assert EXTRAS["serve"].requires_extra_of == ("fastmcp-slim", "server")
     assert is_installed("serve") is True
+    _without_distribution(monkeypatch, "fastmcp")
+    assert is_installed("serve") is True
+    _without_distribution(monkeypatch, "fastmcp", "joserfc")
+    assert is_installed("serve") is False
 
 
 # ───────── the installer, per install method ─────────
@@ -462,22 +446,113 @@ def test_uvx_turns_the_plan_into_the_hint(
 def test_a_venv_without_pip_uses_uv_pip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_uv: None
 ) -> None:
-    """`uv venv` makes environments without pip."""
+    """`uv venv` makes environments without pip, where a bare `pip install`
+    reaches some other environment's pip: the hint is the runnable uv form."""
     monkeypatch.setattr("sys.prefix", str(tmp_path / "venv"))
-    real_find_spec = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name, *a: None if name == "pip" else real_find_spec(name, *a),
-    )
+    monkeypatch.setattr("rote.extras._has_pip", lambda: False)
     found = installer(["dbos"])
     spec = f"rote-cli[dbos]=={__version__}"
     assert found.argv == (UV, "pip", "install", "--python", sys.executable, spec)
-    assert found.hint == f"pip install '{spec}'"
+    assert found.hint == f"uv pip install --python {shlex.quote(sys.executable)} '{spec}'"
+
+
+def test_the_pip_check_reads_this_interpreter() -> None:
+    """conftest pins ``_has_pip`` for every other test; the real check is
+    find_spec on this interpreter."""
+    from tests.conftest import REAL_HAS_PIP
+
+    assert REAL_HAS_PIP() is (importlib.util.find_spec("pip") is not None)
+
+
+def _pipx_venv(tmp_path: Path, recorded: str, name: str = "rote-cli") -> Path:
+    venv = tmp_path / "pipx" / "venvs" / name
+    venv.mkdir(parents=True)
+    (venv / "pipx_metadata.json").write_text(
+        json.dumps({"main_package": {"package_or_url": recorded}, "pipx_metadata_version": "0.5"}),
+        encoding="utf-8",
+    )
+    return venv
+
+
+@pytest.fixture
+def fake_pipx(monkeypatch: pytest.MonkeyPatch) -> str:
+    import shutil
+
+    pipx = "/opt/fake/bin/pipx"
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which", lambda cmd, *a, **k: pipx if cmd == "pipx" else real_which(cmd, *a, **k)
+    )
+    return pipx
+
+
+def test_pipx_injects_the_apps_own_extra_keeping_the_recorded_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pipx: str
+) -> None:
+    """`pipx inject rote-cli 'rote-cli[...]'` rewrites the main package's
+    record (checked on pipx 1.11 and 1.18), so the extras already recorded
+    are carried, or a later `pipx reinstall` would drop them."""
+    venv = _pipx_venv(tmp_path, "rote-cli[temporal, mcp]==0.1", name="rote-cli-dev")
+    monkeypatch.setattr("sys.prefix", str(venv))
+    found = installer(["dbos"])
+    spec = f"rote-cli[dbos,temporal]=={__version__}"
+    assert found.argv == (fake_pipx, "inject", "rote-cli-dev", spec)
+    assert found.hint == f"pipx inject rote-cli-dev '{spec}'"
+    assert installer(reinstall=True).hint == "pipx reinstall rote-cli-dev"
+
+
+def test_pipx_from_a_path_is_never_replaced_from_pypi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pipx: str
+) -> None:
+    monkeypatch.setattr("sys.prefix", str(_pipx_venv(tmp_path, "/src/rote")))
+    found = installer(["dbos"])
+    assert found.argv is None
+    assert found.why_not == "this pipx app was installed from /src/rote"
+
+
+def test_pipx_run_installs_through_pipx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pipx: str
+) -> None:
+    from rote.runners import TargetError
+
+    monkeypatch.setattr("sys.prefix", str(_pipx_venv(tmp_path, "rote-cli==0.1")))
+    fake = FakeInstaller(monkeypatch, "dbos")
+
+    def preflight(target: object, **_: object) -> None:
+        raise TargetError("reached preflight")
+
+    monkeypatch.setattr("rote.runners.preflight_pipeline", preflight)
+    assert cli_main(["run", str(_dbos_app(tmp_path)), "--input", "{}", "--yes"]) == 2
+    assert fake.calls == [(fake_pipx, "inject", "rote-cli", f"rote-cli[dbos]=={__version__}")]
+
+
+def test_a_with_requirement_keeps_its_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_uv: None
+) -> None:
+    """Re-running `uv tool install` replaces the requirements, so a marker
+    dropped from a --with package would install it on every platform."""
+    tool = _receipt(
+        tmp_path,
+        "[tool]\n"
+        'requirements = [{ name = "rote-cli" }, { name = "rich-click", '
+        """marker = "sys_platform == 'darwin'", specifier = ">=1.8" }]\n""",
+    )
+    monkeypatch.setattr("sys.prefix", str(tool))
+    found = installer(["dbos"])
+    marked = "rich-click>=1.8; sys_platform == 'darwin'"
+    assert found.argv == (
+        UV,
+        "tool",
+        "install",
+        f"rote-cli[dbos]=={__version__}",
+        "--with",
+        marked,
+    )
+    assert found.hint.endswith(f"--with {shlex.quote(marked)}")
 
 
 def test_an_editable_checkout_installs_its_own_extra(
-    tmp_path: Path, pip_env: None, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """From PyPI, the released wheel would replace the checkout."""
     monkeypatch.setattr("sys.prefix", str(tmp_path / "venv"))

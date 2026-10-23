@@ -481,7 +481,7 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
     real = importlib.metadata.distribution
 
     def slim_only(name: str) -> importlib.metadata.Distribution:
-        if name == "fastmcp":
+        if name in ("fastmcp", "cyclopts"):  # the slim client: no server half
             raise importlib.metadata.PackageNotFoundError(name)
         return real(name)
 

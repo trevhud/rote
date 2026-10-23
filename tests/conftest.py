@@ -281,15 +281,17 @@ def _no_inference_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
 #: rote.extras' real ``direct_url.json`` reader, before the fixture below
 #: hides it (tests/test_install_extra.py checks it against this checkout).
 REAL_DIRECT_URL_SOURCE = rote_extras._direct_url_source
+REAL_HAS_PIP = rote_extras._has_pip
 
 
 @pytest.fixture(autouse=True)
 def _released_install_and_no_installs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests see rote as a user does, and never install a package.
 
-    The suite runs from an editable checkout, so ``rote.extras`` would
-    derive ``pip install -e <checkout>[...]`` hints. Tests assert the hints
-    a PyPI install prints, so the checkout's ``direct_url.json`` is hidden
+    The suite runs from an editable checkout in a uv venv without pip, so
+    ``rote.extras`` would derive ``uv pip install -e <checkout>[...]``
+    hints. Tests assert the hints a PyPI install in a pip venv prints, so
+    the checkout's ``direct_url.json`` and pip's absence are hidden
     (the uv-tool and uvx contexts come from ``sys.prefix`` and stay
     testable). And no test may run an installer: one that approves an
     install plan would otherwise change the suite's own environment. A test
@@ -298,6 +300,8 @@ def _released_install_and_no_installs(monkeypatch: pytest.MonkeyPatch) -> None:
     import rote.setup.install_extra
 
     monkeypatch.setattr(rote_extras, "_direct_url_source", lambda: None)
+    # The suite's venv is uv's, without pip; a user's venv usually has it.
+    monkeypatch.setattr(rote_extras, "_has_pip", lambda: True)
 
     def _no_installs(argv: object) -> None:
         raise AssertionError(f"a test tried to install packages: {argv!r}")

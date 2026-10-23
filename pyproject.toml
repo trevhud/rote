@@ -95,9 +95,9 @@ openai-api = [
 ]
 # The workflow runtimes rote runs in its own environment are extras: a
 # user who picks temporal should not download dbos, and the other way
-# round. Picking one whose extra is missing (`rote compile --runtime dbos`,
-# `rote init`, `rote run` on a dbos app) offers to install it, as a plan
-# the user confirms (rote.setup.install_extra).
+# round. Running an app whose extra is missing (`rote run` on a dbos app)
+# offers to install it, as a plan the user confirms
+# (rote.setup.install_extra); compile, emit and init only print the hint.
 dbos = [
     "dbos>=3.3,<4",
 ]

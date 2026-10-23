@@ -97,11 +97,22 @@ def test_every_known_extra_exists_in_pyproject() -> None:
     assert {alias: optional[alias] for alias in ALIAS_EXTRAS} == {a: [] for a in ALIAS_EXTRAS}
     base = {re.split(r"[<>=!~\[ ]", d, maxsplit=1)[0] for d in pyproject["project"]["dependencies"]}
     assert {dep.distribution for dep in BASE_MODULES.values()} <= base
-    # An extra proven by its distribution must require that distribution.
+    # An extra proven by another distribution's extra must install that
+    # extra: serve's full fastmcp requires fastmcp-slim[...server...].
+    from importlib.metadata import requires
+
     for name, extra in EXTRAS.items():
-        if extra.distribution is not None:
-            names = {re.split(r"[<>=!~\[ ]", d, maxsplit=1)[0] for d in optional[name]}
-            assert extra.distribution in names, name
+        if extra.requires_extra_of is None:
+            continue
+        dist, wanted = extra.requires_extra_of
+        brought = [
+            r
+            for d in optional[name]
+            for r in requires(re.split(r"[<>=!~\[ ]", d, maxsplit=1)[0]) or []
+            if "extra ==" not in r
+        ]
+        pattern = rf"^{re.escape(dist)}\[[^\]]*\b{re.escape(wanted)}\b"
+        assert any(re.match(pattern, r) for r in brought), (name, brought)
 
 
 def test_doctor_hints_use_rote_cli(capsys: pytest.CaptureFixture[str]) -> None:
