@@ -45,6 +45,27 @@ servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.
 
+## Showing a user what rote does: `rote try`
+
+```sh
+uvx --from rote-cli rote try --yes --json
+```
+
+Free: it runs the bundled docs-digest pipeline on its recorded input (two
+public read-only MCP servers, no model calls) and compares it field by field
+with a recorded agent run. It registers those two servers first when they are
+missing, which is why it needs `--yes`. The one JSON object holds `plan`,
+`outcomes`, `headline` ("reproduced N of M fields"), `before`/`after` (wall
+time, turns or model calls, cost) and `comparison.fields[]` with each field's
+`status`: `matched`, `differs`, `drifted` (live data) or `differs-judge`.
+Exit 0 when nothing `differs`.
+
+`rote try --live` (and `rote try <skill-dir>`) runs the skill, a compile and
+the pipeline fresh, which costs money. Without `--live` it exits 2 with
+`reason: confirmation_required`, `missing: ["--live"]` and the plan, whose
+`spend` effects carry the estimate. Show the user that estimate and ask before
+re-running with `--live`; `--yes` alone never spends.
+
 ## Optional but recommended: `rote baseline` before compiling
 
 ```sh

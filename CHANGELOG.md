@@ -9,6 +9,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`rote try`: see a skill become a pipeline that does the same thing.**
+  With no arguments it runs the bundled docs-digest pipeline live on its
+  recorded input (two public read-only MCP servers, no model calls, free),
+  registering the servers first if needed, and compares the output with
+  the recorded skill run field by field: matched, differs, drifted (live
+  data) or differs-judge. The headline reads "reproduced N of M fields",
+  counted only over the fields the reference expects to be equal.
+  `--live`, or a skill directory, runs the skill read-only, compiles it
+  with the same input as `--sample-input`, runs the pipeline and compares
+  the two; with no reference, the fields come from the IR's exit nodes.
+  Every paid step is a Spend in one confirmed plan, gated by `--live` and
+  estimated from docs-digest's recorded runs (scaled by rote's eval
+  estimate for another skill). `--json` prints one object with the plan,
+  the outcomes and the comparison.
+
 ### Changed
 
 - **dbos and fastmcp are base dependencies.** `pip install rote-cli` now

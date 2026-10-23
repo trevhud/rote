@@ -428,7 +428,7 @@ defaults step, and `rote init` stays as an alias.
 | 4 | `rote mcp login --no-wait` / `--complete` (Stripe's pending-file shape, atomic) | `Plan`, `report` | 2, 3, 5, 6 |
 | 5 | Skill discovery and ranking (client skill dirs, enabled plugins, ranked by servers registered and logged in) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
 | 6 | Bundle docs-digest into examples/ and the wheel, with a recorded reference run | none | 2, 3, 4, 5 |
-| 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report) | 6, `Plan` | 2, 3, 4, 5 |
+| 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report). Landed: `rote.proof`, a `rote.setup.Step` | 6, `Plan` | 2, 3, 4, 5 |
 | 8 | `rote setup` (steps from 3, 5, 7 plus init's defaults; first-run banner on bare `rote`) | 3, 4, 5, 7 | 9 once its JSON is fixed |
 | 9 | `/rote:setup` plugin skill + AGENTS.md section | 8's `--json` shape | 10 |
 | 10 | Fresh-install test: a real TTY (pty), inside Claude Code, and CI | 8 | 9 |

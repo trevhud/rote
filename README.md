@@ -19,6 +19,21 @@ genuinely need judgment. A 10 to 20 minute agent loop becomes a
 background workflow that costs a fraction of the tokens and can be
 regression tested.
 
+### See it in one command
+
+```sh
+uv tool install rote-cli
+rote try
+```
+
+`rote try` runs a precompiled pipeline (docs-digest: Microsoft Learn plus
+a DeepWiki outline, two public MCP servers, no login, no model calls) and
+compares its output field by field with a recorded run of the skill as an
+agent, with the wall time, turns and cost of each side. `rote try --live`
+runs the skill and a compile fresh too (about $0.16 on your Claude
+subscription, shown in the plan before anything runs), and
+`rote try ./my-skill --live` does the same for your own skill.
+
 ### Try it free in 60 seconds
 
 No API key, no subscription, no tokens, no clone. The

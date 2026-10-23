@@ -44,7 +44,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.tools import Tool, ToolResult
-from mcp.types import TextContent
+from mcp.types import TextContent, ToolAnnotations
 
 from rote.tool_schema import argument_problem
 
@@ -122,6 +122,12 @@ def build_server(spec: dict[str, Any], log_path: Path) -> FastMCP:
                 log_path=str(log_path),
                 server_name=spec["server"],
                 side_effect=bool(tool.get("side_effect", False)),
+                # Opt-in: a fixture standing in for a server that marks its
+                # reads readOnlyHint (the read-only gate then calls it at
+                # any URL, as it would the real server's).
+                annotations=ToolAnnotations(read_only_hint=True)
+                if tool.get("read_only_hint")
+                else None,
             )
         )
     return server

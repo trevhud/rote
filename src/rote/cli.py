@@ -2063,7 +2063,8 @@ IS the binding's logical server name, so they must share a charset."""
 
 
 def _cmd_mcp_add(args: argparse.Namespace) -> int:
-    from rote.mcp import McpServerConfig, load_registry, save_registry
+    from rote.mcp import McpServerConfig
+    from rote.mcp.registry import add_server, registry_path
 
     if not _MCP_SERVER_NAME_RE.fullmatch(args.name):
         print(
@@ -2113,25 +2114,22 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    registry = load_registry()
-    replacing = args.name in registry.servers
-    registry.servers[args.name] = McpServerConfig(
-        url=args.url,
-        transport=args.transport,
-        client_id=args.client_id,
-        client_secret=args.client_secret,
-        issuer=issuer,
-        scopes=args.scope or None,
-        headers=headers or None,
-        read_only=True if args.read_only else None,
+    replacing = add_server(
+        args.name,
+        McpServerConfig(
+            url=args.url,
+            transport=args.transport,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+            issuer=issuer,
+            scopes=args.scope or None,
+            headers=headers or None,
+            read_only=True if args.read_only else None,
+        ),
+        auth=args.auth,
     )
-    path = save_registry(registry)
-    if args.auth is not None:
-        from rote.mcp.learned import record_auth
-
-        record_auth(args.name, args.url, args.auth, source="user")
     verb = "updated" if replacing else "added"
-    print(f"rote mcp: {verb} {args.name!r} → {args.url} ({path})")
+    print(f"rote mcp: {verb} {args.name!r} → {args.url} ({registry_path()})")
     if args.read_only:
         print("  read-only: every tool on it may be called by read-only runs")
     if issuer:
@@ -3893,6 +3891,81 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_try(args: argparse.Namespace) -> int:
+    """Run a compiled pipeline and compare it with the skill, field by field.
+
+    The default is free: the bundled docs-digest pipeline, live, against its
+    recorded skill run. ``--live`` (and any skill directory) runs the skill,
+    a compile and the pipeline fresh, each paid step a Spend gated by
+    ``--live`` in one confirmed plan (``rote.proof``).
+    """
+    from rote.demo import DEMO_NAME, DemoError
+    from rote.interact.mode import Mode
+    from rote.interact.output import Output
+    from rote.interact.plan import FORCE_FLAG, ConfirmationRequired
+    from rote.interact.prompter import PromptCancelled, PromptRequired, prompter_for
+    from rote.interact.report import EXIT_ACTION_REQUIRED, action_required
+    from rote.proof import LIVE_FLAG, TryError, TryRequest, TryStep, render_report
+    from rote.setup import SetupContext, run_steps
+
+    try:
+        mode = Mode.resolve(json=args.json, yes=args.yes, agent_mode=args.agent_mode)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out = Output(mode)
+    prompter = prompter_for(mode)
+    argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
+    skill_dir: Path | None = None
+    if args.target not in (None, DEMO_NAME):
+        skill_dir = Path(args.target).resolve()
+        if not (skill_dir / "SKILL.md").is_file():
+            out.error(f"{args.target}: not {DEMO_NAME} and not a skill directory (no SKILL.md)")
+            return 2
+    request = TryRequest(
+        skill_dir=skill_dir,
+        live=args.live,
+        input_path=Path(args.input).resolve() if args.input else None,
+        out_dir=Path(args.out) if args.out else None,
+    )
+    granted = {flag for flag, given in ((LIVE_FLAG, args.live), (FORCE_FLAG, args.force)) if given}
+    try:
+        step = TryStep(request)
+        reports = run_steps([step], SetupContext(mode, out), prompter, granted=granted)
+    except (PromptRequired, ConfirmationRequired) as e:
+        out.error(str(e))
+        out.result(action_required(e, argv))
+        return EXIT_ACTION_REQUIRED
+    except (TryError, DemoError) as e:
+        out.error(str(e))
+        return 2
+    except PromptCancelled:
+        out.say("rote try: cancelled; nothing ran")
+        return 130
+    report = reports[-1]
+    plan = report.plan.to_dict() if report.plan is not None else None
+    if report.state == "declined":
+        out.say("rote try: nothing ran")
+        out.result({"ok": False, "applied": False, "plan": plan})
+        return 1
+    outcomes = [o.to_dict() for o in report.outcomes]
+    for outcome in report.outcomes:
+        line = f"  {outcome.status}: {outcome.action_id}"
+        if outcome.error:
+            line += f" ({outcome.error})"
+        out.say(line)
+    if report.state == "failed":
+        out.result({"ok": False, "applied": True, "plan": plan, "outcomes": outcomes})
+        return 1
+    result = step.report()
+    out.say()
+    for line in render_report(result):
+        out.say(line)
+    ok = result.comparison.ok
+    out.result({"ok": ok, "applied": True, "plan": plan, "outcomes": outcomes, **result.to_dict()})
+    return 0 if ok else 1
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     """Show every configurable default, its effective value, and its source."""
     from rote import config as rote_config
@@ -5519,6 +5592,46 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_onboarding_mode_flags(init_p)
     init_p.set_defaults(func=_cmd_init)
+
+    # rote try
+    try_p = subparsers.add_parser(
+        "try",
+        help="See a skill become a pipeline that does the same thing (free by default)",
+        description=(
+            "Without arguments: run the bundled docs-digest pipeline live on its "
+            "recorded input (two read-only public MCP servers, no model calls, free) "
+            "and compare it field by field with the recorded skill run. With --live, "
+            "or a skill directory: run the skill read-only as an agent, compile it "
+            "with the same input as --sample-input, run the pipeline, and compare "
+            "the two. Every paid step is in the plan with its estimate and runs only "
+            "with --live (a person is asked; --yes alone never spends)."
+        ),
+    )
+    try_p.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="docs-digest (the default) or a skill directory",
+    )
+    try_p.add_argument(
+        "--live",
+        action="store_true",
+        help="run the skill and a compile fresh (paid, estimate in the plan)",
+    )
+    try_p.add_argument(
+        "--input",
+        default=None,
+        metavar="FILE",
+        help="a skill directory's input (default: its input.json or examples/input.json)",
+    )
+    try_p.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="where the live path's compile writes (default: ./rote-try-<skill>)",
+    )
+    _add_onboarding_mode_flags(try_p)
+    try_p.set_defaults(func=_cmd_try)
 
     # rote config
     config_p = subparsers.add_parser(

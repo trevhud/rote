@@ -146,6 +146,29 @@ def load_registry(path: Path | None = None) -> McpRegistry:
         return McpRegistry.model_validate(json.load(f))
 
 
+def add_server(name: str, config: McpServerConfig, *, auth: str | None = None) -> bool:
+    """Register ``config`` under ``name``: what ``rote mcp add`` does.
+
+    ``auth`` (``"oauth"`` or ``"none"``) records the user's word on whether
+    the server needs auth, beside the registry
+    (:func:`rote.mcp.learned.record_auth`). Returns whether an entry of that
+    name was replaced. The one implementation: ``rote mcp add`` and the
+    onboarding commands that register a server (``rote try``) both call it.
+    """
+    registry = load_registry()
+    replacing = name in registry.servers
+    registry.servers[name] = config
+    save_registry(registry)
+    if auth is not None:
+        from rote.mcp.learned import LearnedValue, record_auth
+
+        if auth not in ("oauth", "none"):
+            raise ValueError(f"auth must be oauth or none, got {auth!r}")
+        value: LearnedValue = "oauth" if auth == "oauth" else "none"
+        record_auth(name, config.url, value, source="user")
+    return replacing
+
+
 def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
     """Atomic 0600 write — the registry may hold client secrets."""
     p = path or registry_path()
