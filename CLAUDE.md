@@ -322,6 +322,16 @@ six adapters' copies are gone. Cycles are a validation error for the
 same reason. Loop-body sub-nodes' own `inputs:` are exempt (they
 describe, they do not bind).
 
+A `hitl_gate` shows the person its `inputs:` and nothing else (the
+compiled skill's HUMAN block is the one place a gate's data is shown), so
+`Node._validate_gate_shows_what_it_binds` requires every `{name}` in
+`notify.message_template` and every key its `input:` documents to be
+bound. Every committed compile that broke this had documented the data
+and bound none of it, or printed counts (`{vetted_count}`) no node
+computes, and an eval agent spent 5 to 9 turns hunting for the missing
+review queue. A gate that only collects data binds nothing. That is why
+the rule keys on what the gate says it shows, not on its edges.
+
 For the rules no validator states (python refusing a `hitl_gate`, an
 MCP-incapable adapter refusing an mcp-only node, an emitter crash),
 verification dry-emits the deliverable for the compile's runtime

@@ -1204,3 +1204,69 @@ def test_a_loop_body_holds_only_optional_callable_steps(sub: dict[str, Any], mes
     with pytest.raises(ValidationError, match=re.escape(message)):
         Pipeline.model_validate(_loop_with(sub))
     Pipeline.model_validate(_loop_with({"kind": "pure_function", "impl": "extracted/sub.py:sub"}))
+
+
+# ───────── A gate binds what it shows the person ─────────
+
+
+def _gate(**fields: Any) -> dict[str, Any]:
+    return {
+        "id": "review",
+        "kind": "hitl_gate",
+        "description": "Approve the queue.",
+        "signal": "reviewed",
+        **fields,
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "unbound"),
+    [
+        # The committed expense-audit gate: a message naming data nothing bound.
+        (
+            {"notify": {"channel": "email", "target": "c@x", "message_template": "{period}: {n}"}},
+            "its notify.message_template uses {n}, {period}",
+        ),
+        # The April BDR gates: `input:` documents what the person sees, no `inputs:`.
+        ({"input": {"queue": "list[Row]"}}, "its input: documents queue"),
+        # Partly bound is still unbound.
+        (
+            {
+                "inputs": {"period": "pipeline.input.period"},
+                "notify": {"channel": "slack", "target": "#a", "message_template": "{period} {q}"},
+            },
+            "notify.message_template uses {q}.",
+        ),
+    ],
+)
+def test_a_gate_must_bind_what_it_says_it_shows(fields: dict[str, Any], unbound: str) -> None:
+    with pytest.raises(ValidationError, match=re.escape(unbound)):
+        Node.model_validate(_gate(**fields))
+
+
+def test_a_gate_that_binds_what_it_shows_is_valid() -> None:
+    message = "Audit for {period}: decide every item. A {1} or a {{ judge }} names nothing."
+    Node.model_validate(
+        _gate(
+            inputs={"period": "pipeline.input.period", "queue": "summarize.output.queue"},
+            input={"queue": "list[Row]"},
+            notify={"channel": "email", "target": "c@x", "message_template": message},
+        )
+    )
+    # A data-entry gate binds nothing and shows only its question.
+    Node.model_validate(
+        _gate(notify={"channel": "slack", "target": "#a", "message_template": "Send the counts."})
+    )
+
+
+def test_only_a_gate_is_held_to_what_it_documents() -> None:
+    # `input:` documents types on every kind; only a gate shows it to a person.
+    Node.model_validate(
+        {
+            "id": "n",
+            "kind": "pure_function",
+            "description": "x",
+            "impl": "extracted/a.py:go",
+            "input": {"queue": "list[Row]"},
+        }
+    )

@@ -358,8 +358,8 @@ ROTE/1 HUMAN ops-report run=91c0d2b7aa43 step=approve_report kind=gate deadline=
 Do not answer this yourself. Ask the user, in plain words, and wait for their reply.
 --- QUESTION ---
 <the gate's description and rendered message>
---- SHOW THEM (json) ---
-<the gate's declared inputs only>
+--- THEY SEE (json) ---
+<the gate's bound inputs the message did not already show>
 --- ANSWER SCHEMA (json) ---
 {"type": "object", "properties": {"approved": {"type": "boolean"}, ...}}
 --- NEXT ---
@@ -379,7 +379,14 @@ rote skill run ops-report answer 91c0d2b7aa43 approve_report '<JSON from their r
   gate's description, its rendered `notify.message_template`, the gate's
   declared `inputs:` and nothing else, the answer schema and the deadline.
   A gate that declares no inputs shows only its description and message,
-  never a dump of upstream results. `kind=login` names the server and the
+  never a dump of upstream results. The message's `{name}` placeholders
+  are filled from scalar inputs (`rote.ir.GATE_MESSAGE_PLACEHOLDER`, the
+  only renderer, since no other runtime sends `notify`), and IR validation
+  requires every placeholder and every documented `input:` key to be a
+  bound input, so the declaration is what makes the block right. The
+  expense-audit gate first bound nothing and printed `{period}` and
+  `{review_count}` raw; binding `period` and `review_queue` makes its block
+  1,974 bytes. `kind=login` names the server and the
   commands: `rote mcp login <server>` for a person at a terminal, or `rote
   mcp login <server> --no-wait`, then `--complete` (PR #244), for an agent
   relaying a URL. After either one, `resume <run>`.

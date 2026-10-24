@@ -2,7 +2,7 @@
 
 Pipeline: bdr-campaign v0.1.0
 Source skill: ../skill
-Pipeline hash: ada0f771
+Pipeline hash: 26abf258
 
 DO NOT EDIT BY HAND. Re-run ``rote emit --runtime dbos`` to regenerate.
 
@@ -454,7 +454,7 @@ def pre_enrollment_report(payload: dict) -> dict:
     return _serialize(_call_impl(generate_pre_enrollment_report, payload))
 
 
-@DBOS.workflow(name="BdrCampaign_ada0f771")
+@DBOS.workflow(name="BdrCampaign_26abf258")
 def run_pipeline(pipeline_input: dict) -> dict:
     """End-to-end BDR outreach campaign workflow for pharma/biotech research"""
     _input_error = _missing_inputs_error(pipeline_input, ("campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area",))

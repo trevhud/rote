@@ -556,6 +556,8 @@ nodes:
     input:
       table_markdown: str
     inputs:
+      drug_brand: pipeline.input.drug_brand
+      condition_acronym: pipeline.input.condition_acronym
       table_markdown: build_contact_table.output.table_markdown
     output:
       approved_contacts: list[VettedContact]
@@ -566,7 +568,7 @@ nodes:
       target: "#bdr-reviews"
       message_template: |
         BDR campaign awaiting contact review: {drug_brand} for {condition_acronym}.
-        {vetted_count} contacts ready for approval.
+        The contact table is ready for approval.
 
   # ─────────── Phase 4: CRM Upload + List Creation ───────────────────────────
 
@@ -938,6 +940,8 @@ nodes:
       report_markdown: str
       list_url: str
     inputs:
+      drug_brand: pipeline.input.drug_brand
+      condition_acronym: pipeline.input.condition_acronym
       report_markdown: pre_enrollment_report.output.report_markdown
       list_url: hubspot_add_to_list.output.list_url
     output:
@@ -949,7 +953,7 @@ nodes:
       target: "#bdr-outreach"
       message_template: |
         BDR campaign ready to enroll: {drug_brand} for {condition_acronym}.
-        {passed_count} contacts cleared all exclusion checks.
+        The report lists the contacts that cleared all exclusion checks.
 
   # ─────────── Phase 2-alt: Conference List Enrichment ───────────────────────
 
@@ -1010,7 +1014,7 @@ nodes:
       target: "#bdr-reviews"
       message_template: |
         Conference list filter ready for review.
-        {pharma_count} pharma contacts identified; {excluded_count} flagged as non-pharma.
+        Confirm the pharma contacts and the ones flagged as non-pharma.
 
   - id: conf_enrich_batch
     kind: external_call
