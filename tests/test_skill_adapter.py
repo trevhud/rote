@@ -671,6 +671,35 @@ def test_run_py_is_the_entry_point_and_names_the_skill(tmp_path: Path, fx: Fixtu
     assert result_of(proc.stdout) == demo.load_reference().pipeline_output
 
 
+def test_expense_audit_shows_the_controller_the_review_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(tmp_path / "reports"))
+    out = tmp_path / "expense-audit"
+    emit(EXPENSE_AUDIT, out)
+    scripts = out / "scripts"
+    status, human = drive(
+        scripts,
+        "start",
+        "--file",
+        str(EXAMPLES / "expense-audit" / "input.json"),
+        skill="expense-audit",
+    )
+    assert status == 0, human
+    fields = header(human)
+    assert (fields["kind"], fields["step"], fields["of"]) == ("HUMAN", "controller_review", "gate")
+    # The person sees what they decide on: the period filled into the
+    # message and the review queue the gate binds, holding every item the
+    # fidelity case's controller decides. Nothing unfilled, nothing else.
+    assert "Expense audit for 2026-09 is ready for review." in human
+    assert "{" + "period}" not in human
+    queue = json.loads(human.split("--- THEY SEE (json) ---\n", 1)[1].split("\n", 1)[0])
+    assert set(queue) == {"review_queue"}
+    named = {"EXP-2403", "EXP-2410", "EXP-2413", "EXP-2420"}  # case "base"
+    assert named <= {row["expense_id"] for row in queue["review_queue"]}
+    assert len(human.encode()) < 2100, len(human.encode())  # 1974 measured
+
+
 def test_ops_report_calls_its_tools_only_once_the_user_declares_them_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

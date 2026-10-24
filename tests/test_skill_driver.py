@@ -465,7 +465,7 @@ def finish(approval):
 """
 
 
-def _gated(inputs: dict[str, str] | None) -> dict:
+def _gated(inputs: dict[str, str] | None, message: str = "Review: {table}") -> dict:
     gate: dict[str, Any] = {
         "id": "approve",
         "kind": "hitl_gate",
@@ -476,7 +476,7 @@ def _gated(inputs: dict[str, str] | None) -> dict:
         "notify": {
             "channel": "slack",
             "target": "#ops",
-            "message_template": "Review: {table}",
+            "message_template": message,
         },
     }
     if inputs is not None:
@@ -526,10 +526,11 @@ def test_a_gate_asks_a_person_through_the_agent_with_only_its_inputs(gate_skill:
 
 
 def test_a_gate_with_no_inputs_shows_only_its_question(tmp_path: Path) -> None:
-    scripts = make_skill(tmp_path, _gated(None), {"gate.py": GATED})
+    scripts = make_skill(tmp_path, _gated(None, "Approve the list."), {"gate.py": GATED})
     _, out = drive(scripts, "start", '{"notes": ["a"]}')
-    assert "THEY SEE" not in out and "| a |" not in out
-    assert "Review: {table}" in out  # nothing declared to fill it with
+    assert "Approve the list." in out
+    # Never a dump of upstream results: the IR makes a gate bind what it shows.
+    assert "THEY SEE" not in out and "| a |" not in out and "XXXX" not in out
 
 
 def test_a_gate_answer_needs_the_persons_words_and_records_them(gate_skill: Path) -> None:
@@ -1178,6 +1179,19 @@ def test_the_drivers_placeholder_is_the_shared_one() -> None:
     from rote.skill_target._driver import _PLACEHOLDER
 
     assert _PLACEHOLDER.pattern == PROMPT_PLACEHOLDER
+
+
+def test_the_drivers_gate_placeholder_is_the_irs() -> None:
+    """What the IR checks a gate binds is exactly what the driver fills."""
+    from rote.ir import GATE_MESSAGE_PLACEHOLDER
+    from rote.skill_target._driver import _GATE_PLACEHOLDER, _render_message
+
+    assert _GATE_PLACEHOLDER.pattern == GATE_MESSAGE_PLACEHOLDER
+    payload = {"period": "2026-09", "queue": [1]}
+    rendered, shown = _render_message("{period}: {queue} {gone}", payload)
+    # A scalar fills in; a list stays in the JSON block; an omitted optional
+    # input keeps its placeholder rather than reading as an empty string.
+    assert (rendered, shown) == ("2026-09: {queue} {gone}", {"period"})
 
 
 def test_the_input_and_fan_messages_match_the_emitted_helpers() -> None:

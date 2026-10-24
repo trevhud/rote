@@ -416,6 +416,11 @@ nodes:
       add, remove, or reprioritize contacts before CRM upload proceeds.
       Pipeline suspends until signal fires. Output is the BDR-approved
       contact list (may differ from vetted_contacts after manual edits).
+    inputs:
+      drug_brand: pipeline.input.drug_brand
+      condition_acronym: pipeline.input.condition_acronym
+      table_markdown: build_contact_table.output.table_markdown
+      vetted_contacts: lead_generation_loop.output.vetted_contacts
     input:
       table_markdown: str
       vetted_contacts: list[VettedContact]
@@ -428,7 +433,7 @@ nodes:
       target: "#bdr-reviews"
       message_template: |
         BDR campaign ready for review: {drug_brand} / {condition_acronym}.
-        {vetted_count} contacts vetted. Approve or modify before CRM upload.
+        Review the vetted contacts. Approve or modify before CRM upload.
 
   # ── Phase 2-alt: Conference List Path ─────────────────────────────────────
 
@@ -471,6 +476,9 @@ nodes:
       confirmation before ZoomInfo enrichment begins. The BDR may move
       misclassified companies back to pharma. Source: conference-enrichment.md
       line 87 — faster to add back now than to re-run enrichment.
+    inputs:
+      pharma_contacts: conf_pharma_filter.output.pharma_contacts
+      excluded_contacts: conf_pharma_filter.output.excluded_contacts
     input:
       pharma_contacts: list[RawContact]
       excluded_contacts: list[RawContact]
@@ -482,8 +490,8 @@ nodes:
       channel: slack
       target: "#bdr-reviews"
       message_template: |
-        Conference list filtered: {pharma_count} pharma contacts found,
-        {excluded_count} excluded as non-pharma. Confirm before enrichment.
+        Conference list filtered into pharma contacts and non-pharma
+        exclusions. Confirm before enrichment.
 
   - id: conf_enrich_batch
     kind: external_call
@@ -891,6 +899,10 @@ nodes:
       verification, cannot be paused, and cannot be undone. Pipeline remains
       suspended until the BDR signals completion.
       Source: references/hubspot-operations.md lines 106-113.
+    inputs:
+      campaign_name: pipeline.input.drug_brand
+      report_markdown: pre_enrollment_report.output.report_markdown
+      ready_to_enroll_count: pre_enrollment_report.output.ready_to_enroll_count
     input:
       report_markdown: str
       ready_to_enroll_count: int

@@ -462,6 +462,10 @@ an input (validation rule 10).
 - id: contact_review_gate
   kind: hitl_gate
   description: Present the vetted contact table to the user for approval.
+  inputs:
+    drug_brand: pipeline.input.drug_brand
+    condition_acronym: pipeline.input.condition_acronym
+    vetted_contacts: lead_generation_loop.output.vetted_contacts
   input:
     vetted_contacts: list[VettedContact]
   output:
@@ -474,6 +478,14 @@ an input (validation rule 10).
     message_template: |
       BDR campaign awaiting review: {drug_brand} for {condition_acronym}
 ```
+
+**A gate shows the person its `inputs:` and nothing else.** Bind
+everything the person decides on (the review queue, the table to
+approve). Each `{name}` in `message_template` and each key of `input:`
+must be one of those bindings, or the IR is rejected: a `{vetted_count}`
+that no node computes reads to the person as literal braces. A gate that
+only collects data from the person (no upstream data to decide on)
+binds nothing.
 
 **The payload keys are the skill's nouns.** `output` names what the
 person provides, one key per item, and the keys come from the skill:

@@ -227,6 +227,11 @@ nodes:
         3. Current Dwell — shipper/brand name, carrier, site, orders, packages
            from the BI dashboard filtered by site.
       The workflow parks here until the duty manager sends the signal payload.
+    inputs:
+      shipment_summary: parse_shipment_containers.output
+      dock_pending_summary: parse_dock_pending_log.output
+      dock_email_summary: parse_dock_emails.output
+      dwell_ticket_summary: parse_dwell_tickets.output
     input:
       shipment_summary: ShipmentContainersSummary
       dock_pending_summary: DockPendingSummary

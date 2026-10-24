@@ -202,12 +202,19 @@ nodes:
       queue. Block items are informational. Up to three days before escalation.
     signal: controller_review
     timeout: 72h
+    inputs:
+      period: pipeline.input.period
+      review_queue: summarize_audit.output.review_queue
+    input:
+      period: str
+      review_queue: list[Finding]
     notify:
       channel: email
       target: controller@example.com
       message_template: |
-        Expense audit for {period} is ready for review: {review_count} item(s)
-        need a decision. Reply with approved_ids and rejected_ids.
+        Expense audit for {period} is ready for review. Approve or reject every
+        review item in the queue; block items are for information only. Reply
+        with approved_ids and rejected_ids.
     output:
       reviewer: str
       approved_ids: list[str]

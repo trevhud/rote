@@ -548,6 +548,11 @@ nodes:
       how many contacts were searched, how many were discarded (with
       aggregate reasons), and the tier breakdown. The user may add, remove,
       or reprioritize contacts before CRM upload.
+    inputs:
+      drug_brand: pipeline.input.drug_brand
+      condition_acronym: pipeline.input.condition_acronym
+      vetted_contacts: lead_generation_loop.output.vetted_contacts
+      discarded_summary: lead_generation_loop.output.discarded_summary
     input:
       vetted_contacts: list[VettedContact]
       discarded_summary: VettingSummary
@@ -559,8 +564,8 @@ nodes:
       channel: slack
       target: "#bdr-reviews"
       message_template: |
-        BDR campaign awaiting review: {drug_brand} for {condition_acronym}
-        ({approved_count}/{vetted_count} contacts after vetting)
+        BDR campaign awaiting review: {drug_brand} for {condition_acronym}.
+        Approve, remove or reprioritize the vetted contacts before CRM upload.
 
   # ───────── Phase 4: CRM Upload + List Creation ─────────
 
@@ -938,6 +943,9 @@ nodes:
       Present the pre-enrollment report to the BDR. Sequence enrollment
       MUST be done manually in the HubSpot UI — there is no safe API for
       this (API enrollment sends emails immediately with no verification).
+    inputs:
+      campaign_name: pipeline.input.drug_brand
+      report_markdown: pre_enrollment_report.output.report_markdown
     input:
       report_markdown: str
     output:
@@ -950,7 +958,8 @@ nodes:
       target: "#bdr-reviews"
       message_template: |
         BDR campaign ready for manual enrollment: {campaign_name}
-        ({passed_count} contacts after exclusions)
+
+        {report_markdown}
 
 # Edges — data flow between nodes. The DAG is acyclic at the top level;
 # loops are expressed via agent_loop nodes' loop_body field.

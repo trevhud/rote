@@ -2,7 +2,7 @@
 
 Pipeline: bdr-campaign v0.1.0
 Source skill: ../skill
-Pipeline hash: ada0f771
+Pipeline hash: 26abf258
 
 DO NOT EDIT BY HAND. Re-run ``rote emit`` to regenerate.
 
@@ -90,7 +90,7 @@ def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
     """
     return {key: pipeline_input[field]} if field in pipeline_input else {}
 
-@workflow.defn(name="BdrCampaign_ada0f771")
+@workflow.defn(name="BdrCampaign_26abf258")
 class BdrCampaignWorkflow:
     """Compiled workflow for bdr-campaign."""
 

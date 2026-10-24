@@ -3,7 +3,7 @@
   "files": {
     ".dev.vars.example": "f0d31c63b360ef4878d8bfd91a7ddb8df9ab4b99cccca325c5b685520b2eed9d",
     "README.md": "93168a30a0dafca306569c71251701ba5a0baa8cabd21371eacc2a22c4c01f9a",
-    "manifest.json": "470525f11ef70ad8986c144d30fdc5cd5007436342ec039c9e4efcd1cde5f837",
+    "manifest.json": "42c1fef4a1e515e27128a9c0628af7b9d9f898317f95925a237b810c135f68d0",
     "package.json": "143f4a6d370cc336492e72c9fde004f5d4d94887fb1b6658d7bb278c5f0f0842",
     "src/extracted/_roteMcp.ts": "2dd1a8e75e14999efe9aee17b5ed044ae1add8bd8b46b326fc5df0fdd3e3605b",
     "src/extracted/create_sales_template.ts": "3e80ba60e0533e967cecc13e37166d63bcbea1d2c3dd97ae2449df6971478047",
@@ -22,7 +22,7 @@
     "src/signatures/personalize_email.ts": "fb8de860e2a66828212236369859c0054d0227e62d4942854316b3a43e3b83ad",
     "src/signatures/vet_contact.ts": "f04f366d679756a83c1e39143804057425a0a830020f1ee2aaa9348c229e09b4",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
-    "src/workflow.ts": "3fbf5093f9fd6638d0004ed6876f4592d0bcb6a8132017a1f9c3e098912cb6d6",
+    "src/workflow.ts": "6012d03aeaf9a65f40129ad499e0b0bcf1c877f807e42fa8ca1fec728ea8a765",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "fa4f9733ea58ffeaa4e9ab94812ccd7b89f361ca4b7e68929fe8c1cd8b8f2ca2"
   }

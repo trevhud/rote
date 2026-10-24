@@ -127,6 +127,9 @@ NEVER_RETRIED = frozenset({"RoteMcpAuthNeeded", "RoteMcpConfigError", "RoteMcpIn
 #: ``{{ dotted.path }}``, exactly as the emitted judge's ``_interpolate``
 #: matches it (``rote.plan.PLACEHOLDER``; pinned by a parity test).
 _PLACEHOLDER = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
+#: A gate message's ``{name}``, exactly as ``rote.ir.GATE_MESSAGE_PLACEHOLDER``
+#: (the IR checks each names a bound input; pinned by a parity test).
+_GATE_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _MISSING = object()
 
 _FINISHED = ("done", "cancelled", "expired")
@@ -1988,8 +1991,10 @@ def _location(exc: BaseException, root: Path) -> str:
 
 
 def _render_message(template: str, payload: dict[str, Any]) -> tuple[str, set[str]]:
-    """A gate's ``{name}`` placeholders filled from its declared scalar inputs,
-    and the names it filled (the block does not show those values twice)."""
+    """A gate's ``{name}`` placeholders filled from its bound scalar inputs,
+    and the names it filled (the block does not show those values twice).
+    A list or object stays in the JSON below; so does an optional input the
+    run left out, whose placeholder is kept as written."""
     used: set[str] = set()
 
     def _sub(match: re.Match[str]) -> str:
@@ -1999,7 +2004,7 @@ def _render_message(template: str, payload: dict[str, Any]) -> tuple[str, set[st
         used.add(match.group(1))
         return "" if value is None else str(value)
 
-    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, template), used
+    return _GATE_PLACEHOLDER.sub(_sub, template), used
 
 
 def _answer_tokens(schema: Any, depth: int = 0) -> float:

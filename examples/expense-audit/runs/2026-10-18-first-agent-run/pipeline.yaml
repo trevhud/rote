@@ -275,6 +275,10 @@ nodes:
       controller names an expense_id not in the queue, the runtime should
       reject the signal and ask again. Hold for up to 3 days; escalate
       to the finance manager if no decision arrives.
+    inputs:
+      period: pipeline.input.period
+      review_queue: build_review_queue.output.review_queue
+      batch_summary: build_review_queue.output.batch_summary
     input:
       review_queue: list[QueueRow]
       batch_summary: BatchSummary

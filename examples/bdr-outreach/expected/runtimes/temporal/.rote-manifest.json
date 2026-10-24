@@ -15,6 +15,6 @@
     "signatures/_rote_inference.py": "918236aa0ddafe86a0fb23e63f90eedb493732345421bf4f6d590b700f1e6eca",
     "signatures/personalize_email.py": "e6f6a9d698e015900e628a2bf1d917461b69d587840112cc9cd2b54828736300",
     "signatures/vet_contact.py": "edfa9fdb847071cc622e38a7cb5964ca6a5f0babcd259280288cd107664aa9f9",
-    "workflow.py": "ff059af42358d0bb344ba41ae04ea8a097175e62f29b718dbf30663b75dc2800"
+    "workflow.py": "5239d8cd642e3deebfb6ff0af9a9bca74c836e685c9f44b02d5701777ff209df"
   }
 }

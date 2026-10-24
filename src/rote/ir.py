@@ -93,6 +93,13 @@ _PIPELINE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 # verbatim, so restrict it to the characters a semver-ish version needs and
 # nothing that could close a docstring (``\"\"\"``), a block comment (``*/``),
 # or inject a newline. See ``Pipeline._validate_version``.
+#: A ``notify.message_template`` placeholder: ``{name}``, one key of the
+#: node's ``inputs:``. The compiled skill's driver fills it with this exact
+#: pattern (``rote.skill_target._driver._GATE_PLACEHOLDER``, pinned by a
+#: parity test). No other runtime sends the message.
+GATE_MESSAGE_PLACEHOLDER = r"\{([A-Za-z_][A-Za-z0-9_]*)\}"
+_GATE_MESSAGE_PLACEHOLDER_RE = re.compile(GATE_MESSAGE_PLACEHOLDER)
+
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
@@ -224,7 +231,10 @@ class NotifyConfig(BaseModel):
     target: str = Field(description="Channel name, email address, or webhook URL")
     message_template: str | None = Field(
         default=None,
-        description="Template string with {placeholders} from upstream node outputs",
+        description=(
+            "Message for the person. Each {name} placeholder is a key of the "
+            "gate's inputs: (validated) and is filled with that input's value."
+        ),
     )
 
 
@@ -707,6 +717,33 @@ class Node(BaseModel):
         if clash:
             raise ValueError(
                 f"node {self.id!r}: {', '.join(clash)} is both a constant and an input; rename one"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gate_shows_what_it_binds(self) -> Self:
+        """A gate shows the person its bound ``inputs:`` and nothing else.
+        So what it says it shows, the keys its ``input:`` documents and the
+        ``{name}`` placeholders of its message, must each be bound, or the
+        person reads ``{review_count}`` and has nothing to decide on. Every
+        committed compile that broke this documented the data and bound none."""
+        if self.kind is not NodeKind.HITL_GATE:
+            return self
+        bound = set(self.inputs or {})
+        template = (self.notify.message_template if self.notify else None) or ""
+        documented = sorted(set(self.input) - bound)
+        placeholders = sorted(set(_GATE_MESSAGE_PLACEHOLDER_RE.findall(template)) - bound)
+        problems = ([f"input: documents {', '.join(documented)}"] if documented else []) + (
+            [f"notify.message_template uses {', '.join(f'{{{p}}}' for p in placeholders)}"]
+            if placeholders
+            else []
+        )
+        if problems:
+            raise ValueError(
+                f"hitl_gate {self.id!r} shows the person only its inputs: "
+                f"({', '.join(sorted(bound)) or 'none bound'}), "
+                f"but its {' and its '.join(problems)}. "
+                "Bind each in inputs: to the data the person decides on, or remove it"
             )
         return self
 
