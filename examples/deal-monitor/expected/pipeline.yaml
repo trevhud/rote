@@ -779,7 +779,8 @@ nodes:
         - Go-Live Date: {{ opportunity.go_live_date }}
         - Product Context: {{ opportunity.product_item_context }}
 
-        Pass the full opportunity object through unchanged in your output.
+        Pass the full opportunity object through unchanged in your output:
+        {{ opportunity }}
 
         Return your scoring via the structured output tool.
       client: anthropic

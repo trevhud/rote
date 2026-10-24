@@ -112,7 +112,9 @@ def test_a_fanned_judge_carries_its_prompt_references_and_element() -> None:
     score = steps["score_new_opportunities"]
     assert score["fan_param"] == "opportunity"
     assert score["references"][0] == "scoring_rubric"
-    assert "opportunity" not in score["references"]  # only its fields are read
+    # Its fields first, then the whole object, which the judge passes through.
+    assert score["references"][1] == "opportunity.account_name"
+    assert score["references"][-1] == "opportunity"
 
 
 def test_judge_references_keep_first_use_order_once() -> None:
