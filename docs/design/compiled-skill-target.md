@@ -228,20 +228,111 @@ A gate answer without `--said` or `--said-file` is refused, and so is
 `--said` on a `DECIDE` or `LOOP` answer. Both refusals are usage errors.
 
 `<name>` resolves through the apps registry (`rote.app_registry`), where
-`rote emit --runtime skill` and `rote skill install <dir>` record the skill
-dir and the hash of its `.rote-manifest.json`. The registry stores no hash
-today, and PR 4 adds it. `rote skill install <dir>` is the confirmed trust
-point that records the first hash. Before every call, `rote skill run`
-checks the dir's files against the manifest. It refuses with `ERROR` when a
-listed file differs or when the dir holds a file the manifest does not
-list, because a dropped-in `scripts/json.py` or `scripts/fastmcp.py` would
-shadow an import. The `ERROR` names `rote skill trust <name>`, which shows
-the changed and unlisted files and records the new hashes once the user
-confirms. Without this check, an allow rule for `rote skill run *` would
-approve any code dropped into a directory that happens to use a registered
-name. Then it runs `scripts/run.py` with its own interpreter and `-I`. The
-import path is the skill's scripts dir plus rote's site-packages, where
-fastmcp lives. rote's own modules are never imported inside a skill run.
+`rote emit --runtime skill` records the skill dir and `rote skill install
+<dir>` adds its install record. Install is the confirmed trust point: it
+checks the dir is exactly what its `.rote-manifest.json` says rote wrote,
+then records the hash of every file in the dir. Before every call, `rote
+skill run` checks the dir against that record. It refuses with `ERROR` when
+a file differs, is missing, is new (a dropped-in `scripts/json.py`,
+`scripts/fastmcp.py` or `__pycache__/*.pyc` would shadow an import), is a
+symlink (its target can change after the check), or is not a regular file.
+The `ERROR` names `rote skill trust <name>`, which lists the changes with
+lines added and removed (rote keeps a copy of every trusted file by hash
+beside the registry, so `--diff` can print the diffs) and records the new
+hashes once the user confirms. Without this check, an allow rule for `rote
+skill run *` would approve any code dropped into a directory that happens
+to use a registered name.
+
+The run never reads the dir again after the check, and the code it runs
+never touches disk. The bytes that were hashed, `plan.json` included, go to
+the child over an inherited pipe as one frame. A fixed bootstrap passed with
+`-c` installs a meta-path finder that serves the driver and the extracted
+modules from those bytes, with the skill dir's paths as `__file__` so errors
+still name file:line. The skill dir's `sys.path` entry is disabled. A
+private copy on disk would not do: the agent runs as the same user, and a
+review rewrote rote's 0700 snapshot mid-run. Only a recorded CA bundle lands
+on disk, because the TLS stack reads a file.
+
+Then it starts the driver with rote's interpreter, `-I`
+(no `PYTHON*` variables, no user site, no cwd on the path) and `-B` (no
+`__pycache__` for the next check to refuse). The import path is the skill's
+scripts dir plus rote's site-packages, where fastmcp lives. rote's own
+modules are never imported inside a skill run. It starts the driver through
+a fixed bootstrap rather than `scripts/run.py`, because the write consent is
+a parameter of the driver's `main` and nothing else. A flag or a variable
+would be one an agent could also pass to `uv run scripts/run.py`, which
+stays the read-only way in without rote.
+
+**The environment is an allowlist** (`rote.skill_target.launch`), because
+the agent's shell sets it and a scrub list stops only the variables someone
+thought of. The driver gets `PATH`, `HOME`, the user and locale variables
+and `TMPDIR`. It also gets the three state paths, set by rote. It gets the
+variables the MCP registry's own `${NAME}` header templates name for the
+plan's servers, and for a `--judges helper` skill the vendor keys and the
+`ROTE_INFERENCE` / `ROTE_MODEL_` / `ROTE_EFFORT_` / `ROTE_TEMPERATURE_`
+knobs of its own judges. Everything else is dropped, notably
+`ROTE_MCP_<SERVER>_URL` (named on stderr when set), `ROTE_MCP_READ_ONLY*`,
+`ROTE_SKILL_COMMAND`, `ROTE_BASE_URL_<ID>`, the vendor `*_BASE_URL`s,
+`ROTE_CLOUD_URL` / `ROTE_CLOUD_TOKEN` and `XDG_*`. The proxy variables pass
+as the install recorded them. A CA bundle passes as rote's private copy of
+the bytes recorded by path and hash. A proxy with a non-loopback `http://`
+endpoint is refused, since the proxy would read the bearer token.
+
+**The state paths are bound, not trusted.** A forged `ROTE_MCP_CONFIG` can
+declare a server read-only, so its write tools run, or point it elsewhere. A
+forged `ROTE_MCP_TOKEN_DIR` can swap in someone else's login, so the skill's
+writes land in their account. A forged `ROTE_SKILL_RUN_DIR` can hold a
+journal with a gate no person answered. `ROTE_CLOUD_CRED_PATH` (who pays for
+a helper judge), the proxy and CA variables and the set of servers the
+skill relies on being read-only (name and URL) are bound the same way. A
+read-only declaration lets every tool on the server run, so it is write
+consent by another name. The overrides stay honored, because
+the tests and `scripts/isolated-rote` need them. Install records where each
+one resolved, and a run that resolves one elsewhere is refused, naming
+`rote skill trust`. The app registry itself (`ROTE_APPS_PATH`) is the root
+and cannot be bound to itself. An environment that can set it can also set
+`PYTHONPATH` for rote's own process, so refusing it would protect nothing.
+Measured on Claude Code 2.1.309: the allow rule does not match a command
+with an environment prefix (`ROTE_MCP_CONFIG=... rote skill run ...`, `env
+...`, `export ...;`), so such a call prompts. What remains is an
+environment set before the session starts (a project's committed
+`.claude/settings.json` `env` block, say), and the bindings are what hold
+there.
+
+**Whatever widens trust needs a person.** That covers every `rote skill
+trust` that records anything (adopting changed files, a rebind), an install
+that changes an existing record or replaces another dir's install, an
+install relying on a read-only server, and `--allow-writes`. `--allow-writes`
+lists every tool the plan calls, minus those on servers registered
+read-only, and records the consent with the plan's hash. A changed plan or
+any rebind drops it. Without a person at a terminal each one stops with
+`action_required` (`reason: person_required`) whatever the flags, because
+`--yes` is what an agent would pass and the agent is who this consent
+guards against. A detected caller cannot be the person even with
+`--agent-mode no`. That is a speed bump, not a barrier: an agent that runs
+rote under a pseudo-terminal with its variables unset looks like a person,
+and nothing in a process can tell the two apart. What it buys is that the
+agent's ordinary call stops, whatever flags it adds, and names the command
+for the user to run.
+
+`rote skill trust` diffs against copies of the trusted files that rote
+keeps by hash, and checks each copy against its own hash first. On a
+mismatch it says the copy was altered and shows the whole current file, not
+a diff against the planted copy.
+
+**The Claude Code allow rule** goes to `<project>/.claude/settings.local.json`,
+the file Claude Code's own "don't ask again" writes. The project is the
+one holding the skill (`<project>/.claude/skills/<name>`), else the root of
+the git work tree the current directory is in (where Claude Code 2.1.211+
+keeps the file), else the current directory, or `--claude-project`. Claude
+Code keeps that file out of git only when it writes the file itself, so the
+Action warns when `git check-ignore` says the file would be committed. rote
+never edits the user's ignore files. Measured on 2.1.309 with `claude -p
+--permission-mode dontAsk`: `Bash(rote skill run docs-digest *)` there let
+`status` and `start '<json>'` run and denied `rote skill run other-skill
+status`. The user-level `~/.claude/settings.json` could not be measured,
+because moving it (`CLAUDE_CONFIG_DIR`, `HOME`) also moves the login, so
+rote does not write it.
 
 ### Blocks
 

@@ -23,8 +23,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   (`--allow-stubs` lets them through), and so are agent loops, until the
   driver's tool proxy lands. `--judges helper` has rote's inference helper
   answer judges on the IR's model instead of the agent, and is recorded in
-  the manifest. `rote skill run`, the command SKILL.md names, comes next. Until
-  then `scripts/run.py` runs the driver directly.
+  the manifest.
+- **`rote skill install / run / trust / list / runs`.** `rote skill install
+  <dir>` checks the dir is exactly what rote emitted and records the hash of
+  every file in it, as a confirmed plan. It then offers to save the Claude
+  Code allow rule `Bash(rote skill run <name> *)` in the project's
+  `.claude/settings.local.json`, as a separate step `--yes` never covers
+  (`--save-allow-rule`). `rote skill run <name> <command>` runs the
+  installed skill's driver only while every file matches that record: a
+  changed, added, missing or symlinked file is refused with an ERROR block
+  naming `rote skill trust <name>`, which shows the change as a diff summary
+  (`--diff` for the diffs) and records it on a yes. The driver runs with
+  rote's interpreter under `-I -B` and an allowlisted environment: MCP
+  endpoints come from the registry only, and the registry, login store and
+  run folders must be the ones the install recorded. `rote skill trust
+  <name> --allow-writes` lists every tool that may write and records the
+  consent for that plan. It needs a person at a terminal, because `--yes`
+  cannot stand in for one.
 
 ### Changed
 

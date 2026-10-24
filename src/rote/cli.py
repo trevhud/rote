@@ -142,12 +142,13 @@ def _run_command(runtime_dir: Path, pipeline: Pipeline | None, pipeline_path: Pa
             pipeline_path.parent / "input.json",
             pipeline_path.parent.parent / "input.json",
         ]
-    if emitted_skill(runtime_dir) is not None:
-        # A compiled skill is run by its own driver, one command per block,
-        # with rote's interpreter (it has fastmcp); `start` takes the input.
+    skill = emitted_skill(runtime_dir)
+    if skill is not None:
+        # A compiled skill runs through `rote skill run <name>`, which runs
+        # only what `rote skill install` recorded; `start` takes the input.
         command = (
-            f"{shlex.quote(sys.executable)} -I "
-            f"{shlex.quote(str(runtime_dir / 'scripts' / 'run.py'))} start"
+            f"rote skill install {shlex.quote(str(runtime_dir.resolve()))} && "
+            f"rote skill run {skill['name']} start"
         )
         file_flag, inline = "--file", ""
         if pipeline_path is not None:
@@ -5154,6 +5155,125 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _skill_command(name: str) -> Callable[[argparse.Namespace], int]:
+    """A ``rote skill`` handler from :mod:`rote.skill_target.commands`, imported on use."""
+
+    def handler(args: argparse.Namespace) -> int:
+        from rote.skill_target import commands
+
+        result: int = getattr(commands, name)(args)
+        return result
+
+    return handler
+
+
+def _add_skill_parser(subparsers: Any) -> None:
+    """``rote skill``: install, trust and run compiled skills (``--runtime skill``)."""
+    skill_p = subparsers.add_parser(
+        "skill",
+        help="Install, trust and run compiled skills (--runtime skill)",
+        description=(
+            "A compiled skill runs only through rote skill run <name>, and only while its "
+            "files are the ones the user installed. rote skill install <dir> records them "
+            "(the first trust point); rote skill trust <name> shows what changed since and "
+            "records it again, and with --allow-writes lets its tools write. Every write is "
+            "a plan, shown and confirmed first."
+        ),
+    )
+    sub = skill_p.add_subparsers(dest="skill_command", required=True)
+
+    run_p = sub.add_parser(
+        "run",
+        help="Run one driver command of an installed skill (what its SKILL.md tells agents)",
+        description=(
+            "Pass a command through to the installed skill's driver: start '<input json>' | "
+            "--file <path>; answer <run> <step> '<json>' | --file <path> [--said '<words>']; "
+            "resume <run>; status [<run>]; cancel <run>; runs [--prune]. Before it runs, "
+            "every file in the skill must match its install record (a changed, new, missing "
+            "or symlinked file is refused, naming rote skill trust <name>). The driver runs "
+            "with rote's interpreter in isolated mode, the skill's scripts dir and rote's "
+            "site-packages on the path, and an environment built from an allowlist: MCP "
+            "endpoints come from the registry only, and the state paths are the ones the "
+            "install recorded. It prints exactly one ROTE/1 block on stdout."
+        ),
+    )
+    run_p.add_argument("name", help="the skill's name (its SKILL.md name)")
+    run_p.add_argument(
+        "driver_args",
+        nargs=argparse.REMAINDER,
+        metavar="COMMAND ...",
+        help="the driver command and its arguments",
+    )
+    run_p.set_defaults(func=_skill_command("cmd_run"))
+
+    install_p = sub.add_parser(
+        "install",
+        help="Record a compiled skill and the hash of every file in it",
+        description=(
+            "Check that <dir> is exactly what rote emitted, then record it under its name "
+            "with the hash of every file: rote skill run refuses anything else. Then offer to "
+            "save the Claude Code allow rule Bash(rote skill run <name> *) in the project's "
+            ".claude/settings.local.json, as a separate step that --yes never covers: a "
+            "person is asked (default no), otherwise only --save-allow-rule saves it."
+        ),
+    )
+    install_p.add_argument("dir", help="the compiled skill's directory")
+    install_p.add_argument(
+        "--save-allow-rule",
+        action="store_true",
+        help="save the Claude Code allow rule without asking (never implied by --yes)",
+    )
+    install_p.add_argument(
+        "--claude-project",
+        default=None,
+        metavar="DIR",
+        help=(
+            "the project whose .claude/settings.local.json gets the rule (default: the "
+            "project the skill lives in, else the current directory)"
+        ),
+    )
+    _add_onboarding_mode_flags(install_p)
+    install_p.set_defaults(func=_skill_command("cmd_install"))
+
+    trust_p = sub.add_parser(
+        "trust",
+        help="Show what changed in an installed skill, and record it",
+        description=(
+            "List every file that changed, appeared or went missing since the skill was "
+            "installed or last trusted (lines added and removed), and any state path that "
+            "moved, then record them on a yes. --allow-writes also lists every tool the "
+            "skill's plan calls that may write and records the user's consent for this plan: "
+            "the driver lets a tool write only with it. That needs a person at a terminal; "
+            "--yes cannot stand in for one."
+        ),
+    )
+    trust_p.add_argument("name", help="the skill's name")
+    trust_p.add_argument(
+        "--allow-writes",
+        action="store_true",
+        help="let the skill's write tools run (asks a person; never accepted from --yes alone)",
+    )
+    trust_p.add_argument(
+        "--diff", action="store_true", help="print each change as a unified diff first"
+    )
+    _add_onboarding_mode_flags(trust_p, force=False)
+    trust_p.set_defaults(func=_skill_command("cmd_trust"))
+
+    list_p = sub.add_parser("list", help="List compiled skills and whether each would run")
+    list_p.add_argument("--json", action="store_true", help="One JSON object on stdout")
+    list_p.set_defaults(func=_skill_command("cmd_list"))
+
+    runs_p = sub.add_parser("runs", help="List every installed skill's runs")
+    runs_p.add_argument(
+        "--prune",
+        action="store_true",
+        help="remove expired runs first (finished after 7 days, waiting after 30 or past "
+        "their deadline)",
+    )
+    runs_p.add_argument("--json", action="store_true", help="One JSON object on stdout")
+    runs_p.set_defaults(func=_skill_command("cmd_runs"))
+
+
 def _add_onboarding_mode_flags(parser: argparse.ArgumentParser, *, force: bool = True) -> None:
     """The flags every onboarding command shares (``rote.interact.mode``).
 
@@ -6313,6 +6433,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=None, metavar="N", help="Show only the first N"
     )
     skills_list.set_defaults(func=_cmd_skills_list)
+
+    _add_skill_parser(subparsers)
 
     # rote doctor
     doctor = subparsers.add_parser(

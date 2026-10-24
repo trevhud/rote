@@ -2545,6 +2545,78 @@ changed (`__pycache__` and `node_modules` excepted). When an adapter
 change is intended, regenerate with the `scripts/isolated-rote emit`
 command the failing snapshot test prints, and commit the result.
 
+### `rote skill run` runs only what the user installed, in an allowlisted environment
+
+A Claude Code allow rule pre-approves `rote skill run <name> *`, so the
+command must approve exactly the files the user vouched for
+(`rote.skill_target.trust`, `launch`, `commands`; design in
+`docs/design/compiled-skill-target.md` section 2). Things to keep:
+
+- **Every file is hashed, and anything else is refused.** `rote skill
+  install` records the hash of every file in the dir (after checking it
+  matches `.rote-manifest.json`), in the app registry entry's `trust`. A
+  run refuses a changed, new, missing, symlinked or special file, and
+  `__pycache__` counts as new: an unchecked `.pyc` with the source's mtime
+  shadows a listed `.py`. The driver also runs with `-B`, though since its
+  code comes over a pipe (below) that flag is defense in depth, and
+  removing it fails no test.
+- **The env is an allowlist, never a scrub list** (`launch.child_env`).
+  Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
+  next command every block prints), base URLs, `XDG_*`, proxies and CA
+  bundles are dropped. Header-template variables pass only when the bound
+  registry names them for this plan's servers.
+- **State paths are bound to the install, not merely read.** The MCP
+  registry, login store and run dir each widen trust when forged (a server
+  declared read-only, someone else's login, a gate nobody answered).
+  Their overrides stay, for tests and `isolated-rote`. A run whose paths
+  resolve elsewhere than at install is refused. `ROTE_APPS_PATH` is the
+  root and is not bound: whoever sets rote's env can set `PYTHONPATH` too.
+- **The running code never touches disk.** `trust.scan` keeps each file's
+  bytes. `launch.frame` sends them, plan.json included, over an inherited
+  pipe to `launch.BOOTSTRAP` (a `-c` constant, never a file), whose
+  meta-path finder serves the driver and `extracted/` from those bytes with
+  the skill dir's paths as `__file__`. The skill dir's `sys.path` entry is
+  disabled. Two reviews broke the earlier shapes: swapping an extracted
+  module in the skill dir after the first `rote: calling` line, and then,
+  since the agent is the same uid, rewriting rote's private 0700 snapshot
+  (`test_no_file_of_the_running_code_exists_for_the_agent_to_swap`). Only a
+  CA bundle still lands on disk, because TLS reads a file.
+- **Write consent is a driver parameter, from the registry only.** The
+  bootstrap (`launch.BOOTSTRAP`) passes `allow_writes` to `main`. Never add
+  a flag or variable for it: `uv run scripts/run.py` would take it too.
+  The consent is bound to the plan's hash, and any rebind drops it.
+- **Everything that widens trust needs a person, not `--yes`**
+  (`commands._require_person`, `PersonRequired`, exit 2): every `trust`
+  that records anything, an install that changes an existing record or
+  replaces another dir's, and any install relying on a server registered
+  read-only. That last one counts because a read-only declaration lets every
+  tool on the server run, so the set of read-only servers (name and URL) is
+  bound in the record like the state paths. A detected caller cannot be the
+  person even with `--agent-mode no`. It is a speed bump, not a barrier: an
+  agent with a pty and its variables unset looks like a person.
+- **Proxies and CA bundles are bound, not dropped.** The proxy variables are
+  recorded at install and passed as recorded. A CA bundle is recorded by path
+  and hash and handed to the driver as rote's private copy. A proxy with a
+  non-loopback `http://` endpoint is refused.
+- **A kept copy is checked against its own name.** `trust._copy` returns
+  nothing when the bytes no longer hash to the digest. Then the summary says
+  so and the whole current file is shown, because a diff against a planted
+  copy would show the person a harmless change.
+- **The allow rule is its own Action, never `--yes`**
+  (`--save-allow-rule`), written only to `<project>/.claude/settings.local.json`,
+  the one file measured to work. The project defaults to the git root
+  (Claude Code 2.1.211+ keeps the file there). Claude Code keeps the file out
+  of git only when it writes it itself, so the Action warns when `git
+  check-ignore` says it would be committed. Tests always pass
+  `--claude-project <tmp>`, because the default target is the cwd's repo,
+  which under pytest is this one.
+- **`record_app` keeps every entry's `trust`.** It used to rebuild entries
+  from four fields, which would have dropped every install record on any
+  emit.
+
+Regressions: `tests/test_skill_commands.py`, every assertion verified by a
+mutation.
+
 ### Repo maintenance runs rote through `scripts/isolated-rote`
 
 A plain `rote emit` appends its output dir to the developer's real
@@ -2611,7 +2683,10 @@ A registry header's `${NAME}` is filled at connection time by one rule in
 every helper (`expand_headers`, TS `_HEADER_TEMPLATE_TS` in the Node
 helper); unset or empty is a `RoteMcpConfigError`, never an empty header.
 No filled value goes on a command line: the agent loop's `--mcp-config`
-(argv) carries a `headersHelper` running the emitted helper file instead.
+(argv) carries a `headersHelper` instead: `python -I -c <the MCP helper's
+source, from its module loader>`. Never exec `_rote_mcp.__file__`: under
+`rote skill run` the module came from checked bytes, and the file at that
+path is the unchecked one an agent can rewrite.
 `tests/test_mcp_header_template_parity_e2e.py` pins the twins together.
 
 Client config readers (`rote.clients`) only read: never run the client,

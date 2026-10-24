@@ -457,7 +457,12 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         "",
         "## Running it",
         "",
-        "An agent runs it the way SKILL.md says, one command per block:",
+        "Install it once. rote records the hash of every file here, and `rote skill run` "
+        "runs nothing else:",
+        "",
+        "    rote skill install <this directory>",
+        "",
+        "Then an agent runs it the way SKILL.md says, one command per block:",
         "",
         f"    {command} start '{example}'",
         "",
@@ -476,7 +481,8 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         "what it answers at DECIDE, is up to the agent. HUMAN answers are recorded with "
         "the person's words.",
         "",
-        "- Every tool call is read-only unless the user trusts the skill with writes.",
+        f"- Every tool call is read-only unless the user lets it write (`rote skill trust "
+        f"{name} --allow-writes`, at their own terminal).",
         "- A tool call that finished is never repeated; one interrupted mid-call runs again "
         "on `resume` (at least once).",
     ]
@@ -490,9 +496,10 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         "",
         "## Files",
         "",
-        f"`{MANIFEST_NAME}` holds the hash of every file here. Do not edit them: re-emit "
-        "instead (`rote emit --runtime skill`), and a file that differs from its hash is "
-        "refused before it runs.",
+        f"`{MANIFEST_NAME}` holds the hash of every file rote wrote here. Do not edit them: "
+        "re-emit instead (`rote emit --runtime skill`). `rote skill run` refuses a file "
+        "that differs from what was installed, or one that was added, until "
+        f"`rote skill trust {name}` has shown the change and recorded it.",
         "",
     ]
     return "\n".join(lines)

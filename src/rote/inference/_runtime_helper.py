@@ -1301,17 +1301,28 @@ def _mcp_config_for(
 def _headers_helper_command(_rote_mcp: Any, server: str) -> str:
     """The shell command that prints ``server``'s registry headers, filled.
 
-    Runs the emitted MCP helper file itself (its ``headers`` entry point),
-    so the agent loop's config names a command, never a header value.
-    ``-P`` (Python 3.11+) keeps the script's own directory, ``extracted/``,
-    off ``sys.path``: agent-written modules live there, and an
-    ``extracted/json.py`` would otherwise shadow the stdlib in the one
-    process that holds the filled credential."""
+    Runs the MCP helper's own source (its ``headers`` entry point) with
+    ``-c``, so the agent loop's config names a command, never a header
+    value. The source comes from the module's loader, never from re-reading
+    ``__file__``: under ``rote skill run`` the helper was imported from
+    checked bytes, and the file at ``__file__`` is one the agent can rewrite.
+    ``-I`` keeps the caller's directory, ``extracted/`` (agent-written
+    modules live there; a planted ``json.py`` would shadow the stdlib in the
+    one process that holds the filled credential) and ``PYTHON*`` variables
+    out of that process."""
     import shlex
     import sys
 
+    spec = getattr(_rote_mcp, "__spec__", None)
+    loader = getattr(spec, "loader", None)
+    source = loader.get_source(spec.name) if spec is not None and loader is not None else None
+    if not source:
+        raise RuntimeError(
+            "the MCP helper's source is not available from its loader, so its headers "
+            "command cannot be built; re-emit the pipeline"
+        )
     return " ".join(
-        shlex.quote(part) for part in (sys.executable, "-P", _rote_mcp.__file__, "headers", server)
+        shlex.quote(part) for part in (sys.executable, "-I", "-c", source, "headers", server)
     )
 
 
