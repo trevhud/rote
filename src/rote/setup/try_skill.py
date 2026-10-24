@@ -667,7 +667,8 @@ def difference(original: Any, compiled: Any, *, width: int = 60) -> str:
         piece = text[start : start + width]
         return ("..." if start else "") + piece + ("..." if start + width < len(text) else "")
 
-    return f"they part at character {at}: original {cut(a)!r}, compiled {cut(b)!r}"
+    where = "the first character" if at == 0 else f"character {at + 1}"
+    return f"they differ from {where}: original {cut(a)!r}, compiled {cut(b)!r}"
 
 
 def _num(value: Any, unit: str = "") -> str:
@@ -690,8 +691,9 @@ def render(summary: Mapping[str, Any], *, name: str, next_steps: Sequence[str]) 
     lines = [f"rote try {name}: {summary['answer']}"]
     if summary["noise_pairs"]:
         steady = sum(1 for f in fields if f["noise_matched"] == f["noise_pairs"])
+        times = "twice" if runs == 2 else f"{runs} times"
         lines.append(
-            f"For scale, the original skill matched its own other run(s) on {steady} of "
+            f"Run {times}, the original skill gave the same value on {steady} of "
             f"{len(fields)} fields."
         )
     else:

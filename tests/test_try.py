@@ -237,7 +237,7 @@ def test_a_person_confirms_each_step_and_sees_the_result(
     )
     # Two trials: the original against itself is the noise floor.
     assert lines[start + 1] == (
-        "For scale, the original skill matched its own other run(s) on 4 of 4 fields."
+        "Run twice, the original skill gave the same value on 4 of 4 fields."
     )
     # The live-data fields, each with the reason it is not expected to match.
     why = {f.name: f.why for f in demo.load_reference().fields}
@@ -423,7 +423,10 @@ def test_the_parser_spells_the_modules_constants() -> None:
 def test_a_long_difference_shows_where_the_two_part() -> None:
     shared = "Available pages for a repo: " + "- 1 Overview " * 10
     text = try_skill.difference(shared + "- 2 Setup", shared + "- 2 Getting Started")
-    assert text.startswith(f"they part at character {len(shared) + 4}:")
+    assert text.startswith(f"they differ from character {len(shared) + 5}:")
+    assert try_skill.difference("x" * 70, "y" * 70).startswith(
+        "they differ from the first character:"
+    )
     assert (
         "original '...1 Overview - 2 Setup', compiled '...1 Overview - 2 Getting Started'" in text
     )
@@ -466,7 +469,7 @@ def test_the_noise_floor_is_the_original_against_its_own_other_run(
     status, _, err = _confirmed(capsys, monkeypatch, "docs-digest", "--trials", "2")
     assert status == 0, err
     lines = err.splitlines()
-    assert "For scale, the original skill matched its own other run(s) on 3 of 4 fields." in lines
+    assert "Run twice, the original skill gave the same value on 3 of 4 fields." in lines
     why = {f.name: f.why for f in demo.load_reference().fields}
     at = lines.index(f"  repo_outline: matched in 1 of 2 runs. {why['repo_outline']}")
     assert lines[at + 1].strip().startswith("The original skill also differed from itself here")
