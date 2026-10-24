@@ -4776,6 +4776,137 @@ def _single_emitted_runtime(target: Path) -> str | None:
     return names[0] if len(names) == 1 else None
 
 
+def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
+    """``rote eval --run --runtime skill``: the source skill and its compiled
+    skill, each run by a ``claude -p`` subagent on the same input
+    (:mod:`rote.eval.skill_ab`).
+
+    The target is a compiled pipeline (as for every ``rote eval``), or a
+    source skill dir, which is compiled first with the pinned argv
+    :func:`rote.proof.compile_command` builds."""
+    import json
+    import tempfile
+    from datetime import UTC, datetime
+
+    from rote.compiler.drivers.claude import DEFAULT_MODEL
+    from rote.eval import skill_ab
+    from rote.eval.empirical import EmpiricalError
+
+    if args.trials < 1:
+        print(f"error: --trials must be >= 1, got {args.trials}", file=sys.stderr)
+        return 2
+    if args.budget is None:
+        print(
+            "error: --run --runtime skill needs --budget USD: every trial is a paid "
+            "claude -p run, and the eval stops before the one that would cross it",
+            file=sys.stderr,
+        )
+        return 2
+    if (args.input is None) == (args.case is None):
+        print(
+            "error: pass exactly one of --input <task.json> or --case <id> (a bench "
+            "case from the example's fidelity/cases.yaml)",
+            file=sys.stderr,
+        )
+        return 2
+    model = args.model or DEFAULT_MODEL
+    work = (
+        Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="rote-skill-ab-"))
+    ).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    ledger = skill_ab.Ledger(
+        Path(args.ledger) if args.ledger else work / "ledger.json", float(args.budget)
+    )
+    print(f"rote eval: work dir {work}; ledger {ledger.path}", file=sys.stderr)
+    log = lambda line: print(line, file=sys.stderr)  # noqa: E731
+    target = Path(args.target)
+    try:
+        executable = skill_ab.require_executable("claude")
+        task = json.loads(Path(args.input).read_text(encoding="utf-8")) if args.input else None
+        provenance: dict[str, object] | None = None
+        if (target / "SKILL.md").is_file():
+            skill_dir = target
+            sample: object = (
+                skill_ab.bench_case(skill_dir, args.case)[1].input
+                if args.case is not None
+                else task["input"]
+                if isinstance(task, dict) and "signals" in task
+                else task
+            )
+            if not isinstance(sample, dict):
+                raise skill_ab.SkillAbError("the input must be a JSON object")
+            pipeline_yaml, provenance = skill_ab.compile_for_eval(
+                skill_dir, sample, work, ledger, model=args.compile_model, log=log
+            )
+        else:
+            found = _resolve_pipeline_yaml(target)
+            if found is None:
+                raise skill_ab.SkillAbError(
+                    f"no pipeline.yaml or SKILL.md at {target}: pass a compiled dir, a "
+                    "pipeline.yaml, or a source skill to compile first"
+                )
+            pipeline_yaml = found
+            resolved = _resolve_eval_skill_dir(
+                args.skill, pipeline_yaml, load_pipeline(pipeline_yaml).source_skill
+            )
+            if resolved is None:
+                raise skill_ab.SkillAbError(
+                    "the eval runs the source skill too: pass its directory with --skill <dir>"
+                )
+            skill_dir = resolved
+        subject = skill_ab.subject_for(
+            pipeline_yaml,
+            skill_dir=skill_dir,
+            task=task,
+            case_id=args.case,
+            provenance=provenance,
+        )
+        harness = skill_ab.Harness(
+            work=work,
+            model=model,
+            ledger=ledger,
+            executable=executable,
+            max_turns=args.max_turns,
+            log=log,
+        )
+        report = skill_ab.run_subject(harness, subject, args.trials)
+    except skill_ab.BudgetExhausted as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (skill_ab.SkillAbError, EmpiricalError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    corpus = skill_ab.append_corpus(
+        [skill_ab.corpus_record(report, model=model, generated_at=generated_at)]
+    )
+    print(f"rote eval: measurements appended to {corpus}", file=sys.stderr)
+    if args.json:
+        rendered = json.dumps(
+            {
+                "generated_at": generated_at,
+                "model": model,
+                "spent_usd": ledger.spent,
+                "budget_usd": ledger.cap_usd,
+                "work_dir": str(work),
+                **report.to_dict(),
+            },
+            indent=2,
+            default=str,
+        )
+    else:
+        rendered = skill_ab.render_markdown([report], model=model, spent=ledger.spent)
+    if args.out:
+        Path(args.out).write_text(rendered + ("\n" if args.json else ""), encoding="utf-8")
+        print(f"rote eval: wrote {args.out}", file=sys.stderr)
+    else:
+        print(rendered)
+    clean = report.stopped is None and all(
+        t.ok for summary in report.sides.values() for t in summary.trials
+    )
+    return 0 if clean else 1
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     """Static before/after scorecard: speed, cost, determinism.
 
@@ -4786,6 +4917,26 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     import json
 
     from rote.eval.pricing import PricingError
+
+    if args.run and args.runtime == "skill":
+        return _cmd_eval_skill_ab(args)
+    skill_ab_only = [
+        flag
+        for flag, value in (
+            ("--case", args.case),
+            ("--budget", args.budget),
+            ("--ledger", args.ledger),
+            ("--work-dir", args.work_dir),
+            ("--compile-model", args.compile_model),
+        )
+        if value is not None
+    ]
+    if skill_ab_only:
+        print(
+            f"error: {', '.join(skill_ab_only)} only apply to --run --runtime skill",
+            file=sys.stderr,
+        )
+        return 2
 
     target = Path(args.target)
     pipeline_yaml = _resolve_pipeline_yaml(target)
@@ -4918,6 +5069,7 @@ def _run_empirical(
         render_measured_markdown,
         run_pipeline_trial,
         run_skill_trial,
+        split_task,
     )
     from rote.eval.pricing import fetch_catalog
 
@@ -4926,28 +5078,7 @@ def _run_empirical(
     if args.trials < 1:
         raise ValueError(f"--trials must be >= 1, got {args.trials}")
     task = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    # Envelope form: {"input": {...}, "signals": {...}}. Disambiguate
-    # against a pipeline whose *payload* legitimately has a top-level
-    # "input" field: an explicit "signals" key always means envelope;
-    # otherwise "input" only reads as envelope when the pipeline's
-    # declared input contract has no field of that name.
-    declared = set(pipeline.input.required) | set(pipeline.input.optional)
-    if pipeline.input.input_schema is not None:
-        props = pipeline.input.input_schema.get("properties")
-        if isinstance(props, dict):
-            declared |= set(props.keys())
-    is_envelope = (
-        isinstance(task, dict)
-        and "input" in task
-        and set(task) <= {"input", "signals"}
-        and ("signals" in task or "input" not in declared)
-    )
-    if is_envelope:
-        input_payload = task["input"]
-        signals = task.get("signals") or {}
-    else:
-        input_payload = task
-        signals = {}
+    input_payload, signals = split_task(pipeline, task)
 
     runtime_dir = _resolve_runtime_dir(args.runtime_dir, pipeline_yaml)
     catalog = fetch_catalog(provider=args.provider)
@@ -6633,6 +6764,52 @@ def _build_parser() -> argparse.ArgumentParser:
             "Python executable for pipeline trials (default: the current "
             "interpreter; point at your app's venv if it has its own deps)"
         ),
+    )
+    skill_ab = eval_cmd.add_argument_group(
+        "--run --runtime skill",
+        "The paired eval: the source skill and its compiled skill (emitted with --runtime "
+        "skill, installed into a throwaway state, run through rote skill run), each by a "
+        "claude -p subagent with the same flags, tools and simulated person, on the same "
+        "input. Reports wall time, all four token buckets, cost, turns, the context the "
+        "skill left (from a control run per side), and field-by-field fidelity, with the "
+        "original against itself as the noise floor; checks that the compiled side ran "
+        "through the driver and that every gate was answered by the person. --model "
+        "defaults to the compiler's default model. TARGET may also be a source skill, "
+        "which is compiled first with a pinned argv (--local, --decider rules).",
+    )
+    skill_ab.add_argument(
+        "--case",
+        default=None,
+        metavar="ID",
+        help="run a bench case from <example>/fidelity/cases.yaml (its input, fixture "
+        "servers and gate answers) instead of --input",
+    )
+    skill_ab.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="required: the spend cap; the eval stops before a run whose estimate would "
+        "cross it (counted in --ledger, so several invocations can share one cap)",
+    )
+    skill_ab.add_argument(
+        "--ledger",
+        default=None,
+        metavar="FILE",
+        help="the spend ledger, a JSON file (default: ledger.json in the work dir)",
+    )
+    skill_ab.add_argument(
+        "--work-dir",
+        default=None,
+        metavar="DIR",
+        help="where each trial's transcript, run folder and result are kept (default: a "
+        "new temp dir, printed)",
+    )
+    skill_ab.add_argument(
+        "--compile-model",
+        default=None,
+        metavar="MODEL",
+        help="the compiler's model, when TARGET is a source skill (default: the compiler's)",
     )
     eval_cmd.set_defaults(func=_cmd_eval)
 
