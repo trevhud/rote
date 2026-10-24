@@ -84,19 +84,19 @@ def _record_action(
     title: str,
     read: Snapshot,
     apps: list[RegisteredApp],
-    root: Path,
-    files: dict[str, str],
+    now: trust.Scan,
     summary: str,
     replaces: bool,
     command: str,
 ) -> Action:
-    """Write the registry (stale-checked against ``read``) and keep copies of ``files``."""
+    """Write the registry (stale-checked against ``read``) and keep copies of the
+    bytes in ``now``, the ones the person was shown."""
     content = render_apps(apps)
     state = read.state
     store = trust.store_dir()
 
     def run() -> Path:
-        trust.keep_copies(root, files)
+        trust.keep_copies(now.data)
         atomic_write_text(read.path, content, expect=state)
         return read.path
 
@@ -107,7 +107,7 @@ def _record_action(
             FileWrite(read.path, summary, existed=read.existed, replaces=replaces),
             FileWrite(
                 store,
-                f"keep a copy of each file, for rote skill trust's diffs ({len(files)} files)",
+                f"keep a copy of each file, for rote skill trust's diffs ({len(now.files)} files)",
                 existed=store.exists(),
             ),
         ),
@@ -140,13 +140,44 @@ def _report(out: Output, plan: Plan) -> tuple[bool, list[dict[str, Any]]]:
     return all(o.status == "done" for o in outcomes), [o.to_dict() for o in outcomes]
 
 
+def person_present(mode: Any, prompter: Any) -> bool:
+    """Whether a person answers this run's prompts, for the consent no flag may give.
+
+    A prompter that can ask (a terminal, no agent, or ``--agent-mode no``),
+    and no agent detected as the caller: ``--agent-mode no`` does not
+    override a detected caller here, because an agent can pass it. This is a
+    speed bump, not a barrier. An agent can run rote under a pseudo-terminal
+    with its variables unset, and nothing in a process can tell that apart
+    from a person. What it buys is that the agent's ordinary call, and every
+    flag it might add, stops and names the command for the user to run."""
+    detected = getattr(mode, "detected", None)
+    return bool(prompter.interactive) and not (detected is not None and detected.role == "caller")
+
+
+def _require_person(mode: Any, prompter: Any, plan: Plan, why: str | None, command: str) -> None:
+    """Raise :class:`PersonRequired` when ``why`` is set and nobody is at the terminal."""
+    if why is not None and plan.actions and not person_present(mode, prompter):
+        raise PersonRequired(
+            f"{why} needs the user at a terminal: --yes cannot stand in for them (the "
+            "driver's tool calls skip the client's own prompts). Nothing was written.",
+            command,
+            plan,
+        )
+
+
 # ───────── install ─────────
 
 
 def install_plan(
     skill: trust.SkillDir, read: Snapshot, apps: list[RegisteredApp], now: trust.Scan
-) -> Plan:
-    """The plan that records ``skill`` as installed, with every file in ``now``."""
+) -> tuple[Plan, str | None]:
+    """The plan that records ``skill`` as installed, with every file in ``now``; and
+    why it needs a person, if it does.
+
+    A fresh install of what rote emitted needs only a yes. One that changes an
+    existing record (adopts changed files, rebinds a state path), replaces
+    another dir's install, or relies on servers registered read-only (which
+    let every tool on them run) needs a person."""
     existing = next((a for a in apps if a.path == skill.root), None)
     previous = existing.trust if existing is not None else None
     displaced = [
@@ -157,30 +188,43 @@ def install_plan(
         and a.trust is not None
         and a.path != skill.root
     ]
+    plan_data = trust.scanned_plan(now)
+    bound = trust.bindings(plan_data)
     notes: list[str] = []
+    reasons: list[str] = []
     writes = None
     if previous is not None:
+        recorded_bound = previous.get("bindings") or {}
         same_files = previous.get("files") == now.files
-        same_paths = previous.get("bindings") == trust.bindings()
-        if same_files and same_paths and not displaced:
+        moved = trust.moved_bindings(recorded_bound, bound)
+        if same_files and not moved and not displaced:
             return Plan(
                 f"install {skill.name}",
                 notes=(f"{skill.name} is already installed from {skill.root}",),
-            )
+            ), None
         recorded = previous.get("files") or {}
-        notes += trust.diff_summary(skill.root, trust.drift(now, recorded), recorded)
+        notes += trust.diff_summary(now, trust.drift(now, recorded), recorded)
+        notes += [f"moved: {m}" for m in moved]
+        reasons.append(f"changing {skill.name}'s install")
         old_writes = previous.get("writes")
         if isinstance(old_writes, dict):
-            if old_writes.get("plan_sha256") == trust.plan_sha256(skill):
+            if old_writes.get("plan_sha256") == trust.plan_sha256(now) and not moved:
                 writes = old_writes
             else:
                 notes.append(
-                    "the plan changed, so the earlier write consent is dropped "
-                    f"(rote skill trust {skill.name} --allow-writes to give it again)"
+                    "the earlier write consent is dropped (the plan or what it depends on "
+                    f"changed): rote skill trust {skill.name} --allow-writes gives it again"
                 )
     for other in displaced:
         notes.append(f"replaces the install of {skill.name} from {other.path}")
-    record = trust.install_record(now.files, writes=writes)
+        reasons.append(f"replacing the install of {skill.name} from {other.path}")
+    for server, url in (bound.get("read_only") or {}).items():
+        notes.append(
+            f"relies on {server} at {url} being read-only (registered so): every tool on it runs"
+        )
+    if bound.get("read_only"):
+        reasons.append(f"letting {skill.name} call servers registered read-only")
+    record = trust.install_record(now, writes=writes)
     updated = [
         replace(a, trust=None) if a in displaced else a for a in apps if a.path != skill.root
     ]
@@ -198,18 +242,18 @@ def install_plan(
         title=f"Install {skill.name} from {skill.root}",
         read=read,
         apps=updated,
-        root=skill.root,
-        files=now.files,
+        now=now,
         summary=f"record {skill.name} and the hashes of its {len(now.files)} files",
         replaces=bool(displaced),
         command=f"rote skill install {skill.root}",
     )
-    return Plan(f"install {skill.name}", (action,), tuple(notes))
+    plan = Plan(f"install {skill.name}", (action,), tuple(notes))
+    return plan, ("; ".join(reasons) if reasons else None)
 
 
 def cmd_install(args: argparse.Namespace) -> int:
     from rote.interact import prompter as prompting
-    from rote.interact.prompter import PromptCancelled, PromptRequired
+    from rote.interact.prompter import PromptCancelled
 
     try:
         mode = _mode(args)
@@ -220,6 +264,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     prompter = prompting.prompter_for(mode)
     argv: list[str] = list(getattr(args, "raw_argv", sys.argv[1:]))
     try:
+        if not Path(args.dir).is_dir():
+            raise SkillTrustError(
+                f"{args.dir} does not exist or is not a directory.",
+                "pass the compiled skill's directory (rote emit ... --runtime skill --out <dir>)",
+                usage=True,
+            )
         skill = trust.read_skill_dir(Path(args.dir))
         now = trust.scan(skill.root)
         found = trust.against_manifest(skill, now)
@@ -230,17 +280,18 @@ def cmd_install(args: argparse.Namespace) -> int:
                 f"{skill.root}), or remove the files listed",
             )
         read, apps = _registry()
-        plan = install_plan(skill, read, apps, now)
+        plan, why = install_plan(skill, read, apps, now)
     except SkillTrustError as e:
         return _fail(out, e)
     out.plan(plan)
     try:
+        _require_person(mode, prompter, plan, why, f"rote skill install {skill.root}")
         granted = {FORCE_FLAG} if args.force else set()
         if not confirm_plan(plan, prompter, yes=mode.yes, granted=granted):
             out.say(f"rote skill install: {skill.name} was not installed")
             out.result({"ok": False, "applied": False, "plan": plan.to_dict()})
             return 1
-    except (PromptRequired, ConfirmationRequired) as e:
+    except (PromptRequired, ConfirmationRequired, PersonRequired) as e:
         return _stop_for_action(out, e, argv)
     except PromptCancelled:
         out.say("rote skill install: cancelled; nothing was written")
@@ -325,8 +376,7 @@ def _offer_allow_rule(
 
 def cmd_trust(args: argparse.Namespace) -> int:
     from rote.interact import prompter as prompting
-    from rote.interact.prompter import PromptCancelled, PromptRequired
-    from rote.interact.report import PersonRequired
+    from rote.interact.prompter import PromptCancelled
 
     try:
         mode = _mode(args)
@@ -340,21 +390,17 @@ def cmd_trust(args: argparse.Namespace) -> int:
     try:
         read, apps = _registry()
         app = trust.installed(args.name, apps)
-        plan, report = trust_plan(app, read, apps, allow_writes=args.allow_writes, out=out)
+        plan, report, now = trust_plan(app, read, apps, allow_writes=args.allow_writes)
+        recorded = (app.trust or {}).get("files") or {}
+        found = trust.drift(now, recorded)
+        for line in trust.whole_files(now, found, recorded):
+            out.say(line)
         if args.diff:
-            recorded = (app.trust or {}).get("files") or {}
-            found = trust.drift(trust.scan(app.path), recorded)
-            for line in trust.unified_diffs(app.path, found, recorded):
+            for line in trust.unified_diffs(now, found, recorded):
                 out.say(line)
         out.plan(plan)
-        if report.get("grants_writes") and not prompter.interactive:
-            raise PersonRequired(
-                f"letting {app.name}'s tools write needs the user at a terminal: --yes cannot "
-                "stand in for them (the driver's tool calls skip the client's own prompts). "
-                "Nothing was written.",
-                f"rote skill trust {app.name} --allow-writes",
-                plan,
-            )
+        command = f"rote skill trust {app.name}" + (" --allow-writes" if args.allow_writes else "")
+        _require_person(mode, prompter, plan, f"trusting {app.name} as it is now", command)
         if not confirm_plan(plan, prompter, yes=mode.yes):
             out.say(f"rote skill trust: nothing was recorded for {app.name}")
             out.result({"ok": False, "applied": False, "plan": plan.to_dict(), **report})
@@ -386,10 +432,13 @@ def trust_plan(
     apps: list[RegisteredApp],
     *,
     allow_writes: bool,
-    out: Output | None = None,
-) -> tuple[Plan, dict[str, Any]]:
-    """The plan that records ``app``'s files as they are now (and, with
-    ``allow_writes``, consent for its write tools); and what it found."""
+) -> tuple[Plan, dict[str, Any], trust.Scan]:
+    """The plan that records ``app``'s files and setup as they are now (and, with
+    ``allow_writes``, consent for its write tools); what it found; the bytes read.
+
+    Every plan with an action needs a person (:func:`_require_person`).
+    Anything that moved drops the write consent, which only ``--allow-writes``
+    gives again."""
     assert app.trust is not None and app.name is not None
     name = app.name
     root = app.path
@@ -401,26 +450,31 @@ def trust_plan(
     recorded: dict[str, str] = app.trust.get("files") or {}
     now = trust.scan(root)
     found = trust.drift(now, recorded)
-    lines = trust.diff_summary(root, found, recorded)
     if found.untrustable:
         raise SkillTrustError(
             f"{name}'s dir holds what no record can vouch for: {found.describe()}.",
             "remove those entries (copy a symlink's target in its place if it is needed), "
             f"then run rote skill trust {name} again",
         )
-    skill = trust.read_skill_dir(root)
-    moved = trust.moved_bindings(app.trust.get("bindings") or {}, trust.bindings())
+    lines = trust.diff_summary(now, found, recorded)
+    plan_data = trust.scanned_plan(now)
+    bound = trust.bindings(plan_data)
+    moved = trust.moved_bindings(app.trust.get("bindings") or {}, bound)
     writes = app.trust.get("writes")
     notes = [*lines, *(f"moved: {m}" for m in moved)]
-    if isinstance(writes, dict) and writes.get("plan_sha256") != trust.plan_sha256(skill):
+    for server, url in (bound.get("read_only") or {}).items():
         notes.append(
-            "the plan changed, so the earlier write consent is dropped"
-            + ("" if allow_writes else f" (rote skill trust {name} --allow-writes gives it again)")
+            f"relies on {server} at {url} being read-only (registered so): every tool on it runs"
+        )
+    if isinstance(writes, dict) and (writes.get("plan_sha256") != trust.plan_sha256(now) or moved):
+        notes.append(
+            "the earlier write consent is dropped (the plan or what it depends on changed)"
+            + ("" if allow_writes else f": rote skill trust {name} --allow-writes gives it again")
         )
         writes = None
     report: dict[str, Any] = {"drift": found.to_dict(), "moved": moved, "grants_writes": False}
     if allow_writes:
-        tools = trust.write_tools(skill)
+        tools = trust.write_tools(plan_data)
         report["write_tools"] = list(tools.may_write)
         report["read_only_tools"] = list(tools.read_only)
         for tool in tools.read_only:
@@ -429,7 +483,7 @@ def trust_plan(
             notes.append(f"no tool {name} calls needs write consent")
         elif not (isinstance(writes, dict) and writes.get("tools") == list(tools.may_write)):
             writes = {
-                "plan_sha256": trust.plan_sha256(skill),
+                "plan_sha256": trust.plan_sha256(now),
                 "tools": list(tools.may_write),
                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
@@ -439,16 +493,17 @@ def trust_plan(
                 "listed because their servers are not registered read-only (rote mcp add "
                 "--read-only); a tool its server marks readOnlyHint runs without this consent"
             )
-    changes_files = not found.clean or bool(moved)
-    if not changes_files and not report["grants_writes"] and writes == app.trust.get("writes"):
-        return Plan(f"trust {name}", notes=(*notes, f"{name} is as the user installed it")), report
-    record = trust.install_record(now.files, writes=writes)
+    changes = not found.clean or bool(moved)
+    if not changes and not report["grants_writes"] and writes == app.trust.get("writes"):
+        notes.append(f"{name} is as the user installed it")
+        return Plan(f"trust {name}", notes=tuple(notes)), report, now
+    record = trust.install_record(now, writes=writes)
     updated = [replace(a, trust=record) if a.path == root else a for a in apps]
     parts = []
     if not found.clean:
         parts.append(f"{len(lines)} file change(s)")
     if moved:
-        parts.append(f"{len(moved)} moved path(s)")
+        parts.append(f"{len(moved)} changed binding(s)")
     if report["grants_writes"]:
         parts.append(f"write consent for {len(report['write_tools'])} tool(s)")
     if not parts:
@@ -458,13 +513,12 @@ def trust_plan(
         title=f"Trust {name} as it is now ({root})",
         read=read,
         apps=updated,
-        root=root,
-        files=now.files,
+        now=now,
         summary="record " + ", ".join(parts),
         replaces=False,
         command=f"rote skill trust {name}" + (" --allow-writes" if allow_writes else ""),
     )
-    return Plan(f"trust {name}", (action,), tuple(notes)), report
+    return Plan(f"trust {name}", (action,), tuple(notes)), report, now
 
 
 # ───────── list and runs ─────────

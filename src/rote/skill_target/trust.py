@@ -14,13 +14,21 @@ use a registered name. Three pieces, all here:
 - **The check** (:func:`check`), before every run: the dir holds exactly the
   recorded files with the recorded hashes. A changed file, an unlisted one
   (a dropped-in ``scripts/json.py`` would shadow an import; a stale
-  ``__pycache__`` would too, which is why the driver runs with ``-B``), a
-  missing one (an import would fall through to site-packages), a symlink
-  (its target can change after the check) or a special file is refused,
-  and so is a state path that no longer resolves where it did at install.
+  ``__pycache__`` would too), a missing one (an import would fall through to
+  site-packages), a symlink (its target can change after the check) or a
+  special file is refused, and so is any binding that differs from the
+  record. Each file is read once; the run starts from those bytes
+  (:class:`Verified`, :mod:`rote.skill_target.launch`).
 - **The copies.** Each trusted file's bytes are kept by hash beside the
   registry (:func:`store_dir`), so ``rote skill trust`` can show what changed
-  as a diff, not only that a hash differs.
+  as a diff, not only that a hash differs. A copy is used only while it still
+  hashes to its name.
+
+Besides the state paths, the record binds ``ROTE_CLOUD_CRED_PATH``, the
+proxy variables, the CA bundles (path and hash), and the servers the plan
+calls that the user registered read-only (name and URL). A read-only
+declaration lets every tool on a server run, so it is write consent by
+another name and is bound the same way.
 
 The state paths are bound, not merely read, because each can widen trust
 without touching a file in the skill: a forged ``ROTE_MCP_CONFIG`` can
@@ -38,6 +46,7 @@ see ``docs/design/compiled-skill-target.md`` for why that is the line.
 from __future__ import annotations
 
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -62,6 +71,7 @@ BINDINGS: dict[str, tuple[str, str]] = {
     "mcp_config": ("ROTE_MCP_CONFIG", "the MCP registry"),
     "token_dir": ("ROTE_MCP_TOKEN_DIR", "the MCP login store"),
     "run_dir": ("ROTE_SKILL_RUN_DIR", "the run folders"),
+    "cloud_cred": ("ROTE_CLOUD_CRED_PATH", "the rote cloud login a helper judge pays with"),
 }
 
 
@@ -86,6 +96,9 @@ class Scan:
     files: dict[str, str]
     links: tuple[str, ...] = ()
     special: tuple[str, ...] = ()
+    #: Each file's bytes, as hashed: a run starts from these, never from a
+    #: second read of the dir (:mod:`rote.skill_target.launch`).
+    data: dict[str, bytes] = field(default_factory=dict, repr=False, compare=False)
 
 
 def _sha(data: bytes) -> str:
@@ -95,6 +108,7 @@ def _sha(data: bytes) -> str:
 def scan(root: Path) -> Scan:
     """Every entry under ``root``, never following a symlink."""
     files: dict[str, str] = {}
+    data: dict[str, bytes] = {}
     links: list[str] = []
     special: list[str] = []
 
@@ -107,12 +121,27 @@ def scan(root: Path) -> Scan:
                 elif entry.is_dir(follow_symlinks=False):
                     walk(Path(entry.path), f"{rel}/")
                 elif entry.is_file(follow_symlinks=False):
-                    files[rel] = _sha(Path(entry.path).read_bytes())
+                    # O_NOFOLLOW: a file swapped for a symlink since the
+                    # listing is refused, not followed.
+                    try:
+                        fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    except OSError as e:
+                        if e.errno != errno.ELOOP:
+                            raise
+                        links.append(rel)
+                        continue
+                    with os.fdopen(fd, "rb") as f:
+                        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                            special.append(rel)
+                            continue
+                        content = f.read()
+                    files[rel] = _sha(content)
+                    data[rel] = content
                 else:
                     special.append(rel)
 
     walk(root, "")
-    return Scan(files, tuple(links), tuple(special))
+    return Scan(files, tuple(links), tuple(special), data)
 
 
 @dataclass(frozen=True)
@@ -174,26 +203,139 @@ def drift(now: Scan, recorded: Mapping[str, str]) -> Drift:
 # ───────── the state paths ─────────
 
 
-def bindings() -> dict[str, str]:
-    """Where this process's MCP registry, login store and run folders resolve."""
+#: Proxy variables a run may use, recorded at install and passed only as recorded.
+PROXY_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+#: CA bundle variables, recorded by path and the bundle's hash: a proxy plus a
+#: CA the attacker chose reads every bearer token.
+CA_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+
+
+def _file_sha(path: str) -> str:
+    try:
+        return _sha(Path(path).read_bytes())
+    except OSError as e:
+        return f"unreadable ({e.strerror})"
+
+
+def network_env(environ: Mapping[str, str]) -> dict[str, Any]:
+    """The proxy and CA variables set in ``environ``, the CA files by path and hash."""
+    return {
+        "proxy": {v: environ[v] for v in PROXY_VARS if environ.get(v)},
+        "ca": {
+            v: f"{environ[v]} sha256:{_file_sha(environ[v])}" for v in CA_VARS if environ.get(v)
+        },
+    }
+
+
+def plan_servers(plan: Mapping[str, Any]) -> set[str]:
+    """Every MCP server a plan can call: its steps, a loop's tools and body steps."""
+    used: set[str] = set()
+    for step in plan.get("steps") or []:
+        if step.get("kind") == "mcp":
+            used.add(str(step["server"]))
+        for body in step.get("body") or []:
+            if body.get("kind") == "mcp":
+                used.add(str(body["server"]))
+        used.update(str(s) for s in (step.get("tool_servers") or {}).values())
+    return used
+
+
+def relied_read_only(plan: Mapping[str, Any]) -> dict[str, str]:
+    """``{server: registered url}`` for each server the plan calls that the user
+    registered read-only. A read-only run calls every tool on those, so the set
+    acts as write consent and is bound like it."""
+    from rote.mcp.registry import load_registry
+
+    servers = load_registry().servers
+    used = plan_servers(plan)
+    return {
+        name: config.url
+        for name, config in sorted(servers.items())
+        if name in used and config.read_only is True
+    }
+
+
+def bindings(plan: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """What a run of ``plan`` depends on beyond its files, as this process resolves it:
+    the state paths, the proxy and CA variables, and the servers trusted read-only."""
+    from rote.cloud_auth import credential_path
     from rote.mcp.registry import registry_path
     from rote.mcp.tokens import token_dir
     from rote.skill_target._driver import run_root
 
+    environ = os.environ if environ is None else environ
     return {
         "mcp_config": str(registry_path().resolve()),
         "token_dir": str(token_dir().resolve()),
         "run_dir": str(run_root().resolve()),
+        "cloud_cred": str(credential_path().resolve()),
+        **network_env(environ),
+        "read_only": relied_read_only(plan),
     }
 
 
-def moved_bindings(recorded: Mapping[str, str], now: Mapping[str, str]) -> list[str]:
-    """One line per state path that resolves elsewhere than the record says."""
+def moved_bindings(recorded: Mapping[str, Any], now: Mapping[str, Any]) -> list[str]:
+    """One line per binding that differs from the record."""
     lines = []
     for key, (var, what) in BINDINGS.items():
         if recorded.get(key) != now[key]:
             lines.append(f"{what} ({var}) was {recorded.get(key)} at install and is {now[key]} now")
+    for key, what in (
+        ("proxy", "the proxy variables"),
+        ("ca", "the CA bundle variables"),
+        ("read_only", "the servers registered read-only that this skill calls"),
+    ):
+        if (recorded.get(key) or {}) != (now.get(key) or {}):
+            lines.append(f"{what} were {recorded.get(key) or {}} at install and are {now[key]} now")
     return lines
+
+
+def _loopback(host: str | None) -> bool:
+    import ipaddress
+
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def proxied_plain_http(plan: Mapping[str, Any], network: Mapping[str, Any]) -> list[str]:
+    """The non-loopback ``http://`` endpoints a set proxy would see in clear text."""
+    from urllib.parse import urlparse
+
+    from rote.mcp.registry import load_registry
+
+    if not network.get("proxy"):
+        return []
+    servers = load_registry().servers
+    urls: dict[str, str] = {}
+    for step in plan.get("steps") or []:
+        if step.get("kind") == "mcp":
+            config = servers.get(str(step["server"]))
+            urls[str(step["server"])] = config.url if config is not None else str(step.get("url"))
+    for server in plan_servers(plan) - urls.keys():
+        config = servers.get(server)
+        if config is not None:
+            urls[server] = config.url
+    bad = []
+    for server, url in sorted(urls.items()):
+        parsed = urlparse(url)
+        if parsed.scheme == "http" and not _loopback(parsed.hostname):
+            bad.append(f"{server} at {url}")
+    return bad
 
 
 # ───────── the copies ─────────
@@ -205,30 +347,28 @@ def store_dir() -> Path:
     return apps_path().parent / "skill-files"
 
 
-def keep_copies(root: Path, files: Mapping[str, str]) -> None:
-    """Copy each of ``files`` into the store, unless a copy with its hash is there."""
+def keep_copies(data: Mapping[str, bytes]) -> None:
+    """Keep each file's bytes in the store under its hash. A kept copy that no
+    longer matches its name is replaced: only verified bytes are ever read back."""
     store = store_dir()
     store.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for rel, digest in files.items():
+    for content in data.values():
+        digest = _sha(content)
         target = store / digest
-        if target.is_file():
+        if _copy(digest) is not None:
             continue
-        data = (root / rel).read_bytes()
-        if _sha(data) != digest:
-            raise SkillTrustError(
-                f"{root / rel} changed while it was being recorded.",
-                "run the command again",
-            )
         tmp = store / f".{digest}.tmp"
-        tmp.write_bytes(data)
+        tmp.write_bytes(content)
         os.replace(tmp, target)
 
 
 def _copy(digest: str) -> bytes | None:
+    """The kept bytes for ``digest``, only when they still hash to it."""
     try:
-        return (store_dir() / digest).read_bytes()
+        data = (store_dir() / digest).read_bytes()
     except OSError:
         return None
+    return data if _sha(data) == digest else None
 
 
 def _lines(data: bytes | None) -> list[str] | None:
@@ -240,14 +380,29 @@ def _lines(data: bytes | None) -> list[str] | None:
         return None
 
 
-def diff_summary(root: Path, found: Drift, recorded: Mapping[str, str]) -> list[str]:
-    """One line per difference: lines added and removed where the old copy is kept."""
+def _old_copy_problem(digest: str) -> str:
+    """Why no diff is possible for a file recorded with ``digest``."""
+    path = store_dir() / digest
+    if not path.exists():
+        return "no copy of the trusted version is kept"
+    return "the kept copy of the trusted version does not match its hash (it was altered)"
+
+
+def diff_summary(now: Scan, found: Drift, recorded: Mapping[str, str]) -> list[str]:
+    """One line per difference: lines added and removed, where a verified copy of the
+    trusted version is kept. Otherwise it says why, and :func:`unified_diffs` shows
+    the whole current file instead of a diff."""
     lines = []
     for rel in found.changed:
         old = _lines(_copy(recorded[rel]))
-        new = _lines((root / rel).read_bytes())
-        if old is None or new is None:
-            lines.append(f"changed  {rel}")
+        new = _lines(now.data[rel])
+        if new is None:
+            lines.append(f"changed  {rel}  (not text, {len(now.data[rel])} bytes)")
+            continue
+        if old is None:
+            lines.append(
+                f"changed  {rel}  ({_old_copy_problem(recorded[rel])}; the whole file is shown)"
+            )
             continue
         added = removed = 0
         for line in difflib.ndiff(old, new):
@@ -257,8 +412,8 @@ def diff_summary(root: Path, found: Drift, recorded: Mapping[str, str]) -> list[
                 removed += 1
         lines.append(f"changed  {rel}  (+{added} -{removed} lines)")
     for rel in found.unlisted:
-        new = _lines((root / rel).read_bytes())
-        size = f"{len(new)} lines" if new is not None else f"{(root / rel).stat().st_size} bytes"
+        new = _lines(now.data[rel])
+        size = f"{len(new)} lines" if new is not None else f"{len(now.data[rel])} bytes"
         lines.append(f"new      {rel}  ({size})")
     lines += [f"missing  {rel}" for rel in found.missing]
     lines += [f"symlink  {rel}  (remove it: a symlink cannot be trusted)" for rel in found.links]
@@ -266,15 +421,32 @@ def diff_summary(root: Path, found: Drift, recorded: Mapping[str, str]) -> list[
     return lines
 
 
-def unified_diffs(root: Path, found: Drift, recorded: Mapping[str, str]) -> list[str]:
-    """The changed and new text files as unified diffs against the kept copies."""
+def whole_files(now: Scan, found: Drift, recorded: Mapping[str, str]) -> list[str]:
+    """Every changed text file whose trusted version has no verified copy, in full:
+    shown whether or not ``--diff`` was asked for, since its summary has no numbers."""
+    out: list[str] = []
+    for rel in found.changed:
+        new = _lines(now.data[rel])
+        if new is not None and _copy(recorded[rel]) is None:
+            out.append(f"--- whole file: {rel} ({_old_copy_problem(recorded[rel])})")
+            out += [f"  {line}" for line in new]
+    return out
+
+
+def unified_diffs(now: Scan, found: Drift, recorded: Mapping[str, str]) -> list[str]:
+    """The changed and new text files as unified diffs against the verified copies."""
     out: list[str] = []
     for rel in (*found.changed, *found.unlisted):
-        old = _lines(_copy(recorded[rel])) if rel in recorded else []
-        new = _lines((root / rel).read_bytes())
-        if old is None or new is None:
-            out.append(f"Binary or unrecorded: {rel}")
+        new = _lines(now.data[rel])
+        if new is None:
+            out.append(f"not text: {rel}")
             continue
+        if rel in recorded:
+            old = _lines(_copy(recorded[rel]))
+            if old is None:
+                continue  # whole_files shows it
+        else:
+            old = []
         out += list(difflib.unified_diff(old, new, f"a/{rel}", f"b/{rel}", lineterm=""))
     return out
 
@@ -294,10 +466,6 @@ class SkillDir:
     @property
     def scripts(self) -> Path:
         return self.root / "scripts"
-
-    def plan(self) -> dict[str, Any]:
-        loaded: dict[str, Any] = json.loads((self.root / PLAN_FILE).read_text(encoding="utf-8"))
-        return loaded
 
 
 def read_skill_dir(path: Path) -> SkillDir:
@@ -361,18 +529,6 @@ def against_manifest(skill: SkillDir, now: Scan) -> Drift:
     return Drift(found.changed, found.unlisted, (), found.links, found.special)
 
 
-def install_record(files: Mapping[str, str], *, writes: dict[str, Any] | None) -> dict[str, Any]:
-    record: dict[str, Any] = {
-        "format": TRUST_FORMAT,
-        "files": dict(sorted(files.items())),
-        "bindings": bindings(),
-        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    if writes is not None:
-        record["writes"] = writes
-    return record
-
-
 def installed(name: str, apps: list[RegisteredApp]) -> RegisteredApp:
     """The install of ``name``: its one registry entry with an install record."""
     from rote.skill_target._driver import SKILL_NAME, SKILL_NAME_MAX
@@ -406,8 +562,40 @@ def installed(name: str, apps: list[RegisteredApp]) -> RegisteredApp:
     )
 
 
-def check(app: RegisteredApp) -> SkillDir:
-    """Refuse to run ``app`` unless its dir is exactly what its record vouches for."""
+def scanned_plan(now: Scan) -> dict[str, Any]:
+    """The plan from the verified bytes, never a second read of the dir."""
+    loaded: dict[str, Any] = json.loads(now.data[PLAN_FILE].decode("utf-8"))
+    return loaded
+
+
+def install_record(
+    now: Scan, *, writes: dict[str, Any] | None, environ: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "format": TRUST_FORMAT,
+        "files": dict(sorted(now.files.items())),
+        "bindings": bindings(scanned_plan(now), environ),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if writes is not None:
+        record["writes"] = writes
+    return record
+
+
+@dataclass(frozen=True)
+class Verified:
+    """A skill that passed :func:`check`: its dir, the bytes that were checked, its plan."""
+
+    skill: SkillDir
+    scan: Scan
+    plan: dict[str, Any]
+    bound: dict[str, Any]
+
+
+def check(app: RegisteredApp, environ: Mapping[str, str] | None = None) -> Verified:
+    """Refuse to run ``app`` unless its dir is exactly what its record vouches for,
+    and what it depends on (the state paths, the proxy and CA variables, the
+    servers trusted read-only) is what the record says."""
     assert app.trust is not None and app.name is not None
     name = app.name
     fix = f"ask the user to review the change and run: rote skill trust {name}"
@@ -431,29 +619,41 @@ def check(app: RegisteredApp) -> SkillDir:
         raise SkillTrustError(
             f"{name}'s install record is malformed.", f"rote skill install {root}"
         )
-    moved = moved_bindings(recorded, bindings())
-    if moved:
-        raise SkillTrustError(
-            f"{name} was installed against other state paths than this run sees: "
-            + "; ".join(moved)
-            + ". Those paths decide which servers count as read-only, whose logins a run "
-            "uses and which journals it reads.",
-            fix,
-        )
-    found = drift(scan(root), files)
+    now = scan(root)
+    found = drift(now, files)
     if not found.clean:
         raise SkillTrustError(
             f"{name}'s files are not the ones the user installed ({root}): {found.describe()}.",
             fix,
         )
-    return read_skill_dir(root)
+    plan = scanned_plan(now)
+    bound = bindings(plan, environ)
+    moved = moved_bindings(recorded, bound)
+    if moved:
+        raise SkillTrustError(
+            f"{name} was installed against another setup than this run sees: "
+            + "; ".join(moved)
+            + ". These decide which servers count as read-only, whose logins a run "
+            "uses, where its traffic goes and which journals it reads.",
+            fix,
+        )
+    exposed = proxied_plain_http(plan, bound)
+    if exposed:
+        raise SkillTrustError(
+            f"a proxy is set, and {name} calls {', '.join(exposed)} over plain http, so the "
+            "proxy would read every request and login token in clear text.",
+            "register the server at an https:// URL (rote mcp add <server> <url>), or run "
+            "without the proxy variables",
+        )
+    return Verified(read_skill_dir(root), now, plan, bound)
 
 
 # ───────── write consent ─────────
 
 
-def plan_sha256(skill: SkillDir) -> str:
-    return _sha((skill.root / PLAN_FILE).read_bytes())
+def plan_sha256(now: Scan) -> str:
+    """The hash of the plan in the checked bytes."""
+    return now.files[PLAN_FILE]
 
 
 @dataclass(frozen=True)
@@ -466,7 +666,7 @@ class WriteTools:
     read_only: tuple[str, ...]
 
 
-def write_tools(skill: SkillDir) -> WriteTools:
+def write_tools(plan: Mapping[str, Any]) -> WriteTools:
     """Every tool the plan can call, minus those on servers the user registered read-only.
 
     Offline: rote does not list tools to read their ``readOnlyHint``, so a
@@ -477,7 +677,7 @@ def write_tools(skill: SkillDir) -> WriteTools:
 
     servers = load_registry().servers
     calls: set[str] = set()
-    for step in skill.plan().get("steps") or []:
+    for step in plan.get("steps") or []:
         if step.get("kind") == "mcp":
             calls.add(f"{step['server']}.{step['tool']}")
         elif step.get("kind") == "loop":
@@ -497,7 +697,7 @@ def write_tools(skill: SkillDir) -> WriteTools:
     return WriteTools(tuple(may_write), tuple(read_only))
 
 
-def write_consent(app: RegisteredApp, skill: SkillDir) -> bool:
+def write_consent(app: RegisteredApp, now: Scan) -> bool:
     """Whether the user let this skill's tools write, for the plan it has now."""
     writes = (app.trust or {}).get("writes")
-    return isinstance(writes, dict) and writes.get("plan_sha256") == plan_sha256(skill)
+    return isinstance(writes, dict) and writes.get("plan_sha256") == plan_sha256(now)

@@ -2557,8 +2557,9 @@ command must approve exactly the files the user vouched for
   matches `.rote-manifest.json`), in the app registry entry's `trust`. A
   run refuses a changed, new, missing, symlinked or special file, and
   `__pycache__` counts as new: an unchecked `.pyc` with the source's mtime
-  shadows a listed `.py`. So the driver runs with `-B`, and a regression
-  shows up as the second run of a skill being refused.
+  shadows a listed `.py`. The driver also runs with `-B`, though since it
+  runs from a deleted private copy (below) that flag is defense in depth,
+  and removing it fails no test.
 - **The env is an allowlist, never a scrub list** (`launch.child_env`).
   Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
   next command every block prints), base URLs, `XDG_*`, proxies and CA
@@ -2570,16 +2571,41 @@ command must approve exactly the files the user vouched for
   Their overrides stay, for tests and `isolated-rote`. A run whose paths
   resolve elsewhere than at install is refused. `ROTE_APPS_PATH` is the
   root and is not bound: whoever sets rote's env can set `PYTHONPATH` too.
+- **The run starts from the checked bytes, never the dir.** `trust.scan`
+  keeps each file's bytes, and `launch.snapshot_scripts` writes `scripts/`
+  from them into a private 0700 temp dir the driver runs from (plan.json
+  included). A review swapped an extracted module after the first `rote:
+  calling` line, while fastmcp was still importing, and the swap ran
+  (`test_code_swapped_in_after_the_check_never_runs`).
 - **Write consent is a driver parameter, from the registry only.** The
   bootstrap (`launch.BOOTSTRAP`) passes `allow_writes` to `main`. Never add
   a flag or variable for it: `uv run scripts/run.py` would take it too.
-  `rote skill trust --allow-writes` needs a person at a terminal
-  (`PersonRequired`, exit 2), and the consent is bound to the plan's hash.
+  The consent is bound to the plan's hash, and any rebind drops it.
+- **Everything that widens trust needs a person, not `--yes`**
+  (`commands._require_person`, `PersonRequired`, exit 2): every `trust`
+  that records anything, an install that changes an existing record or
+  replaces another dir's, and any install relying on a server registered
+  read-only. That last one counts because a read-only declaration lets every
+  tool on the server run, so the set of read-only servers (name and URL) is
+  bound in the record like the state paths. A detected caller cannot be the
+  person even with `--agent-mode no`. It is a speed bump, not a barrier: an
+  agent with a pty and its variables unset looks like a person.
+- **Proxies and CA bundles are bound, not dropped.** The proxy variables are
+  recorded at install and passed as recorded. A CA bundle is recorded by path
+  and hash and handed to the driver as rote's private copy. A proxy with a
+  non-loopback `http://` endpoint is refused.
+- **A kept copy is checked against its own name.** `trust._copy` returns
+  nothing when the bytes no longer hash to the digest. Then the summary says
+  so and the whole current file is shown, because a diff against a planted
+  copy would show the person a harmless change.
 - **The allow rule is its own Action, never `--yes`**
   (`--save-allow-rule`), written only to `<project>/.claude/settings.local.json`,
-  the one file measured to work. Tests always pass `--claude-project
-  <tmp>`, because the default target is the cwd, which under pytest is
-  the repo.
+  the one file measured to work. The project defaults to the git root
+  (Claude Code 2.1.211+ keeps the file there). Claude Code keeps the file out
+  of git only when it writes it itself, so the Action warns when `git
+  check-ignore` says it would be committed. Tests always pass
+  `--claude-project <tmp>`, because the default target is the cwd's repo,
+  which under pytest is this one.
 - **`record_app` keeps every entry's `trust`.** It used to rebuild entries
   from four fields, which would have dropped every install record on any
   emit.

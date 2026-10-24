@@ -19,8 +19,9 @@ else (Claude Code 2.1.309, ``claude -p --permission-mode dontAsk``,
   the probe must not edit the real file. So rote does not write it.
 
 The project is the one the skill lives in (``<project>/.claude/skills/<name>``),
-else the current directory, which is where Claude Code is started for the
-rule to apply; ``--claude-project`` picks another. The file is merged, never
+else the root of the git work tree the current directory is in (Claude Code
+2.1.211+ keeps the local file at the repository root, per its settings docs),
+else the current directory; ``--claude-project`` picks another. The file is merged, never
 replaced: every key and rule already there is kept, and the write is refused
 if the file changed since it was read (:func:`rote.interact.plan.write_file_action`).
 """
@@ -42,10 +43,30 @@ def rule_for(name: str) -> str:
 
 
 def default_project(skill_dir: Path, cwd: Path) -> Path:
-    """The project whose ``.claude/skills`` holds the skill, else ``cwd``."""
+    """The project whose ``.claude/skills`` holds the skill; else the git work tree
+    ``cwd`` is in, whose root is where Claude Code 2.1.211+ reads and writes the
+    local file (not the home dir, which it treats as no repository); else ``cwd``."""
     parent = skill_dir.parent
     if parent.name == "skills" and parent.parent.name == ".claude":
         return parent.parent.parent
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is not None:
+        proc = subprocess.run(
+            [git, "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        root = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
+        from rote.clients import ClientContext
+
+        # The client's home (ROTE_CLIENT_HOME_DIR moves it): Claude Code
+        # treats a repository rooted there as none.
+        if root is not None and root != ClientContext.current().home:
+            return root
     return cwd
 
 
@@ -70,6 +91,30 @@ def _merged(read: Snapshot, rule: str) -> str | None:
     return json.dumps(data, indent=2) + "\n"
 
 
+def tracked_by_git(path: Path) -> bool:
+    """Whether ``path`` is in a git work tree and not ignored there.
+
+    Claude Code keeps the file out of git only when it writes it itself (it
+    adds ``**/.claude/settings.local.json`` to the global git excludes; the
+    settings docs say a hand-made file is not covered). A tracked file also
+    needs workspace trust before its allow rules apply. So rote asks git
+    (``git check-ignore``), says so in the Action when the file would be
+    committed, and changes nothing in the user's ignore files."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None or not path.parent.parent.is_dir():
+        return False
+    proc = subprocess.run(
+        [git, "-C", str(path.parent.parent), "check-ignore", "-q", str(path)],
+        capture_output=True,
+        check=False,
+    )
+    # 0: ignored. 1: not ignored. 128: not a work tree (or another git error).
+    return proc.returncode == 1
+
+
 def allow_rule_action(name: str, project: Path, command: str) -> Action | None:
     """The Action that saves ``name``'s rule in ``project``; None when it is saved already."""
     path = project / SETTINGS_FILE
@@ -78,9 +123,15 @@ def allow_rule_action(name: str, project: Path, command: str) -> Action | None:
     content = _merged(read, rule)
     if content is None:
         return None
+    title = f"Let Claude Code run {name} without asking, in {project}"
+    if tracked_by_git(path):
+        title += (
+            f". Warning: git does not ignore {SETTINGS_FILE} here, so it would be committed "
+            "with the rule; add it to .gitignore if that is not what you want"
+        )
     return write_file_action(
         id=f"claude-allow-{name}",
-        title=f"Let Claude Code run {name} without asking, in {project}",
+        title=title,
         read=read,
         content=content,
         summary=f"allow {rule}",

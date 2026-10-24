@@ -42,6 +42,15 @@ def fixtures(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FixtureServer
         yield server
 
 
+@pytest.fixture(autouse=True)
+def _no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The developer's own proxy or CA variables would be recorded at install."""
+    from rote.skill_target.trust import CA_VARS, PROXY_VARS
+
+    for var in (*PROXY_VARS, *CA_VARS):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def fx(fixtures: FixtureServer) -> FixtureServer:
     fixtures.reset()
@@ -61,8 +70,17 @@ def _cli(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]
     return status, captured.out, captured.err
 
 
+def _no_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.interact.agents import SIGNALS
+
+    for var in ("AI_AGENT", "ROTE_AGENT_MODE", *(s.var for s in SIGNALS)):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _person(monkeypatch: pytest.MonkeyPatch, *answers: Answer) -> ScriptedPrompter:
-    """A person at the terminal, answering ``answers`` in order."""
+    """A person at the terminal, answering ``answers`` in order, with no agent
+    in the environment (this suite may itself run under one)."""
+    _no_agent(monkeypatch)
     prompter = ScriptedPrompter(list(answers))
     monkeypatch.setattr("rote.interact.prompter.prompter_for", lambda mode: prompter)
     return prompter
@@ -196,6 +214,63 @@ def test_a_symlink_is_refused_even_to_identical_content(
     assert status == 0, out + err
 
 
+def test_code_swapped_in_after_the_check_never_runs(
+    digest: Path, tmp_path: Path, fx: FixtureServer
+) -> None:
+    """The reviewer's reproduction: wait for the first ``rote: calling`` line
+    (the check is long done, fastmcp is still importing), swap an extracted
+    module, and see whether the swapped code runs. The run starts from a
+    private copy of the checked bytes, so it never does."""
+    import subprocess
+    import sys
+    import time
+
+    from rote import demo
+
+    marker = tmp_path / "swapped-code-ran"
+    module = digest / "scripts/extracted/write_digest.py"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "rote.cli",
+            "skill",
+            "run",
+            "docs-digest",
+            "start",
+            "--file",
+            str(DOCS_INPUT),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(os.environ),
+    )
+    assert proc.stderr is not None
+    deadline = time.monotonic() + 60
+    for line in proc.stderr:
+        if line.startswith("rote: calling"):
+            module.write_text(
+                f"open({str(marker)!r}, 'w').write('ran')\n"
+                "def write_digest(**kwargs):\n    return {'swapped': True}\n"
+            )
+            break
+        assert time.monotonic() < deadline
+    out, _ = proc.communicate(timeout=120)
+    assert proc.returncode == 0, out
+    assert not marker.exists()
+    assert result_of(out) == demo.load_reference().pipeline_output
+    # And the next run sees the swap for what it is.
+    rerun = subprocess.run(
+        [sys.executable, "-m", "rote.cli", "skill", "run", "docs-digest", "status"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+    )
+    assert "changed: scripts/extracted/write_digest.py" in rerun.stdout
+    assert not marker.exists()
+
+
 def test_a_skill_dir_reached_through_a_symlink_is_refused(
     digest: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -207,23 +282,69 @@ def test_a_skill_dir_reached_through_a_symlink_is_refused(
 
 
 def test_trust_shows_the_change_and_then_the_run_goes_through(
-    digest: Path, fx: FixtureServer, capsys: pytest.CaptureFixture[str]
+    digest: Path,
+    fx: FixtureServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = digest / "scripts/extracted/write_digest.py"
     module.write_text(module.read_text() + "# reviewed\n# twice\n")
     (digest / "notes.txt").write_text("a\nb\nc\n")
-    status, out, err = _cli(capsys, "skill", "trust", "docs-digest", "--diff", "--yes")
+    # The agent's --yes adopts nothing: changed code needs the person.
+    before = apps_path().read_text()
+    status, out, err = _cli(capsys, "skill", "trust", "docs-digest", "--yes", "--json")
+    assert status == 2 and json.loads(out)["reason"] == "person_required"
+    assert apps_path().read_text() == before
+    assert _start(capsys)[0] == 1
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        status, out, err = _cli(capsys, "skill", "trust", "docs-digest", "--diff")
     assert status == 0, err
     assert "  note: changed  scripts/extracted/write_digest.py  (+2 -0 lines)" in err
     assert "  note: new      notes.txt  (3 lines)" in err
     assert "+# reviewed" in err.splitlines()  # --diff printed the diff itself
     status, out, err = _start(capsys)
     assert status == 0, out + err
-    # Nothing left to trust: an empty plan, no write.
+    # Nothing left to trust: an empty plan, no write, no person needed.
     before = apps_path().read_text()
     status, _, err = _cli(capsys, "skill", "trust", "docs-digest", "--yes")
     assert status == 0 and "docs-digest is as the user installed it" in err
     assert apps_path().read_text() == before
+
+
+def test_an_altered_kept_copy_is_named_and_the_whole_file_shown(
+    digest: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diff against a copy someone rewrote would show the person a harmless
+    change. The copy's own hash is checked, and failing it shows everything."""
+    from rote.skill_target.trust import store_dir
+
+    record = _trust_record(digest)
+    assert record is not None
+    rel = "scripts/extracted/write_digest.py"
+    (store_dir() / record["files"][rel]).write_text("planted\n")
+    module = digest / rel
+    original = module.read_text()
+    module.write_text(original + "import os  # added\n")
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", False))
+        status, _, err = _cli(capsys, "skill", "trust", "docs-digest")
+    assert status == 1  # declined
+    assert (
+        f"  note: changed  {rel}  (the kept copy of the trusted version does not match its "
+        "hash (it was altered); the whole file is shown)"
+    ) in err
+    lines = err.splitlines()
+    start = lines.index(
+        f"--- whole file: {rel} (the kept copy of the trusted version does not "
+        "match its hash (it was altered))"
+    )
+    shown = [
+        line.removeprefix("  ")
+        for line in lines[start + 1 : start + 1 + len(original.splitlines()) + 1]
+    ]
+    assert shown == (original + "import os  # added\n").splitlines()
+    assert "+import os  # added" not in lines  # no diff against the planted copy
 
 
 def test_install_refuses_a_dir_that_is_not_what_rote_emitted(
@@ -266,15 +387,48 @@ def test_a_forged_state_path_is_refused_not_honored(
         ("ROTE_MCP_CONFIG", str(forged_registry)),
         ("ROTE_MCP_TOKEN_DIR", str(tmp_path / "forged-tokens")),
         ("ROTE_SKILL_RUN_DIR", str(tmp_path / "forged-runs")),
+        ("ROTE_CLOUD_CRED_PATH", str(tmp_path / "forged-cloud.json")),
     ):
         with monkeypatch.context() as m:
             m.setenv(var, value)
             status, out, _ = _start(capsys)
-        assert status == 1, var
-        assert f"({var}) was " in out and f"is {Path(value).resolve()} now" in out
-        assert "Fix: ask the user to review the change and run: rote skill trust docs-digest" in out
+            assert status == 1, var
+            assert f"({var}) was " in out and f"is {Path(value).resolve()} now" in out
+            assert (
+                "Fix: ask the user to review the change and run: rote skill trust docs-digest"
+                in out
+            )
+            # Nor can the agent rebind it itself.
+            status, _, err = _cli(capsys, "skill", "trust", "docs-digest", "--yes")
+            assert status == 2 and "needs the user at a terminal" in err, var
     assert fx.calls() == []
     assert not (tmp_path / "forged-runs").exists()
+
+
+def test_a_rebind_by_the_person_drops_the_write_consent(
+    notes: Path,
+    tmp_path: Path,
+    fx: FixtureServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        assert _cli(capsys, "skill", "trust", "note-taker", "--allow-writes")[0] == 0
+    assert _write(capsys)[0] == 0
+    moved = tmp_path / "moved-mcp.json"
+    _register(fx.url, "fx", path=moved)
+    monkeypatch.setenv("ROTE_MCP_CONFIG", str(moved))
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        status, _, err = _cli(capsys, "skill", "trust", "note-taker")
+    assert status == 0, err
+    assert "the earlier write consent is dropped" in err
+    record = _trust_record(notes)
+    assert record is not None and "writes" not in record
+    fx.reset()
+    status, out = _write(capsys)
+    assert status == 1 and "fx.write_note may write" in out and fx.calls("write_note") == []
 
 
 def test_an_endpoint_override_is_dropped_and_named(
@@ -317,7 +471,14 @@ def test_the_driver_sees_only_the_allowlisted_environment() -> None:
         "SSL_CERT_FILE": "/evil.pem",
         "XDG_CONFIG_HOME": "/evil",
     }
-    bound = {"mcp_config": "/m.json", "token_dir": "/t", "run_dir": "/r"}
+    bound = {
+        "mcp_config": "/m.json",
+        "token_dir": "/t",
+        "run_dir": "/r",
+        "cloud_cred": "/c.json",
+        "proxy": {},
+        "ca": {},
+    }
     from rote.mcp.registry import load_registry
 
     registry = load_registry()
@@ -341,7 +502,57 @@ def test_the_driver_sees_only_the_allowlisted_environment() -> None:
     helper = {"judges": "helper", "steps": [{"kind": "judge", "id": "rate"}]}
     env, _ = child_env({**environ, "ROTE_MODEL_RATE": "m", "ROTE_MODEL_OTHER": "n"}, helper, bound)
     assert env["ANTHROPIC_API_KEY"] == "k" and env["ROTE_MODEL_RATE"] == "m"
+    assert env["ROTE_CLOUD_CRED_PATH"] == "/c.json"  # the bound path, not the env's
     assert "ROTE_MODEL_OTHER" not in env and "ROTE_BASE_URL_A" not in env
+    # Proxies pass only as the install recorded them, and a CA as rote's private copy.
+    recorded = {**bound, "proxy": {"HTTPS_PROXY": "http://corp:3128"}}
+    env, _ = child_env(environ, plan, recorded, ca_files={"SSL_CERT_FILE": "/private/ca.pem"})
+    assert env["HTTPS_PROXY"] == "http://corp:3128"
+    assert env["SSL_CERT_FILE"] == "/private/ca.pem"
+    assert "ROTE_CLOUD_CRED_PATH" not in env  # not a helper skill
+
+
+def test_a_proxy_or_ca_bundle_is_bound_like_a_state_path(
+    digest: Path,
+    tmp_path: Path,
+    fx: FixtureServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import certifi
+
+    ca = tmp_path / "ca.pem"
+    shutil.copy(certifi.where(), ca)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    status, out, _ = _start(capsys)
+    assert status == 1 and "the proxy variables were {} at install" in out
+    monkeypatch.delenv("NO_PROXY")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    status, out, _ = _start(capsys)
+    assert status == 1 and "the CA bundle variables were {} at install" in out
+    # Recorded by a person, it runs; a changed bundle at the same path does not.
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        assert _cli(capsys, "skill", "trust", "docs-digest")[0] == 0
+    assert _start(capsys)[0] == 0
+    ca.write_text(ca.read_text() + "\n")
+    status, out, _ = _start(capsys)
+    assert status == 1 and "the CA bundle variables were" in out
+
+
+def test_a_proxy_never_sees_a_plain_http_endpoint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register("http://10.9.9.9:8000/mcp", "mslearn", "deepwiki")
+    out_dir = _emit_docs_digest(capsys, tmp_path / "docs-digest")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    assert _cli(capsys, "skill", "install", str(out_dir), "--yes")[0] == 0
+    status, out, _ = _start(capsys)
+    assert status == 1
+    assert "calls deepwiki at http://10.9.9.9:8000/mcp, mslearn at http://10.9.9.9:8000/mcp" in out
+    assert "over plain http" in out
 
 
 # ───────── write consent ─────────
@@ -448,16 +659,47 @@ def test_write_consent_needs_a_person_whatever_the_flags(
     assert status == 1 and fx.calls("write_note") == []
 
 
-def test_a_read_only_server_needs_no_consent(
-    notes: Path, fx: FixtureServer, capsys: pytest.CaptureFixture[str], tmp_path: Path
+def test_a_server_newly_registered_read_only_is_refused_until_a_person_trusts_it(
+    notes: Path,
+    fx: FixtureServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A read-only declaration lets every tool on the server run, so it acts as
+    write consent: the set a skill relies on is bound, and only a person changes it."""
     from rote.mcp.registry import registry_path
 
     _register(fx.url, "fx", read_only=True, path=registry_path())
-    status, out, err = _cli(capsys, "skill", "trust", "note-taker", "--allow-writes", "--yes")
+    status, out = _write(capsys)
+    assert status == 1
+    assert "the servers registered read-only that this skill calls were {} at install" in out
+    assert "rote skill trust note-taker" in out
+    assert fx.calls("write_note") == []
+    status, _, err = _cli(capsys, "skill", "trust", "note-taker", "--yes")
+    assert status == 2 and "needs the user at a terminal" in err
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        status, _, err = _cli(capsys, "skill", "trust", "note-taker", "--allow-writes")
     assert status == 0, err
+    assert f"relies on fx at {fx.url} being read-only (registered so)" in err
     assert "no tool note-taker calls needs write consent" in err
-    assert "read-only (its server is registered read-only): fx.write_note" in err
+    record = _trust_record(notes)
+    assert record is not None and record["bindings"]["read_only"] == {"fx": fx.url}
+    assert "writes" not in record
+    status, out = _write(capsys)
+    assert status == 0, out
+    assert [c["arguments"] for c in fx.calls("write_note")] == [{"text": "hi"}]
+
+
+def test_installing_a_skill_that_relies_on_a_read_only_server_needs_a_person(
+    tmp_path: Path, fx: FixtureServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register(fx.url, "fx", read_only=True)
+    out = _emit_note_taker(tmp_path)
+    status, payload, err = _cli(capsys, "skill", "install", str(out), "--yes", "--json")
+    assert status == 2 and json.loads(payload)["reason"] == "person_required"
+    assert "letting note-taker call servers registered read-only" in err
+    assert [a.trust for a in registered_apps() if a.path == out.resolve()] in ([], [None])
 
 
 @pytest.mark.parametrize("again", ["trust", "install"])
@@ -475,9 +717,19 @@ def test_a_changed_plan_drops_the_write_consent(
     changed = {**NOTE_PIPELINE, "version": "0.2.0"}
     _emit_note_taker(tmp_path, changed)
     target = "note-taker" if again == "trust" else str(notes)
+    # Adopting the re-emitted files needs the person, by trust or by install.
     status, _, err = _cli(capsys, "skill", again, target, "--yes")
+    assert status == 2 and "needs the user at a terminal" in err
+    with monkeypatch.context() as m:
+        answers = [Answer("confirm", "--yes", True)]
+        extra: list[str] = []
+        if again == "install":
+            answers.append(Answer("confirm", "--save-allow-rule", False))
+            extra = ["--claude-project", str(tmp_path / "p")]
+        _person(m, *answers)
+        status, _, err = _cli(capsys, "skill", again, target, *extra)
     assert status == 0, err
-    assert "the plan changed, so the earlier write consent is dropped" in err
+    assert "the earlier write consent is dropped" in err
     record = _trust_record(notes)
     assert record is not None and "writes" not in record
     status, out = _write(capsys)
@@ -492,12 +744,12 @@ def test_consent_is_read_for_the_plan_the_skill_has_now(notes: Path) -> None:
 
     (app,) = [a for a in registered_apps() if a.path == notes.resolve()]
     assert app.trust is not None
-    skill = trust.read_skill_dir(notes)
-    current = {"plan_sha256": trust.plan_sha256(skill), "tools": ["fx.write_note"]}
+    now = trust.scan(notes)
+    current = {"plan_sha256": trust.plan_sha256(now), "tools": ["fx.write_note"]}
     other = {**current, "plan_sha256": "0" * 64}
-    assert trust.write_consent(replace(app, trust={**app.trust, "writes": current}), skill)
-    assert not trust.write_consent(replace(app, trust={**app.trust, "writes": other}), skill)
-    assert not trust.write_consent(app, skill)
+    assert trust.write_consent(replace(app, trust={**app.trust, "writes": current}), now)
+    assert not trust.write_consent(replace(app, trust={**app.trust, "writes": other}), now)
+    assert not trust.write_consent(app, now)
 
 
 # ───────── the install plan and the allow rule ─────────
@@ -607,15 +859,77 @@ def test_the_allow_rule_goes_to_the_project_the_skill_lives_in(tmp_path: Path) -
     assert default_project(tmp_path / "out" / "x", tmp_path / "cwd") == tmp_path / "cwd"
 
 
+def test_in_a_git_repo_the_rule_goes_to_its_root_and_a_tracked_file_is_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claude Code 2.1.211+ keeps the local file at the repo root, and keeps it out
+    of git only when it creates the file itself (through the global excludes,
+    which this machine's may already hold: git's own config is moved here)."""
+    import subprocess
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    from rote.skill_target.allow_rule import allow_rule_action, default_project
+
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    assert default_project(tmp_path / "out" / "x", repo / "sub") == repo.resolve()
+    action = allow_rule_action("docs-digest", repo, "cmd")
+    assert action is not None and "Warning: git does not ignore .claude/settings.local.json" in (
+        action.title
+    )
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    action = allow_rule_action("docs-digest", repo, "cmd")
+    assert action is not None and "Warning" not in action.title
+
+
+def test_install_names_a_dir_that_does_not_exist(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, _, err = _cli(capsys, "skill", "install", str(tmp_path / "nope"))
+    assert status == 2
+    assert f"error: {tmp_path / 'nope'} does not exist or is not a directory." in err
+
+
+def test_an_agent_cannot_claim_to_be_the_person(
+    notes: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--agent-mode no makes rote ask, but a detected caller still cannot give
+    the consent no flag gives: a speed bump, documented as one."""
+    prompter = ScriptedPrompter([Answer("confirm", "--yes", True)])
+    monkeypatch.setattr("rote.interact.prompter.prompter_for", lambda mode: prompter)
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    before = apps_path().read_text()
+    status, _, err = _cli(
+        capsys, "skill", "trust", "note-taker", "--allow-writes", "--agent-mode", "no"
+    )
+    assert status == 2 and "needs the user at a terminal" in err
+    assert prompter.asked == [] and apps_path().read_text() == before
+
+
 def test_installing_a_second_dir_under_the_same_name_needs_force(
-    digest: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    digest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     second = _emit_docs_digest(capsys, tmp_path / "second" / "docs-digest")
-    status, _, err = _cli(capsys, "skill", "install", str(second), "--yes")
-    assert status == 2 and "Pass --force" in err
-    assert _trust_record(second) is None
-    status, _, err = _cli(capsys, "skill", "install", str(second), "--yes", "--force")
+    for flags in (["--yes"], ["--yes", "--force"]):
+        status, _, err = _cli(capsys, "skill", "install", str(second), *flags)
+        assert status == 2 and "needs the user at a terminal" in err
+        assert _trust_record(second) is None
+    with monkeypatch.context() as m:
+        person = _person(
+            m, Answer("confirm", "--yes", True), Answer("confirm", "--save-allow-rule", False)
+        )
+        status, _, err = _cli(
+            capsys, "skill", "install", str(second), "--claude-project", str(tmp_path / "p")
+        )
     assert status == 0, err
+    assert person.asked[0][1] == "--yes"
     assert f"replaces the install of docs-digest from {digest.resolve()}" in err
     assert _trust_record(digest) is None and _trust_record(second) is not None
 
