@@ -313,6 +313,10 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
     (reply,) = case.gates
     install(capsys, compiled, tmp_path / "expense-audit", tmp_path, skill=compiled.parent / "skill")
     # The report lands under the working directory: the driver runs in the agent's.
+    # EXPENSE_AUDIT_REPORT_DIR is set only on the DBOS side below, because
+    # `rote skill run` passes the driver an allowlisted environment
+    # (rote.skill_target.launch.child_env), so a module's own env var never
+    # reaches it there. That gap is trevhud/rote#267.
     monkeypatch.chdir(tmp_path)
     said = "Approve 2410 and 2440, reject 2403 and 2413. Priya"
     done, asked = drive_to_done(
@@ -334,7 +338,7 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
     assert paths[0].parent == tmp_path / "reports"
     assert paths[1].parent == tmp_path / "pipeline-reports"
     assert paths[0].name == paths[1].name
-    assert paths[0].read_bytes() == paths[1].read_bytes()
+    assert paths[0].read_text(encoding="utf-8") == paths[1].read_text(encoding="utf-8")
     assert differing_fields(skill_side, pipeline_side) == []
     assert skill_side["file_report"]["reviewer"] == "Priya Shah"
 
@@ -598,7 +602,8 @@ def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
         "5 tracked (4 EU/UK), 2 new, 2 quoting (1 need attention), 1 closed"
     )
     # The app runs in its own dir, so the same relative path is a second file.
-    assert (tmp_path / "p" / "dbos-app" / "outputs/deal-monitor.html").read_text() == saved
+    html = tmp_path / "p" / "dbos-app" / "outputs/deal-monitor.html"
+    assert html.read_text(encoding="utf-8") == saved
     # One judge call per element on the pipeline side: 1 + 3 + 2.
     assert sorted(judge_stub.calls) == sorted(
         ["parse_intake_messages"] + ["classify_thread_step"] * 3 + ["score_new_opportunities"] * 2
