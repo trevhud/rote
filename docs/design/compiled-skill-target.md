@@ -243,12 +243,17 @@ hashes once the user confirms. Without this check, an allow rule for `rote
 skill run *` would approve any code dropped into a directory that happens
 to use a registered name.
 
-The run never reads the dir again after the check. The bytes that were
-hashed are written into a private 0700 temp dir, and the driver runs from
-there, its `plan.json` included. A file swapped into the skill dir after the
-check (while the first MCP call is still importing fastmcp) is never read.
+The run never reads the dir again after the check, and the code it runs
+never touches disk. The bytes that were hashed, `plan.json` included, go to
+the child over an inherited pipe as one frame. A fixed bootstrap passed with
+`-c` installs a meta-path finder that serves the driver and the extracted
+modules from those bytes, with the skill dir's paths as `__file__` so errors
+still name file:line. The skill dir's `sys.path` entry is disabled. A
+private copy on disk would not do: the agent runs as the same user, and a
+review rewrote rote's 0700 snapshot mid-run. Only a recorded CA bundle lands
+on disk, because the TLS stack reads a file.
 
-Then it starts that copy's `_rote_skill.py` with rote's interpreter, `-I`
+Then it starts the driver with rote's interpreter, `-I`
 (no `PYTHON*` variables, no user site, no cwd on the path) and `-B` (no
 `__pycache__` for the next check to refuse). The import path is the skill's
 scripts dir plus rote's site-packages, where fastmcp lives. rote's own

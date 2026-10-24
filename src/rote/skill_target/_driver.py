@@ -380,12 +380,22 @@ def unrunnable_step(plan: dict[str, Any]) -> str | None:
 
 
 class Driver:
-    def __init__(self, scripts: Path, command: str | None = None, skill: str | None = None) -> None:
+    def __init__(
+        self,
+        scripts: Path,
+        command: str | None = None,
+        skill: str | None = None,
+        plan_text: str | None = None,
+    ) -> None:
         """``skill`` is the compiled skill's name (its SKILL.md ``name``, which
         ``run.py`` passes): what the agent types after ``rote skill run`` and
-        the run root's folder. Without one, the pipeline's name stands in."""
+        the run root's folder. Without one, the pipeline's name stands in.
+        ``plan_text`` is the plan as ``rote skill run`` checked it; without it
+        the plan is read from ``scripts/plan.json``."""
         self.scripts = scripts
-        self.plan_text = (scripts / "plan.json").read_text(encoding="utf-8")
+        if plan_text is None:
+            plan_text = (scripts / "plan.json").read_text(encoding="utf-8")
+        self.plan_text = plan_text
         import hashlib
 
         self.plan_hash = hashlib.sha256(self.plan_text.encode("utf-8")).hexdigest()
@@ -1670,9 +1680,13 @@ def _read_only_servers(scripts: Path) -> dict[str, str]:
     Read from the registry the MCP helper already reads for endpoints
     (``_registry_servers``), so a declaration means the same thing here as
     on every MCP runtime: the helper honors it only at that URL. A skill
-    with no MCP step ships no ``_rote_mcp.py`` and reads nothing.
+    with no MCP step ships no ``_rote_mcp.py`` and reads nothing. Asked of
+    the import system, not the disk: under ``rote skill run`` the modules
+    come from the checked bytes, not the dir.
     """
-    if not (scripts / "_rote_mcp.py").is_file():
+    import importlib.util
+
+    if importlib.util.find_spec("_rote_mcp") is None:
         return {}
     servers = importlib.import_module("_rote_mcp")._registry_servers()
     return {
@@ -1698,6 +1712,7 @@ def main(
     *,
     allow_writes: bool = False,
     skill: str | None = None,
+    plan_text: str | None = None,
 ) -> int:
     """Run one command and print its one block. The skill's scripts dir goes first on the path.
 
@@ -1724,7 +1739,9 @@ def main(
     os.environ.pop("ROTE_MCP_READ_ONLY_SERVERS", None)
     driver: Driver | None = None
     try:
-        driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None, skill)
+        driver = Driver(
+            scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None, skill, plan_text
+        )
         try:
             declared = _read_only_servers(scripts)
         except (OSError, ValueError) as e:

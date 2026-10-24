@@ -7,14 +7,14 @@ The order is the point:
    the bytes, and check what the run depends on (state paths, proxy and CA
    variables, servers trusted read-only) against the record
    (:func:`rote.skill_target.trust.check`);
-3. write those checked bytes of ``scripts/`` into a private 0700 temp dir
-   (:func:`snapshot_scripts`) and run the driver from there, never from the
-   skill dir, so a file swapped in after the check is never read;
-4. start the copy's ``_rote_skill.py`` with rote's interpreter, ``-I`` (no
-   ``PYTHON*`` variable, no user site, no cwd on the path) and ``-B``, the
-   scripts dir first on the path and rote's site-packages after it, and an
-   environment built from an allowlist (:func:`child_env`). ``-B`` is
-   defense in depth now that the copy is deleted after the run.
+3. start rote's interpreter with ``-I`` (no ``PYTHON*`` variable, no user
+   site, no cwd on the path), ``-B`` and :data:`BOOTSTRAP` as ``-c``, and hand
+   it those checked bytes of ``scripts/`` (``plan.json`` included) over an
+   inherited pipe (:func:`frame`). The driver and the extracted modules are
+   imported from those bytes, so no copy of the running code exists on disk
+   for a process of the same user to rewrite mid-run, and the skill dir is
+   never read again. rote's site-packages stay on the path for fastmcp. The
+   environment is built from an allowlist (:func:`child_env`).
 
 The driver is started through :data:`BOOTSTRAP`, not ``scripts/run.py``,
 because the write consent is a parameter of ``_rote_skill.main`` and nothing
@@ -53,6 +53,8 @@ to work.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -66,19 +68,48 @@ from typing import Any, TextIO
 
 from rote.skill_target.trust import SkillTrustError, Verified
 
-#: Starts the driver with the consent as a parameter. argv: the spec (JSON),
-#: then the driver's own argv. Imports only the stdlib and the skill's
-#: ``_rote_skill``, from the scripts dir it puts first.
-BOOTSTRAP = (
-    "import json, sys\n"
-    "from pathlib import Path\n"
-    "spec = json.loads(sys.argv[1])\n"
-    "scripts = Path(spec['scripts'])\n"
-    "sys.path.insert(0, str(scripts))\n"
-    "from _rote_skill import main\n"
-    "sys.exit(main(sys.argv[2:], scripts, spec['command'], "
-    "allow_writes=spec['allow_writes'], skill=spec['skill']))\n"
-)
+#: The child's whole program, passed with ``-c``: never a file. argv: the read
+#: end of a pipe rote holds the other end of, then the driver's own argv. One
+#: JSON frame on the pipe carries the spec and every checked file of
+#: ``scripts/`` (base64), and a meta-path finder serves the driver and the
+#: extracted modules from those bytes. The skill's scripts dir is the modules'
+#: ``__file__`` (so errors name file:line), and its ``sys.path`` entry is
+#: disabled, so no import ever reads the dir. Stdlib only.
+BOOTSTRAP = """\
+import base64, importlib.abc, importlib.util, json, os, sys
+from pathlib import Path
+with os.fdopen(int(sys.argv[1]), "rb") as pipe:
+    frame = json.loads(pipe.read())
+spec, root = frame["spec"], frame["spec"]["scripts"]
+files = {rel: base64.b64decode(data) for rel, data in frame["files"].items()}
+dirs = {"/".join(rel.split("/")[:i]) for rel in files for i in range(1, rel.count("/") + 1)}
+class Verified(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, name, path=None, target=None):
+        rel = name.replace(".", "/")
+        if rel + "/__init__.py" in files:
+            return importlib.util.spec_from_file_location(
+                name, root + "/" + rel + "/__init__.py", loader=self,
+                submodule_search_locations=[])
+        if rel + ".py" in files:
+            return importlib.util.spec_from_file_location(name, root + "/" + rel + ".py",
+                                                          loader=self)
+        if rel in dirs:
+            return importlib.util.spec_from_loader(name, self, is_package=True)
+        return None
+    def create_module(self, spec):
+        return None
+    def exec_module(self, module):
+        origin = module.__spec__.origin
+        if origin and origin.startswith(root + "/"):
+            source = files[origin[len(root) + 1:]]
+            exec(compile(source, origin, "exec", dont_inherit=True), module.__dict__)
+sys.meta_path.insert(0, Verified())
+sys.path_importer_cache[root] = None
+from _rote_skill import main
+sys.exit(main(sys.argv[2:], Path(root), spec["command"], allow_writes=spec["allow_writes"],
+              skill=spec["skill"], plan_text=files["plan.json"].decode("utf-8")))
+"""
+
 
 #: Passed through when set: what any process needs to start and find its tools.
 BASE_VARS = frozenset(
@@ -145,14 +176,26 @@ def child_env(
     return env, dropped
 
 
-def driver_argv(scripts: Path, name: str, argv: list[str], *, allow_writes: bool) -> list[str]:
-    spec = {
-        "scripts": str(scripts),
-        "command": f"rote skill run {name}",
-        "allow_writes": allow_writes,
-        "skill": name,
+def frame(verified: Verified, *, allow_writes: bool) -> bytes:
+    """The one JSON frame the bootstrap reads: the spec, and every checked file
+    of ``scripts/`` as the bytes the check hashed."""
+    skill = verified.skill
+    files = {
+        rel.removeprefix("scripts/"): base64.b64encode(content).decode("ascii")
+        for rel, content in verified.scan.data.items()
+        if rel.startswith("scripts/")
     }
-    return [sys.executable, "-I", "-B", "-c", BOOTSTRAP, json.dumps(spec), *argv]
+    spec = {
+        "scripts": str(skill.scripts),
+        "command": f"rote skill run {skill.name}",
+        "allow_writes": allow_writes,
+        "skill": skill.name,
+    }
+    return json.dumps({"spec": spec, "files": files}).encode("utf-8")
+
+
+def driver_argv(read_fd: int, argv: list[str]) -> list[str]:
+    return [sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(read_fd), *argv]
 
 
 def error_block(name: str, error: SkillTrustError) -> tuple[str, int]:
@@ -170,22 +213,13 @@ def error_block(name: str, error: SkillTrustError) -> tuple[str, int]:
     return block.text(), block.status
 
 
-def snapshot_scripts(verified: Verified, into: Path) -> tuple[Path, dict[str, str]]:
-    """Write the checked bytes of ``scripts/`` (and the recorded CA bundles) into
-    ``into``, a private dir rote just made; return the scripts dir and the CA copies.
+def private_ca_files(verified: Verified, into: Path) -> dict[str, str]:
+    """A private copy of each recorded CA bundle, held to the recorded hash.
 
-    The run starts from these, never from the skill dir: a file swapped there
-    after the check (while the first MCP call is still importing fastmcp, say)
-    is never read."""
-    scripts = into / "scripts"
-    for rel, content in verified.scan.data.items():
-        if not rel.startswith("scripts/"):
-            continue
-        target = into / rel
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(content)
+    A CA bundle has to be a file for the TLS stack to read, so unlike the
+    code it lands on disk (a 0700 dir, a 0600 file). A process of the same
+    user could still rewrite it mid-run: that residual is the CA's, and the
+    code is never on disk at all."""
     ca_files: dict[str, str] = {}
     for var, recorded in (verified.bound.get("ca") or {}).items():
         path, _, digest = recorded.rpartition(" sha256:")
@@ -196,9 +230,11 @@ def snapshot_scripts(verified: Verified, into: Path) -> tuple[Path, dict[str, st
                 f"ask the user to review it and run: rote skill trust {verified.skill.name}",
             )
         copy = into / f"ca-{var}.pem"
-        copy.write_bytes(content)
+        fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
         ca_files[var] = str(copy)
-    return scripts, ca_files
+    return ca_files
 
 
 def run(
@@ -230,7 +266,7 @@ def run(
             app = trust.installed(name, apps)
             verified = trust.check(app, environ)
             allow_writes = trust.write_consent(app, verified.scan)
-            scripts, ca_files = snapshot_scripts(verified, Path(private))
+            ca_files = private_ca_files(verified, Path(private))
             env, dropped = child_env(environ, verified.plan, verified.bound, ca_files=ca_files)
         except SkillTrustError as e:
             text, status = error_block(name, e)
@@ -245,20 +281,29 @@ def run(
                 flush=True,
             )
         out.flush()
-        proc = subprocess.run(
-            driver_argv(scripts, verified.skill.name, argv, allow_writes=allow_writes),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=out if _has_fileno(out) else subprocess.PIPE,
-            stderr=err if _has_fileno(err) else subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-    if proc.stdout is not None:
-        out.write(proc.stdout)
+        read_fd, write_fd = os.pipe()
+        try:
+            proc = subprocess.Popen(
+                driver_argv(read_fd, argv),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=out if _has_fileno(out) else subprocess.PIPE,
+                stderr=err if _has_fileno(err) else subprocess.PIPE,
+                text=True,
+                pass_fds=(read_fd,),
+            )
+        finally:
+            os.close(read_fd)
+        with os.fdopen(write_fd, "wb") as pipe, contextlib.suppress(BrokenPipeError):
+            # The child reads the whole frame before it prints anything, so
+            # writing it all before reading its output cannot deadlock.
+            pipe.write(frame(verified, allow_writes=allow_writes))
+        captured_out, captured_err = proc.communicate()
+    if captured_out:
+        out.write(captured_out)
         out.flush()
-    if proc.stderr is not None:
-        err.write(proc.stderr)
+    if captured_err:
+        err.write(captured_err)
         err.flush()
     return proc.returncode
 

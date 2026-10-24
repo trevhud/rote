@@ -2557,9 +2557,9 @@ command must approve exactly the files the user vouched for
   matches `.rote-manifest.json`), in the app registry entry's `trust`. A
   run refuses a changed, new, missing, symlinked or special file, and
   `__pycache__` counts as new: an unchecked `.pyc` with the source's mtime
-  shadows a listed `.py`. The driver also runs with `-B`, though since it
-  runs from a deleted private copy (below) that flag is defense in depth,
-  and removing it fails no test.
+  shadows a listed `.py`. The driver also runs with `-B`, though since its
+  code comes over a pipe (below) that flag is defense in depth, and
+  removing it fails no test.
 - **The env is an allowlist, never a scrub list** (`launch.child_env`).
   Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
   next command every block prints), base URLs, `XDG_*`, proxies and CA
@@ -2571,12 +2571,16 @@ command must approve exactly the files the user vouched for
   Their overrides stay, for tests and `isolated-rote`. A run whose paths
   resolve elsewhere than at install is refused. `ROTE_APPS_PATH` is the
   root and is not bound: whoever sets rote's env can set `PYTHONPATH` too.
-- **The run starts from the checked bytes, never the dir.** `trust.scan`
-  keeps each file's bytes, and `launch.snapshot_scripts` writes `scripts/`
-  from them into a private 0700 temp dir the driver runs from (plan.json
-  included). A review swapped an extracted module after the first `rote:
-  calling` line, while fastmcp was still importing, and the swap ran
-  (`test_code_swapped_in_after_the_check_never_runs`).
+- **The running code never touches disk.** `trust.scan` keeps each file's
+  bytes. `launch.frame` sends them, plan.json included, over an inherited
+  pipe to `launch.BOOTSTRAP` (a `-c` constant, never a file), whose
+  meta-path finder serves the driver and `extracted/` from those bytes with
+  the skill dir's paths as `__file__`. The skill dir's `sys.path` entry is
+  disabled. Two reviews broke the earlier shapes: swapping an extracted
+  module in the skill dir after the first `rote: calling` line, and then,
+  since the agent is the same uid, rewriting rote's private 0700 snapshot
+  (`test_no_file_of_the_running_code_exists_for_the_agent_to_swap`). Only a
+  CA bundle still lands on disk, because TLS reads a file.
 - **Write consent is a driver parameter, from the registry only.** The
   bootstrap (`launch.BOOTSTRAP`) passes `allow_writes` to `main`. Never add
   a flag or variable for it: `uv run scripts/run.py` would take it too.

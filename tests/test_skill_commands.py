@@ -214,6 +214,92 @@ def test_a_symlink_is_refused_even_to_identical_content(
     assert status == 0, out + err
 
 
+def test_no_file_of_the_running_code_exists_for_the_agent_to_swap(
+    digest: Path, tmp_path: Path, fx: FixtureServer
+) -> None:
+    """The re-review's reproduction: the agent is the same uid, so any copy rote
+    writes (a private temp dir included) can be rewritten mid-run. Rewrite every
+    file under the run's temp area once the first tool call starts, then check
+    the original code ran. The code reaches the driver over a pipe, so there is
+    nothing there to rewrite."""
+    import subprocess
+    import sys
+    import time
+
+    from rote import demo
+
+    marker = tmp_path / "swapped-code-ran"
+    run_tmp = tmp_path / "run-tmp"
+    run_tmp.mkdir()
+    evil = (
+        f"open({str(marker)!r}, 'w').write('ran')\ndef write_digest(**kwargs):\n    return {{}}\n"
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "rote.cli",
+            "skill",
+            "run",
+            "docs-digest",
+            "start",
+            "--file",
+            str(DOCS_INPUT),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "TMPDIR": str(run_tmp)},
+    )
+    assert proc.stderr is not None
+    deadline = time.monotonic() + 60
+    for line in proc.stderr:
+        if line.startswith("rote: calling"):
+            for path in run_tmp.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    path.write_text(evil if path.suffix == ".py" else path.read_text() + "#")
+            break
+        assert time.monotonic() < deadline
+    out, _ = proc.communicate(timeout=120)
+    assert proc.returncode == 0, out
+    assert not marker.exists()
+    assert result_of(out) == demo.load_reference().pipeline_output
+
+
+def test_the_driver_takes_its_plan_and_code_from_the_frame_alone(
+    digest: Path, fx: FixtureServer
+) -> None:
+    """Between the check and the child's first import, the dir can change. The
+    child must not read it: wreck every file in scripts/ after the check, then
+    hand the child the checked frame."""
+    import subprocess
+
+    from rote import demo
+    from rote.skill_target import launch, trust
+
+    (app,) = [a for a in registered_apps() if a.path == digest.resolve()]
+    verified = trust.check(app)
+    env, _ = launch.child_env(dict(os.environ), verified.plan, verified.bound)
+    for path in (digest / "scripts").rglob("*"):
+        if path.is_file():
+            path.write_text("raise SystemExit(7)\n")
+    read_fd, write_fd = os.pipe()
+    proc = subprocess.Popen(
+        launch.driver_argv(read_fd, ["start", "--file", str(DOCS_INPUT)]),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(read_fd,),
+    )
+    os.close(read_fd)
+    with os.fdopen(write_fd, "wb") as pipe:
+        pipe.write(launch.frame(verified, allow_writes=False))
+    out, err = proc.communicate(timeout=120)
+    assert proc.returncode == 0, out + err
+    assert result_of(out) == demo.load_reference().pipeline_output
+
+
 def test_code_swapped_in_after_the_check_never_runs(
     digest: Path, tmp_path: Path, fx: FixtureServer
 ) -> None:
@@ -576,23 +662,62 @@ NOTE_PIPELINE = {
 }
 
 
-def _emit_note_taker(root: Path, pipeline: dict[str, Any] = NOTE_PIPELINE) -> Path:
+def _emit_note_taker(
+    root: Path,
+    pipeline: dict[str, Any] = NOTE_PIPELINE,
+    modules: dict[str, str] | None = None,
+    name: str = "note-taker",
+) -> Path:
     from rote.adapters import get_adapter
     from rote.ir import load_pipeline
 
     source = root / "source"
     source.mkdir(exist_ok=True)
     (source / "SKILL.md").write_text(
-        "---\nname: note-taker\ndescription: Take a note.\n---\n# Notes\n", encoding="utf-8"
+        f"---\nname: {name}\ndescription: Take a note.\n---\n# Notes\n", encoding="utf-8"
     )
     compiled = root / "compiled"
     (compiled / "extracted").mkdir(parents=True, exist_ok=True)
+    for module, text in (modules or {}).items():
+        (compiled / "extracted" / module).write_text(text, encoding="utf-8")
     (compiled / "pipeline.yaml").write_text(yaml.safe_dump(pipeline), encoding="utf-8")
-    out = root / "note-taker"
+    out = root / name
     get_adapter("skill", extracted_source_dir=compiled, skill_dir=source).emit(
         load_pipeline(compiled / "pipeline.yaml"), out
     )
     return out
+
+
+def test_an_error_in_code_served_from_the_pipe_still_names_file_and_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pipeline = {
+        "name": "doubler",
+        "version": "0.1.0",
+        "input": {"type": "In", "required": ["n"]},
+        "nodes": [
+            {
+                "id": "doubled",
+                "kind": "pure_function",
+                "description": "Double it.",
+                "impl": "extracted/math.py:double",
+                "inputs": {"n": "pipeline.input.n"},
+            }
+        ],
+        "edges": [],
+        "entry_nodes": ["doubled"],
+        "exit_nodes": ["doubled"],
+    }
+    source = (
+        "def double(n):\n    if n < 0:\n        raise ValueError('negative')\n    return n * 2\n"
+    )
+    out = _emit_note_taker(tmp_path, pipeline, {"math.py": source}, name="doubler")
+    assert _cli(capsys, "skill", "install", str(out), "--yes")[0] == 0
+    status, block, _ = _cli(capsys, "skill", "run", "doubler", "start", '{"n": 2}')
+    assert status == 0 and result_of(block) == {"doubled": 4}
+    status, block, _ = _cli(capsys, "skill", "run", "doubler", "start", '{"n": -1}')
+    assert status == 1
+    assert "doubled raised ValueError: negative at extracted/math.py:3" in block
 
 
 @pytest.fixture
