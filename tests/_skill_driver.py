@@ -117,14 +117,20 @@ def result_of(text: str) -> Any:
 class FixtureServer:
     """``tests/_skill_mcp_server.py`` on a free localhost port, with its hit log."""
 
-    def __init__(self, hits: Path) -> None:
+    def __init__(self, hits: Path, only: list[str] | None = None) -> None:
         self.hits = hits
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
         self.url = f"http://127.0.0.1:{port}/mcp"
         self.proc = subprocess.Popen(
-            [sys.executable, str(SERVER_SCRIPT), str(port), str(hits)],
+            [
+                sys.executable,
+                str(SERVER_SCRIPT),
+                str(port),
+                str(hits),
+                *([",".join(only)] if only else []),
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
@@ -152,8 +158,8 @@ class FixtureServer:
 
 
 @contextlib.contextmanager
-def fixture_server(hits: Path) -> Iterator[FixtureServer]:
-    server = FixtureServer(hits)
+def fixture_server(hits: Path, only: list[str] | None = None) -> Iterator[FixtureServer]:
+    server = FixtureServer(hits, only)
     try:
         yield server
     finally:

@@ -166,7 +166,9 @@ def child_env(
     allowed = set(BASE_VARS) | _header_vars(plan)
     if plan.get("judges") == "helper":
         allowed |= HELPER_KEYS
-        judges = [s["id"].upper() for s in plan.get("steps") or [] if s.get("kind") == "judge"]
+        from rote.skill_target import helper_judge_ids
+
+        judges = [judge.upper() for judge in helper_judge_ids(dict(plan))]
         allowed |= {f"{prefix}{judge}" for prefix in HELPER_KNOBS for judge in judges}
     env = {k: v for k, v in environ.items() if k in allowed or k.startswith("LC_")}
     env["ROTE_MCP_CONFIG"] = bound["mcp_config"]

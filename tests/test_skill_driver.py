@@ -217,24 +217,17 @@ def test_a_resume_after_a_mid_fan_failure_runs_only_the_unfinished_elements(
     assert log.read_text().split() == ["1", "2", "2", "3"]  # element 1 ran once
 
 
-def test_an_agent_loop_is_refused_at_start_not_half_run(tmp_path: Path) -> None:
-    pipeline = _pipeline(
-        [
-            *CODE["nodes"],
-            {
-                "id": "explore",
-                "kind": "agent_loop",
-                "description": "Look around.",
-                "tools": ["search"],
-                "inputs": {"summary": "summed.output"},
-            },
-        ],
-        [("doubled", "summed"), ("summed", "explore")],
-    )
-    scripts = make_skill(tmp_path, pipeline, {"math.py": MATH})
+def test_a_step_kind_the_driver_does_not_run_is_refused_at_start_not_half_run(
+    tmp_path: Path,
+) -> None:
+    """A plan from a newer rote, say. (Agent loops run: tests/test_skill_loop.py.)"""
+    scripts = make_skill(tmp_path, CODE, {"math.py": MATH})
+    plan = json.loads((scripts / "plan.json").read_text(encoding="utf-8"))
+    plan["steps"][1]["kind"] = "teleport"
+    (scripts / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     status, out = drive(scripts, "start", '{"items": [1]}')
     assert status == 1
-    assert "step explore is an agent loop" in out
+    assert "step summed is a 'teleport' step, which this driver cannot run" in out
     assert not Path(os.environ["ROTE_SKILL_RUN_DIR"]).exists()
 
 

@@ -49,10 +49,24 @@ def calls_mcp(plan: dict[str, Any]) -> bool:
 
 
 def helper_judges(plan: dict[str, Any]) -> bool:
-    """Whether the inference helper, not the agent, answers ``plan``'s judges."""
-    return plan.get("judges") == "helper" and any(
-        s.get("kind") == "judge" for s in plan.get("steps") or []
-    )
+    """Whether the inference helper, not the agent, answers ``plan``'s judges,
+    an agent loop's judge sub-nodes included (the loop calls them as tools)."""
+    return bool(helper_judge_ids(plan))
+
+
+def helper_judge_ids(plan: dict[str, Any]) -> list[str]:
+    """The ids of the judges the inference helper answers in ``plan``: its judge
+    steps and each agent loop's judge sub-nodes, in plan order. Empty unless
+    the plan was emitted with ``--judges helper``."""
+    if plan.get("judges") != "helper":
+        return []
+    found: list[str] = []
+    for step in plan.get("steps") or []:
+        if step.get("kind") == "judge":
+            found.append(str(step["id"]))
+        if step.get("kind") == "loop":
+            found += [str(b["id"]) for b in step["body"] if b.get("kind") == "judge"]
+    return found
 
 
 def script_files(plan: dict[str, Any]) -> dict[str, str]:
