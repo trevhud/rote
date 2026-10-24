@@ -1037,9 +1037,15 @@ def test_the_driver_and_the_prefix_runner_agree_on_docs_digest(
 # ───────── what the driver is: verbatim, stdlib, fast ─────────
 
 
-def test_the_scripts_are_verbatim_copies(code_skill: Path) -> None:
-    for name, source in HELPER_FILES.items():
-        assert (code_skill / name).read_bytes() == source.read_bytes(), name
+def test_the_scripts_are_verbatim_copies(code_skill: Path, tmp_path: Path) -> None:
+    # A code-only plan ships the driver and the schema check, and no MCP
+    # helper (invariant #3); a plan with a tool step ships that one too.
+    shipped = {n for n in HELPER_FILES if (code_skill / n).exists()}
+    assert shipped == {"_rote_skill.py", "_rote_schema.py"}
+    with_mcp = make_skill(tmp_path / "mcp", _mcp_pipeline(), {"pick.py": PICK})
+    assert {n for n in HELPER_FILES if (with_mcp / n).exists()} == shipped | {"_rote_mcp.py"}
+    for name in shipped | {"_rote_mcp.py"}:
+        assert (with_mcp / name).read_bytes() == HELPER_FILES[name].read_bytes(), name
 
 
 STDLIB = set(sys.stdlib_module_names)

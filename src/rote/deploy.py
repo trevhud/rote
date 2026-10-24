@@ -63,6 +63,7 @@ TARGET_BY_RUNTIME: dict[str, str | None] = {
     "temporal": None,
     "inngest": None,
     "python": None,
+    "skill": None,
 }
 
 _GUIDANCE = {
@@ -92,6 +93,13 @@ _GUIDANCE = {
         "(cron, systemd, a container). It has no durable state: for crash\n"
         "recovery or HITL gates, re-emit onto a durable runtime\n"
         "(`rote emit --runtime dbos`)."
+    ),
+    "skill": (
+        "A compiled skill is installed, not deployed: it runs inside the agent\n"
+        "client that loads it. Copy (or link) its folder into the client's\n"
+        "skills directory, for Claude Code ~/.claude/skills/<name>/ or a\n"
+        "project's .claude/skills/<name>/, and keep rote installed on that\n"
+        "machine: SKILL.md runs every step through `rote skill run <name>`."
     ),
 }
 

@@ -28,7 +28,7 @@ from rote.ir import Pipeline
 from rote.plan import build_plan
 from rote.skill_target import write_scripts
 
-_FRESH = ("_rote_skill", "_rote_schema", "_rote_mcp")
+_FRESH = ("_rote_skill", "_rote_schema", "_rote_mcp", "_rote_inference")
 SERVER_SCRIPT = Path(__file__).resolve().parent / "_skill_mcp_server.py"
 
 

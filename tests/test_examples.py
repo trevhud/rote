@@ -134,6 +134,24 @@ def test_every_example_emits_on_every_adapter(
     pipeline = load_pipeline(pipeline_yaml)
     adapter = get_adapter(runtime)
 
+    if runtime == "skill":
+        # A compiled skill keeps its source skill's name, so it needs the
+        # skill beside the IR, and the hand-adapted baselines keep their
+        # vendor stubs (a refusal tests/test_skill_adapter.py covers).
+        from rote.adapters.skill import refusal
+        from rote.plan import PlanError
+
+        adapter = get_adapter(
+            "skill", skill_dir=pipeline_yaml.parent.parent / "skill", allow_stubs=True
+        )
+        reason = refusal(pipeline)
+        if reason is not None:
+            # The documented refusal: an agent loop, until the driver's tool proxy.
+            assert "agent loop" in reason
+            with pytest.raises(PlanError, match="agent loop"):
+                adapter.emit(pipeline, tmp_path / "out")
+            return
+
     if runtime == "python" and pipeline.requires_durable_execution:
         # The documented refusal, not a failure: a plain script cannot
         # durably park on a hitl_gate. The error must point at dbos.

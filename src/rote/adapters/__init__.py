@@ -118,6 +118,23 @@ def _python_adapter_factory(**options: Any) -> Adapter:
     return PythonAdapter(PythonAdapterConfig(extracted_source_dir=_source_dir(options)))
 
 
+def _skill_adapter_factory(**options: Any) -> Adapter:
+    """``skill_dir`` (the source skill), ``judges`` (``session`` | ``helper``) and
+    ``allow_stubs`` are this runtime's own options."""
+    from rote.adapters.skill import SkillAdapter, SkillAdapterConfig
+
+    skill_dir = options.get("skill_dir")
+    return SkillAdapter(
+        SkillAdapterConfig(
+            skill_dir=Path(skill_dir) if skill_dir is not None else None,
+            extracted_source_dir=_source_dir(options),
+            external_backend=_validated_backend(options) or "mcp",
+            judges=options.get("judges") or "session",
+            allow_stubs=bool(options.get("allow_stubs")),
+        )
+    )
+
+
 #: Name → factory. Factories accept ``**options`` (forwarded from
 #: ``get_adapter``) and lazy-import their heavy dependencies.
 ADAPTERS: dict[str, Callable[..., Adapter]] = {
@@ -127,6 +144,7 @@ ADAPTERS: dict[str, Callable[..., Adapter]] = {
     "dbos-ts": _dbos_ts_adapter_factory,
     "inngest": _inngest_adapter_factory,
     "python": _python_adapter_factory,
+    "skill": _skill_adapter_factory,
 }
 
 

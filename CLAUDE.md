@@ -155,7 +155,7 @@ the Anthropic SDK client (see
 ### Layer 3 — The runtime adapters (the "code emitter")
 
 - **Lives at:** [`src/rote/adapters/`](src/rote/adapters/)
-- **Five adapters today:**
+- **Seven adapters today:**
   - `DbosAdapter`
     ([`src/rote/adapters/dbos.py`](src/rote/adapters/dbos.py))
     — the CLI default; emits a single durable Python app (`main.py`
@@ -206,6 +206,18 @@ the Anthropic SDK client (see
     adapters. Note: Inngest v4 retries are **function-level only** —
     the emitter maps max-across-nodes and comments the per-node
     deltas (see the Inngest gotcha below).
+  - `SkillAdapter`
+    ([`src/rote/adapters/skill.py`](src/rote/adapters/skill.py),
+    registered as `skill`) — emits a compiled skill, not workflow code:
+    SKILL.md (the source skill's name and description, a short body),
+    README.md, and `scripts/` with `plan.json` (`rote.plan.build_plan`,
+    live), the verbatim driver (`rote.skill_target._driver`) and helpers,
+    and `extracted/`. One manifest covers every file, SKILL.md included.
+    The identity comes from a SKILL.md rote can vouch for (`--skill`, or
+    `source_skill` checked against `provenance.json`'s digest), never a
+    guess. Refuses stubs (`--allow-stubs`), agent loops (until the
+    driver's tool proxy) and PlanErrors before writing anything. See
+    [`docs/design/compiled-skill-target.md`](docs/design/compiled-skill-target.md).
 - **What they do:** consume a validated `Pipeline` IR and write
   runtime-native code into an output directory
 - **Never run an agent loop.** Code emission is pure template
