@@ -1664,6 +1664,24 @@ def dispatch(driver: Driver, argv: list[str]) -> Block:
     )
 
 
+def _read_only_servers(scripts: Path) -> dict[str, str]:
+    """``{server: url}`` for every server the user registered read-only.
+
+    Read from the registry the MCP helper already reads for endpoints
+    (``_registry_servers``), so a declaration means the same thing here as
+    on every MCP runtime: the helper honors it only at that URL. A skill
+    with no MCP step ships no ``_rote_mcp.py`` and reads nothing.
+    """
+    if not (scripts / "_rote_mcp.py").is_file():
+        return {}
+    servers = importlib.import_module("_rote_mcp")._registry_servers()
+    return {
+        str(name): str(config["url"])
+        for name, config in servers.items()
+        if isinstance(config, dict) and config.get("read_only") is True and config.get("url")
+    }
+
+
 def main(
     argv: list[str],
     scripts: Path | None = None,
@@ -1682,7 +1700,9 @@ def main(
     environment. The caller that holds the consent record (``rote skill
     run``, from the trust registry) passes it; until that exists every
     write tool is refused before it is called. For the same reason the
-    read-only server list the MCP helper honors is cleared here.
+    read-only server list the MCP helper honors is never taken from the
+    environment: it is rebuilt from the user's own declarations, the
+    servers ``rote mcp add --read-only`` registered (:func:`_read_only_servers`).
     """
     scripts = (scripts or Path(__file__).resolve().parent).resolve()
     if str(scripts) not in sys.path:
@@ -1692,6 +1712,9 @@ def main(
     else:
         os.environ["ROTE_MCP_READ_ONLY"] = "1"
     os.environ.pop("ROTE_MCP_READ_ONLY_SERVERS", None)
+    declared = _read_only_servers(scripts)
+    if declared:
+        os.environ["ROTE_MCP_READ_ONLY_SERVERS"] = json.dumps(declared)
     driver: Driver | None = None
     try:
         driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None, skill)

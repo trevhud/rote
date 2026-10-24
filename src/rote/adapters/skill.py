@@ -631,17 +631,23 @@ class SkillAdapter:
                 "pass --allow-stubs"
             )
 
-        from rote.skill_target import script_files
+        from rote.skill_target import HELPER_FILES, script_files
 
         written: dict[str, Path] = {
             "SKILL": writer.write(SKILL_FILE, content=skill_md(identity, pipeline, plan)),
             "README": writer.write("README.md", content=readme(identity, pipeline, plan)),
             "run": scripts.write("run.py", content=run_py(identity, pipeline, plan)),
         }
-        for name, text in script_files(plan).items():
+        shipped = script_files(plan)
+        for name, text in shipped.items():
             written[name.removesuffix(".py").removesuffix(".json")] = scripts.write(
                 name, content=text
             )
+        for name in HELPER_FILES.keys() - shipped.keys():
+            # A helper an earlier emit shipped and this plan does not need
+            # (re-emitted with --judges session, or with no MCP step left):
+            # a leftover would be code the skill can import but nothing vouches for.
+            scripts.retire(name)
         written.update(
             {
                 f"scripts/{label}": path

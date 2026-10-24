@@ -334,6 +334,25 @@ class EmitWriter:
         view.output_dir = resolve_within(self.output_dir, *prefix)
         return view
 
+    def retire(self, *parts: str) -> bool:
+        """Remove a file an earlier emit wrote that this one no longer produces.
+
+        Deleted only while it is exactly what rote wrote (its manifest hash),
+        and its entry leaves the manifest either way, so the manifest never
+        attests to a file this emit did not write. A file the user edited is
+        kept on disk. True when a file was deleted.
+        """
+        target = resolve_within(self.output_dir, *parts)
+        rel = target.relative_to(self._root).as_posix()
+        recorded = self._previous.pop(rel, None)
+        self._current.pop(rel, None)
+        if recorded is None or not target.is_file():
+            return False
+        if self._hash(target.read_bytes()) != recorded:
+            return False
+        target.unlink()
+        return True
+
     def record(self, key: str, value: Any) -> None:
         """Record ``key: value`` at the manifest's top level (written by :meth:`finalize`).
 
