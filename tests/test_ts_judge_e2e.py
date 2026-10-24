@@ -63,13 +63,14 @@ ANSWER = {"grade": 9, "verdict": "pass", "rubric": "v1", "notes": {"text": "clea
 class _JudgeStub(BaseHTTPRequestHandler):
     requests: list[dict[str, Any]] = []
     stop = "end_turn"
+    answer: dict[str, Any] = ANSWER
 
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         type(self).requests.append(payload)
         if reject_like_the_api(self, payload):
             return
-        send_json(self, structured_message(payload, ANSWER, stop_reason=type(self).stop))
+        send_json(self, structured_message(payload, type(self).answer, stop_reason=type(self).stop))
 
     def log_message(self, *args: object) -> None:
         return
@@ -79,6 +80,7 @@ class _JudgeStub(BaseHTTPRequestHandler):
 def judge_stub() -> Iterator[str]:
     _JudgeStub.requests = []
     _JudgeStub.stop = "end_turn"
+    _JudgeStub.answer = ANSWER
     server = HTTPServer(("127.0.0.1", 0), _JudgeStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -194,6 +196,16 @@ def test_ts_judge_on_the_current_sonnet_is_schema_locked(judge_app: Path, judge_
             "type": "json_schema",
             "schema": structured_output_schema(OUTPUT_SCHEMA, node_id="grade_essay"),
         }
+    }
+
+
+def test_ts_judge_holds_the_answer_to_the_whole_schema(judge_app: Path, judge_stub: str) -> None:
+    """``maximum`` is moved out of the request schema and Zod alone would
+    not check it: the shared validator does, naming the path, as on Python."""
+    _JudgeStub.answer = {**ANSWER, "grade": 11}
+    assert _run(judge_app, judge_stub) == {
+        "error": "judge grade_essay answered outside its output schema: "
+        "output.grade: 11 is above the maximum 10"
     }
 
 

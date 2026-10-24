@@ -122,7 +122,7 @@ def test_docs_digest_emits_a_skill_and_a_manifest_that_covers_every_file(tmp_pat
         "scripts/run.py",
         "scripts/plan.json",
         "scripts/_rote_skill.py",
-        "scripts/_rote_schema.py",
+        "scripts/_rote_inference.py",
         "scripts/_rote_mcp.py",
         "scripts/extracted/__init__.py",
         *(f"scripts/extracted/{p.name}" for p in (DOCS_DIGEST / "extracted").glob("*.py")),
@@ -148,14 +148,12 @@ def test_docs_digest_emits_a_skill_and_a_manifest_that_covers_every_file(tmp_pat
 
 
 @pytest.mark.parametrize("judges", ["session", "helper"])
-def test_the_helpers_are_verbatim_and_the_inference_helper_ships_only_for_helper_judges(
-    tmp_path: Path, judges: str
-) -> None:
+def test_the_helpers_are_verbatim_whatever_the_judge_mode(tmp_path: Path, judges: str) -> None:
     out = tmp_path / "deal-monitor"
     emit(DEAL_MONITOR, out, judges=judges, allow_stubs=True)
-    shipped = {"_rote_skill.py", "_rote_schema.py", "_rote_mcp.py"}
-    if judges == "helper":
-        shipped.add("_rote_inference.py")
+    # The inference helper ships either way: its schema validator checks
+    # every answer, and under --judges helper it answers the judges too.
+    shipped = {"_rote_skill.py", "_rote_inference.py", "_rote_mcp.py"}
     assert {n for n in HELPER_FILES if (out / "scripts" / n).exists()} == shipped
     for name in shipped:
         assert (out / "scripts" / name).read_bytes() == HELPER_FILES[name].read_bytes(), name
@@ -920,7 +918,7 @@ def test_a_helper_answer_outside_the_schema_stops_the_run(
     notes = json.dumps({"notes": ["keep this", "maybe that"]})
     status, failed = drive(out / "scripts", "start", notes, skill="sorter")
     assert status == 1 and header(failed)["kind"] == "ERROR", failed
-    assert "labelled's judge answered outside its output schema" in failed
+    assert "judge labelled answered outside its output schema: output.label:" in failed
     assert not (run_dir(failed) / "nodes" / "counted.json").exists()
 
 
@@ -1084,14 +1082,20 @@ def test_an_input_schema_field_cannot_write_a_line_into_skill_md() -> None:
 #: Stands in for scripts/_rote_inference.py: records what the driver passes
 #: call_judge. (The real helper cannot carry a temperature today: anthropic
 #: 1.15's messages.create takes no `temperature` keyword, on every runtime.)
-_RECORDING_HELPER = """\
-import json, os
+#: Appended to the real helper (the driver still needs its schema validator):
+#: a ``call_judge`` that records its arguments instead of calling a model.
+_RECORDING_JUDGE = """
 
 def call_judge(**kwargs):
     with open(os.environ["JUDGE_CALLS"], "a") as f:
         f.write(json.dumps(kwargs) + "\\n")
     return {"label": "keep"}
 """
+
+
+def _record_judge_calls(scripts: Path) -> None:
+    helper = scripts / "_rote_inference.py"
+    helper.write_text(helper.read_text(encoding="utf-8") + _RECORDING_JUDGE, encoding="utf-8")
 
 
 def test_a_helper_judges_temperature_is_its_knob_and_empty_omits_it(
@@ -1102,7 +1106,7 @@ def test_a_helper_judges_temperature_is_its_knob_and_empty_omits_it(
     skill = _source_skill(tmp_path, "sorter", "Sort notes.")
     out = tmp_path / "sorter"
     emit(_compiled(tmp_path, pipeline, {"count.py": COUNT}), out, skill_dir=skill, judges="helper")
-    (out / "scripts" / "_rote_inference.py").write_text(_RECORDING_HELPER, encoding="utf-8")
+    _record_judge_calls(out / "scripts")
     calls = tmp_path / "calls.jsonl"
     monkeypatch.setenv("JUDGE_CALLS", str(calls))
     run = json.dumps({"notes": ["keep"]})
@@ -1126,25 +1130,10 @@ def test_a_helper_judges_temperature_is_its_knob_and_empty_omits_it(
         skill_dir=plain_skill,
         judges="helper",
     )
-    (plain / "sorter" / "scripts" / "_rote_inference.py").write_text(_RECORDING_HELPER)
+    _record_judge_calls(plain / "sorter" / "scripts")
     status, done = drive(plain / "sorter" / "scripts", "start", run, skill="sorter")
     assert status == 0, done
     assert "sampling" not in json.loads(calls.read_text().splitlines()[0])
-
-
-def test_re_emitting_session_judges_retires_the_inference_helper(tmp_path: Path) -> None:
-    out = tmp_path / "deal-monitor"
-    emit(DEAL_MONITOR, out, judges="helper", allow_stubs=True)
-    assert (out / "scripts" / "_rote_inference.py").is_file()
-    emit(DEAL_MONITOR, out, judges="session", allow_stubs=True)
-    assert not (out / "scripts" / "_rote_inference.py").exists()
-    assert "scripts/_rote_inference.py" not in manifest(out)["files"]
-    # A user's edit is never deleted, and the manifest still does not vouch for it.
-    emit(DEAL_MONITOR, out, judges="helper", allow_stubs=True)
-    (out / "scripts" / "_rote_inference.py").write_text("# mine\n", encoding="utf-8")
-    emit(DEAL_MONITOR, out, judges="session", allow_stubs=True)
-    assert (out / "scripts" / "_rote_inference.py").read_text() == "# mine\n"
-    assert "scripts/_rote_inference.py" not in manifest(out)["files"]
 
 
 def test_a_malformed_registry_is_an_error_block_naming_the_file(tmp_path: Path) -> None:

@@ -107,13 +107,17 @@ def _activity_timeout(node: Node, default: str) -> str:
 
 
 def _retry_policy_args(node: Node) -> str:
-    """Render a Temporal RetryPolicy from the node's retry config.
+    """Render a Temporal RetryPolicy from the node's retry config, for every activity.
 
-    Returns a string like ``RetryPolicy(maximum_attempts=5, ...)`` or an
-    empty string if no retry policy is specified.
+    A node with no ``retry:`` gets ``maximum_attempts=1``, never Temporal's
+    default policy, which retries forever: a paid judge that kept missing
+    its schema would bill without end. One attempt is what a missing
+    ``retry:`` means on dbos, dbos-ts and python, whose steps retry only
+    when the IR asks. (Cloudflare's ``step.do`` and Inngest's function
+    keep their platforms' bounded defaults.)
     """
     if not node.retry:
-        return ""
+        return "RetryPolicy(maximum_attempts=1)"
     parts = [f"maximum_attempts={node.retry.max + 1}"]  # Temporal counts initial + retries
     backoff = node.retry.backoff
     if backoff == "exponential":
@@ -420,9 +424,7 @@ def _execute_activity_expr(
         f"{inner}{payload},",
         f'{inner}start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),',
     ]
-    retry = _retry_policy_args(node)
-    if retry:
-        lines.append(f"{inner}retry_policy={retry},")
+    lines.append(f"{inner}retry_policy={_retry_policy_args(node)},")
     lines.append(f"{indent})")
     return "\n".join(lines)
 

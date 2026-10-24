@@ -11,6 +11,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 
+import { schemaErrors } from "./_roteSchema";
+
 export const PersonalizeEmailInput = z.object({
   "contact": z.object({
     "contact": z.object({
@@ -74,6 +76,28 @@ const OUTPUT_JSON_SCHEMA = {
   "title": "PersonalizeEmailOutput",
   "type": "object",
   "additionalProperties": false
+};
+
+// The whole output schema, which the answer is held to (bounds, pattern
+// and lengths included: structured outputs and Zod drop them).
+const ANSWER_SCHEMA = {
+  "additionalProperties": false,
+  "properties": {
+    "opening_line": {
+      "title": "Opening Line",
+      "type": "string"
+    },
+    "ta_callout": {
+      "title": "Ta Callout",
+      "type": "string"
+    }
+  },
+  "required": [
+    "opening_line",
+    "ta_callout"
+  ],
+  "title": "PersonalizeEmailOutput",
+  "type": "object"
 };
 
 function interpolate(template: string, vars: Record<string, unknown>): string {
@@ -144,6 +168,13 @@ export async function personalizeEmail(
     } catch {
         throw new Error(
             `structured output for personalize_email is not JSON: ${text.slice(0, 200)}`,
+        );
+    }
+    const broken = schemaErrors(ANSWER_SCHEMA, answer, "output");
+    if (broken.length > 0) {
+        throw new Error(
+            `judge personalize_email answered outside its output schema: ` +
+                broken.join("; "),
         );
     }
     return PersonalizeEmailOutput.parse(answer);

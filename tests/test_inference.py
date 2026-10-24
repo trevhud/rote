@@ -476,6 +476,52 @@ def test_cli_transport_falls_back_to_the_result_string(monkeypatch: pytest.Monke
     ) == {"grade": 9}
 
 
+_BOUNDED_GRADE = {
+    "type": "object",
+    "properties": {"grade": {"type": "integer", "minimum": 1, "maximum": 5}},
+    "required": ["grade"],
+    "additionalProperties": False,
+}
+
+
+@pytest.mark.parametrize("lane", ["claude-cli", "api"])
+def test_a_judge_answer_outside_the_whole_schema_fails_naming_the_path(
+    monkeypatch: pytest.MonkeyPatch, lane: str
+) -> None:
+    """Bounds, pattern and lengths are moved out of the request schema, and
+    the caller's Pydantic model drops them too: the helper holds every lane's
+    answer to them, so the step's retry asks again instead of passing it on."""
+    if lane == "claude-cli":
+        monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
+        monkeypatch.setattr(
+            helper.subprocess,
+            "run",
+            lambda command, **kwargs: types.SimpleNamespace(
+                stdout=_cli_envelope(), stderr="", returncode=0
+            ),
+        )
+    else:
+        monkeypatch.setenv("ROTE_INFERENCE", "api")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+        monkeypatch.setitem(
+            sys.modules,
+            "anthropic",
+            _fake_anthropic(lambda **_: _structured_response({"grade": 9})),
+        )
+    with pytest.raises(RuntimeError) as excinfo:
+        helper.call_judge(
+            node_id="grade_essay",
+            client="anthropic",
+            model="claude-sonnet-5",
+            prompt="Grade it.",
+            output_schema=_BOUNDED_GRADE,
+        )
+    assert str(excinfo.value) == (
+        "judge grade_essay answered outside its output schema: "
+        "output.grade: 9 is above the maximum 5"
+    )
+
+
 # ───────── schema-locked judges: output_config.format ─────────
 
 
@@ -1420,14 +1466,17 @@ _DECLARED = {
 
 
 class _SubmitStub(BaseHTTPRequestHandler):
-    """Turn 1 calls ``submit_result`` with ``answer``; turn 2 ends.
+    """Turn 1 calls ``submit_result`` with ``answer``, turn 2 with ``resubmit``
+    when set; the next turn ends.
 
-    With no ``answer`` the model never submits, and refuses the final
-    schema-locked turn too.
+    The final schema-locked turn answers ``forced``, or refuses when it is
+    None (with no ``answer`` the model then never submits at all).
     """
 
     requests: list[dict[str, Any]] = []
     answer: dict[str, Any] | None = None
+    resubmit: dict[str, Any] | None = None
+    forced: dict[str, Any] | None = None
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
         payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
@@ -1435,16 +1484,23 @@ class _SubmitStub(BaseHTTPRequestHandler):
         if reject_like_the_api(self, payload):
             return
         if "format" in payload.get("output_config", {}):
-            send_json(self, structured_message(payload, None, stop_reason="refusal", content=[]))
+            forced = type(self).forced
+            if forced is None:
+                send_json(
+                    self, structured_message(payload, None, stop_reason="refusal", content=[])
+                )
+            else:
+                send_json(self, structured_message(payload, forced))
             return
-        first = len(type(self).requests) == 1
-        if first and type(self).answer is not None:
+        turn = len(type(self).requests)
+        submission = {1: type(self).answer, 2: type(self).resubmit}.get(turn)
+        if submission is not None:
             content: list[dict[str, Any]] = [
                 {
                     "type": "tool_use",
-                    "id": "t1",
+                    "id": f"t{turn}",
                     "name": "submit_result",
-                    "input": type(self).answer,
+                    "input": submission,
                 }
             ]
         else:
@@ -1475,6 +1531,7 @@ def submit_stub(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _SubmitStub.requests = []
+    _SubmitStub.answer = _SubmitStub.resubmit = _SubmitStub.forced = None
     server = HTTPServer(("127.0.0.1", 0), _SubmitStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1533,10 +1590,11 @@ def test_sdk_loop_that_never_submits_fails_naming_the_node(submit_stub: str) -> 
 
 
 def test_sdk_loop_missing_a_declared_key_fails_naming_it(submit_stub: str) -> None:
-    _SubmitStub.answer = {"summary": "acme is gold"}
+    _SubmitStub.answer = _SubmitStub.forced = {"summary": "acme is gold"}
     with pytest.raises(
         RuntimeError,
         match="agent loop research \\(api\\) did not hand back its declared output: "
+        "every answer it gave \\(2\\) broke the step's schema; the last: "
         "output: missing key 'score'",
     ):
         _loop(submit_stub)
@@ -1795,21 +1853,146 @@ def test_an_unlockable_output_never_submitted_fails_with_the_shared_message(
 @pytest.mark.parametrize(
     ("answer", "reason"),
     [
-        ({"summary": "s", "score": "7"}, "output.score: expected integer, got str"),
-        ({"summary": "s", "score": True}, "output.score: expected integer, got bool"),
+        ({"summary": "s", "score": "7"}, "output.score: expected integer, got string"),
+        ({"summary": "s", "score": True}, "output.score: expected integer, got boolean"),
         ({"summary": "s", "score": 7, "extra": 1}, "output: unexpected key 'extra'"),
-        ({"summary": None, "score": 7}, "output.summary: expected string, got NoneType"),
+        ({"summary": None, "score": 7}, "output.summary: expected string, got null"),
     ],
 )
 def test_a_submission_is_validated_against_the_declared_schema(
     submit_stub: str, answer: dict[str, Any], reason: str
 ) -> None:
-    _SubmitStub.answer = answer
+    """The model keeps its bad answer even through the forced turn, so the
+    final check (the backstop) fails the node."""
+    _SubmitStub.answer = _SubmitStub.forced = answer
     with pytest.raises(RuntimeError) as excinfo:
         _loop(submit_stub)
+    # Refused by the submit tool, then again as the forced turn's answer.
     assert str(excinfo.value) == (
-        f"agent loop research (api) did not hand back its declared output: {reason}"
+        "agent loop research (api) did not hand back its declared output: every "
+        f"answer it gave (2) broke the step's schema; the last: {reason}"
     )
+
+
+_BOUNDED = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "maxLength": 12},
+        "score": {"type": "integer", "minimum": 1, "maximum": 10},
+        "ticker": {"type": "string", "pattern": "^[A-Z]{1,5}$"},
+    },
+    "required": ["summary", "score", "ticker"],
+    "additionalProperties": False,
+}
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        (
+            {"summary": "far too long to fit", "score": 7, "ticker": "ACME"},
+            "output.summary: allows at most 12 characters",
+        ),
+        (
+            {"summary": "s", "score": 11, "ticker": "ACME"},
+            "output.score: 11 is above the maximum 10",
+        ),
+        (
+            {"summary": "s", "score": 7, "ticker": "acme"},
+            "output.ticker: 'acme' does not match '^[A-Z]{1,5}$'",
+        ),
+        ({"summary": "fits", "score": 7, "ticker": "ACME"}, None),
+    ],
+)
+def test_a_submission_breaking_a_bound_pattern_or_length_fails(
+    submit_stub: str, answer: dict[str, Any], reason: str | None
+) -> None:
+    """The constraints structured outputs move into the description are
+    checked here, by the one validator every runtime shares."""
+    _SubmitStub.answer = _SubmitStub.forced = answer
+    if reason is None:
+        assert _loop(submit_stub, output_schema=_BOUNDED) == answer
+        return
+    with pytest.raises(RuntimeError) as excinfo:
+        _loop(submit_stub, output_schema=_BOUNDED)
+    # Refused by the submit tool, then again as the forced turn's answer.
+    assert str(excinfo.value) == (
+        "agent loop research (api) did not hand back its declared output: every "
+        f"answer it gave (2) broke the step's schema; the last: {reason}"
+    )
+
+
+def _tool_results(request: dict[str, Any]) -> list[str]:
+    """The text of every tool_result block in a request's last user turn."""
+    found: list[str] = []
+    for block in request["messages"][-1]["content"]:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            content = block.get("content")
+            if isinstance(content, list):
+                found += [c["text"] for c in content if c.get("type") == "text"]
+            else:
+                found.append(str(content))
+    return found
+
+
+def test_a_bad_submission_is_refused_to_the_model_which_resubmits_in_the_same_loop(
+    submit_stub: str,
+) -> None:
+    """Out of range is answered inside the loop, not by failing the node: a
+    durable retry would rerun the whole loop, its writes included."""
+    _SubmitStub.answer = {"summary": "far too long to fit", "score": 11, "ticker": "ACME"}
+    _SubmitStub.resubmit = {"summary": "fits", "score": 7, "ticker": "ACME"}
+    assert _loop(submit_stub, output_schema=_BOUNDED) == _SubmitStub.resubmit
+    # The refusal reached the model as the tool result, naming each break.
+    assert _tool_results(_SubmitStub.requests[1]) == [
+        "Not recorded: this output breaks the step's schema: output.summary: allows "
+        "at most 12 characters; output.score: 11 is above the maximum 10. Fix those "
+        "fields and call submit_result again."
+    ]
+    # And the good answer was simply recorded; no forced turn was needed.
+    assert _tool_results(_SubmitStub.requests[2]) == [
+        "Recorded. The step is complete; end your turn."
+    ]
+    assert len(_SubmitStub.requests) == 3
+
+
+def test_a_refused_submission_is_never_the_answer_the_forced_turn_is(submit_stub: str) -> None:
+    """A loop that never fixes its answer gets the one forced turn, and the
+    answer that turn gives back is what the step returns."""
+    _SubmitStub.answer = {"summary": "s", "score": 99, "ticker": "ACME"}
+    _SubmitStub.forced = {"summary": "s", "score": 9, "ticker": "ACME"}
+    assert _loop(submit_stub, output_schema=_BOUNDED) == _SubmitStub.forced
+
+
+def test_a_loop_whose_every_submission_was_refused_says_so(submit_stub: str) -> None:
+    """Not "never called submit_result": it did, and each answer broke the
+    schema. The message names the count and the last errors. The schema is
+    one structured outputs cannot lock (an untyped field), so the one extra
+    turn only asks again, and the stub model never resubmits."""
+    unlockable = {
+        "type": "object",
+        "properties": {"score": {"type": "integer", "maximum": 5}, "meta": {}},
+        "required": ["score"],
+        "additionalProperties": False,
+    }
+    _SubmitStub.answer = {"score": 9}
+    with pytest.raises(RuntimeError) as excinfo:
+        _loop(submit_stub, output_schema=unlockable)
+    assert str(excinfo.value) == (
+        "agent loop research (api) did not hand back its declared output: every answer "
+        "it gave (1) broke the step's schema; the last: output.score: 9 is above the "
+        "maximum 5"
+    )
+    # The negative half: the refusal was not "never called" in disguise.
+    assert "never called" not in str(excinfo.value)
+
+
+def test_the_declared_output_comes_back_as_the_model_dumps_it(submit_stub: str) -> None:
+    """``3.0`` under ``integer`` is ``3``, as on TS (where JSON has no 3.0)."""
+    _SubmitStub.answer = {"summary": "s", "score": 7.0}
+    result = _loop(submit_stub)
+    assert result == {"summary": "s", "score": 7}
+    assert type(result["score"]) is int
 
 
 def test_an_sdk_loop_runs_at_the_configured_effort(

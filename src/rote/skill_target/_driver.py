@@ -2,7 +2,8 @@
 
 rote emits this file verbatim into a compiled skill as ``scripts/_rote_skill.py``,
 beside ``plan.json`` (:func:`rote.plan.build_plan`, live mode), the verbatim
-``_rote_schema.py`` (:mod:`rote.plan._schema`) and ``_rote_mcp.py``
+``_rote_inference.py`` (:mod:`rote.inference._runtime_helper`, whose schema
+validator checks every answer) and ``_rote_mcp.py``
 (:mod:`rote.mcp._runtime_helper`), and the compile's ``extracted/`` code.
 It imports nothing from rote and nothing outside the standard library at
 module level; fastmcp arrives through ``_rote_mcp`` only when a step calls
@@ -324,7 +325,8 @@ def select(value: Any, paths: list[list[str]]) -> Any:
 
 
 def _schema() -> Any:
-    return importlib.import_module("_rote_schema")
+    """The schema validator every runtime shares (``rote.inference._runtime_helper``)."""
+    return importlib.import_module("_rote_inference")
 
 
 # ───────── async work, on one background loop ─────────
@@ -1145,8 +1147,9 @@ class Driver:
         and rendered with the same ``interpolate``; the model, endpoint and
         temperature are the IR's, each overridable per node by the
         ``ROTE_MODEL_`` / ``ROTE_BASE_URL_`` / ``ROTE_TEMPERATURE_<ID>``
-        knobs every runtime reads. The answer is held to the output schema
-        and projected as the judge's model would dump it.
+        knobs every runtime reads. ``call_judge`` holds the answer to the
+        output schema, as on every runtime; it is projected here as the
+        judge's model would dump it.
         """
         schema = _schema()
         errors = schema.schema_errors(step["input_schema"], payload, "input")
@@ -1170,11 +1173,6 @@ class Driver:
             output_schema=step["output_schema"],
             **kwargs,
         )
-        errors = schema.schema_errors(step["output_schema"], answer)
-        if errors:
-            raise ValueError(
-                f"{step['id']}'s judge answered outside its output schema: " + "; ".join(errors[:5])
-            )
         return schema.project(step["output_schema"], answer)
 
     def _failure_block(
