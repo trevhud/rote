@@ -61,6 +61,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **A Python judge whose IR sets `temperature` runs again.** anthropic 1.0
+  removed the sampling keywords from `messages.create`, so every such judge
+  raised `TypeError: ... unexpected keyword argument 'temperature'` before
+  its first request, on every Python runtime and every SDK rote allows.
+  The helper now sends sampling in `extra_body` and pins
+  `anthropic-version: 2023-06-01` on that request, because anthropic 2.x
+  sends API version 2026-10-21, which rejects sampling outright. A judge
+  without sampling is unchanged. Emitted apps pick this up on re-emit.
+
 - **The structure pass keeps an order the skill states without a data
   dependency.** A node can declare `after: [earlier nodes]`, backed by at
   least four words of its own step's text that code checks verbatim, and

@@ -857,6 +857,29 @@ def _sdk_target(provider: str, client: str, base_url: str | None) -> tuple[str |
     return f"{cloud_url.rstrip('/')}/v1/inference/{client}", token
 
 
+#: The last Messages API version that accepts ``temperature``, ``top_p``
+#: and ``top_k``. API version 2026-10-21 answers any of them with a 400.
+_SAMPLING_API_VERSION = "2023-06-01"
+
+
+def _anthropic_sampling_options(sampling: dict[str, Any]) -> dict[str, Any]:
+    """Request options that carry ``sampling`` on every SDK rote allows.
+
+    anthropic 1.0 removed the sampling keywords from ``messages.create``
+    (a ``TypeError`` before any request), so they ride in ``extra_body``.
+    anthropic 2.0 also moved to API version 2026-10-21, which 400s on them,
+    so a request that carries one pins the version that accepts them, as
+    Anthropic's migration guide says to. No sampling, no options: the
+    request goes out exactly as the SDK builds it.
+    """
+    if not sampling:
+        return {}
+    return {
+        "extra_body": dict(sampling),
+        "extra_headers": {"anthropic-version": _SAMPLING_API_VERSION},
+    }
+
+
 def _call_anthropic(
     *,
     node_id: str,
@@ -898,9 +921,9 @@ def _call_anthropic(
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            **sampling,
             output_config=output_config,
             messages=[{"role": "user", "content": prompt}],
+            **_anthropic_sampling_options(sampling),
         )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None

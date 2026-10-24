@@ -885,6 +885,27 @@ drops the parameter entirely (`_sampling_kwargs()` in Python,
 a literal keyword argument: a baked constant cannot be escaped without
 a re-emit, which defeats the model-override knob next to it.
 
+The SDKs dropped sampling too, in two steps, and the Python helper
+handles both in `_anthropic_sampling_options`. anthropic 1.0 removed
+`temperature` / `top_p` / `top_k` from `messages.create`'s signature, so
+`**sampling` raised `TypeError` before any request on every judge whose
+IR set a temperature (the floor, 1.15, included). anthropic 2.0 moved to
+API version 2026-10-21, which 400s on any of the three even in the body.
+So sampling rides in `extra_body` with `anthropic-version: 2023-06-01`
+pinned on that request only, the route Anthropic's migration guide gives.
+A judge with no sampling sends the SDK's request untouched. Measured
+live: the 2023-06-01 pin works with `output_config`, and a non-default
+temperature applies only to models older than 4.7 (claude-haiku-4-5 and
+claude-sonnet-4-6 accept it). claude-sonnet-5-5 answers "`temperature` is
+not supported on this model" and claude-haiku-5-5 "`temperature` is
+deprecated for this model." (`TEMPERATURE_REJECTIONS` in
+`tests/_messages_api.py`). The TS
+emitter still spreads `temperature` into the body: that holds only while
+`ANTHROPIC_SDK_NPM_VERSION` stays below `@anthropic-ai/sdk` 1.0 (same
+change, same API version). Regression, the floor and the newest release
+against a stub that refuses sampling under 2026-10-21:
+`tests/test_judge_sampling_sdk.py`.
+
 ### First-run output: three contracts that live in one place each
 
 Found by a fresh-install run of the published wheel, where every one of
