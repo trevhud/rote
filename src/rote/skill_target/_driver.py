@@ -33,9 +33,9 @@ Commands (``argv`` after the script)::
 An agent loop is a ``LOOP`` block: the task, the loop's inputs, the tools
 it may call, its call cap and the answer schema. The agent does the task
 itself, and ``tool`` is its only way to the loop's tools: the declared MCP
-tools, each on the one server ``tool_servers`` (or a single registered
-server) offers it from, behind the read-only gate, and the loop's
-code sub-nodes, run here with their constants merged last. A judge
+tools, each on the one server ``tool_servers`` pins it to (no other server
+is ever asked), and the loop's code and MCP sub-nodes, run here with their
+constants merged last, all behind the read-only gate. A judge
 sub-node is a rule in the block that the agent applies itself. Every call
 is counted in the journal before it is made, so ``max_iterations`` holds
 across a resume and across parallel calls. The answer is checked against
@@ -444,7 +444,7 @@ class Driver:
         usage: bool = False,
     ) -> Block:
         """An ERROR block. ``fix`` is required: every error says what to do next."""
-        lines = [cause, f"Fix: {fix}"]
+        lines = [redact_urls(cause), f"Fix: {redact_urls(fix)}"]
         lines.append(
             "Fix the command and run it again."
             if usage
@@ -1378,15 +1378,15 @@ class Driver:
     def _loop_tools(self, step: dict[str, Any], run: str) -> tuple[dict[str, Any], dict[str, str]]:
         """``({tool: entry}, {withheld tool: why})`` for a loop about to start.
 
-        A body sub-node's entry names it (``body``); an MCP tool's names the
-        one server it is called on. That server is the one ``tool_servers``
-        pins, and nothing else: a pinned server that does not offer the tool
-        is an error, never a search elsewhere. An unpinned tool is looked
-        for on every registered server, and must be offered by exactly one:
-        two would be a guess. A server that is down is skipped unless the
-        loop is known to need it, and a gap a login would explain waits for
-        that login. In a read-only run a tool that may write is withheld,
-        by the same rule a tool step's call meets (``write_refusal``).
+        A body sub-node's entry names it (``body``); a declared MCP tool's
+        names the one server ``tool_servers`` pins it to, and nothing else:
+        a pinned server that does not offer the tool is an error, never a
+        search elsewhere, and an unpinned tool is refused (the emitter
+        refuses it first, :mod:`rote.plan`), so no server the skill does not
+        name is ever contacted. Every server the loop reaches is listed
+        once. In a read-only run a tool that may write, declared or an
+        MCP-bound body sub-node, is withheld by the rule a tool step's call
+        meets (``write_refusal``).
         """
         entries: dict[str, Any] = {}
         for body in step["body"]:
@@ -1397,73 +1397,59 @@ class Driver:
                     "description": _first_line(body["description"]),
                 }
         declared: list[str] = step["tools"]
-        if not declared:
+        pins: dict[str, str] = step["tool_servers"]
+        unpinned = [t for t in declared if t not in pins]
+        if unpinned:
+            raise _LoopToolsError(
+                f"its tool(s) {', '.join(unpinned)} name no server in tool_servers, and a "
+                "compiled skill calls a loop's tool only on the server the IR pins.",
+                "pin each in the node's tool_servers and recompile the skill (rote compile)",
+            )
+        clash = sorted(set(declared) & set(entries))
+        if clash:
+            raise _LoopToolsError(
+                f"{', '.join(clash)} is both a declared tool and a loop_body sub-node.",
+                "recompile the skill (rote compile)",
+            )
+        bodies = [b for b in step["body"] if b["kind"] == "mcp"]
+        urls: dict[str, str | None] = {pins[t]: None for t in declared}
+        for body in bodies:
+            urls.setdefault(body["server"], body.get("url"))
+        if not urls:
             return entries, {}
         import asyncio
 
         mcp = importlib.import_module("_rote_mcp")
-        pins: dict[str, str] = step["tool_servers"]
-        needed = set(pins.values())
-        names = sorted(
-            needed | (set(mcp._registry_servers()) if set(declared) - set(pins) else set())
-        )
+        names = sorted(urls)
 
         async def _all() -> list[Any]:
-            listings = (mcp.list_server_tools(name, None) for name in names)
+            listings = (mcp.list_server_tools(name, urls[name]) for name in names)
             return await asyncio.gather(*listings, return_exceptions=True)
 
         outcomes = dict(zip(names, _run_async(_all()), strict=True))
-        failed = {n: o for n, o in outcomes.items() if isinstance(o, BaseException)}
-        for name in sorted(needed & set(failed)):
-            raise _ServerFailure(name, failed[name])
-        for name in failed:
-            _progress(f"skipped {name}: {type(failed[name]).__name__}")
-        listed: dict[str, tuple[str, list[Any]]] = {
-            n: o for n, o in outcomes.items() if n not in failed
-        }
+        for name in names:
+            if isinstance(outcomes[name], BaseException):
+                raise _ServerFailure(name, outcomes[name])
+        listed: dict[str, tuple[str, list[Any]]] = outcomes
         withheld: dict[str, str] = {}
+        for body in bodies:
+            url, offered = listed[body["server"]]
+            why = mcp.write_refusal(body["server"], url, body["tool"], offered)
+            if why is not None:
+                withheld[body["id"]] = why
+                del entries[body["id"]]
         for tool in declared:
-            if tool in entries:
+            server = pins[tool]
+            url, offered = listed[server]
+            spec = next((t for t in offered if t.name == tool), None)
+            if spec is None:
                 raise _LoopToolsError(
-                    f"{tool} is both a declared tool and a loop_body sub-node.",
-                    "recompile the skill (rote compile)",
+                    f"its tool {tool} is served by {server} (tool_servers), and {server} at "
+                    f"{url} does not offer it. A tool is called only on its own server.",
+                    f"point {server} at the server that serves {tool} (rote mcp add "
+                    f"{server} <url>), or recompile the skill; then: "
+                    f"{self.command} resume {run}",
                 )
-            if tool in pins:
-                server = pins[tool]
-                url, offered = listed[server]
-                if not any(t.name == tool for t in offered):
-                    raise _LoopToolsError(
-                        f"its tool {tool} is served by {server} (tool_servers), and {server} at "
-                        f"{url} does not offer it. A tool is called only on its own server.",
-                        f"point {server} at the server that serves {tool} (rote mcp add "
-                        f"{server} <url>), or recompile the skill; then: "
-                        f"{self.command} resume {run}",
-                    )
-            else:
-                providers = [
-                    n for n, (_, offered) in listed.items() if any(t.name == tool for t in offered)
-                ]
-                if len(providers) > 1:
-                    raise _LoopToolsError(
-                        f"its tool {tool} is offered by {' and '.join(providers)}, and nothing "
-                        "says which one the loop means.",
-                        "pin it in the node's tool_servers and recompile, or remove the server "
-                        "it is not meant for (rote mcp remove <server>)",
-                    )
-                if not providers:
-                    auth = [o for o in failed.values() if type(o).__name__ == "RoteMcpAuthNeeded"]
-                    if auth:
-                        raise auth[0]
-                    raise _LoopToolsError(
-                        f"no registered MCP server offers its tool {tool}"
-                        + (f" ({', '.join(sorted(failed))} could not be reached)" if failed else "")
-                        + ".",
-                        f"register the server that serves it (rote mcp add <server> <url>), then: "
-                        f"{self.command} resume {run}",
-                    )
-                server = providers[0]
-                url, offered = listed[server]
-            spec = next(t for t in offered if t.name == tool)
             why = mcp.write_refusal(server, url, tool, offered)
             if why is not None:
                 withheld[tool] = why
@@ -1473,10 +1459,10 @@ class Driver:
                 "schema": getattr(spec, "input_schema", None) or {},
                 "description": _first_line(getattr(spec, "description", None) or ""),
             }
-        if withheld and not any("server" in e for e in entries.values()):
+        if declared and all(t in withheld for t in declared):
             raise _LoopToolsError(
                 "this run is read-only, and every MCP tool the loop declares may write: "
-                + "; ".join(withheld.values()),
+                + "; ".join(withheld[t] for t in declared),
                 f"rote skill trust {self.name} --allow-writes (after the user agrees)",
             )
         return entries, withheld
@@ -1498,7 +1484,7 @@ class Driver:
             lines.append("--- RULES (apply each yourself where the task needs it; not tools) ---")
             for rule in rules:
                 lines += [
-                    f"{rule['id']}: {rule['prompt'].strip()}",
+                    f"{rule['id']}: {_rule_text(rule['prompt'])}",
                     f"{rule['id']} gives: {_brief(rule['output_schema'])}",
                 ]
         if pending["tools"]:
@@ -1517,8 +1503,8 @@ class Driver:
                 + ". Do not say you used them; say which part you could not do."
             )
         lines += [
-            "--- ANSWER SCHEMA (json) ---",
-            _compact(answer_schema(step)),
+            "--- ANSWER SHAPE (key? = optional) ---",
+            _brief(answer_schema(step)),
             *self._next("answer", run, step["id"], "'<your JSON>'"),
         ]
         header = self._head(run, f"step={step['id']}", f"calls={calls}/{cap}")
@@ -1526,7 +1512,7 @@ class Driver:
 
     def _tool_refused(self, run: str, step: str, tool: str, why: str, then: str) -> Block:
         """A tool call the driver refused: nothing was called, and nothing counted."""
-        lines = [f"Refused: {why} Nothing was called.", then]
+        lines = [f"Refused: {redact_urls(why)} Nothing was called.", then]
         return Block("LOOP", self._head(run, f"step={step}", f"tool={tool}", "refused"), lines, 2)
 
     def tool(self, run: str, step_id: str, name: str, raw: str) -> Block:
@@ -1631,7 +1617,7 @@ class Driver:
                     self._config_fix(str(exc), str(entry.get("server", "")), then),
                     step=step_id,
                 )
-            lines = [f"{kind}: {str(exc)[:500]}"]
+            lines = [f"{kind}: {redact_urls(str(exc))[:500]}"]
             return Block(
                 "LOOP", header + " failed", [*lines, *self._last_call(run, step_id, calls, cap)]
             )
@@ -1895,6 +1881,45 @@ def answer_schema(step: dict[str, Any]) -> Any:
     if step["kind"] == "loop":
         return step["output_schema"] or _TEXT_ANSWER
     return step["output_schema"]
+
+
+_URL = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+
+
+def redact_urls(text: str) -> str:
+    """``text`` with every URL's userinfo, query and fragment removed.
+
+    A block lands in the agent's context and its transcript, and a server
+    URL can carry a key in its query (``?api_key=``) or its userinfo."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    def _clean(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        trail = ""
+        while raw and raw[-1] in ".,;:)]}":
+            raw, trail = raw[:-1], raw[-1] + trail
+        try:
+            parts = urlsplit(raw)
+            host = parts.hostname or ""
+            if parts.port is not None:
+                host = f"{host}:{parts.port}"
+        except ValueError:
+            return "<url>" + trail
+        query = "?<redacted>" if parts.query else ""
+        return urlunsplit((parts.scheme, host, parts.path, "", "")) + query + trail
+
+    return _URL.sub(_clean, text)
+
+
+#: A judge prompt line that tells a decoder how to answer ("Return your
+#: decision via the structured output tool."): at a LOOP rule the agent has
+#: no such tool, so the line would only mislead it.
+_DECODER_LINE = re.compile(r"(?im)^[^\n]*\bstructured output tool\b[^\n]*\n?")
+
+
+def _rule_text(prompt: str) -> str:
+    """A judge sub-node's prompt as a rule the agent applies itself."""
+    return re.sub(r"\n{3,}", "\n\n", _DECODER_LINE.sub("", prompt)).strip()
 
 
 def _first_line(text: str, limit: int = 160) -> str:

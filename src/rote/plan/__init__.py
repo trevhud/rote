@@ -243,6 +243,17 @@ def build_plan(
                 judge["retry"] = _retry(node)
             return judge
         contract = agent_loop_output(node)
+        unpinned = [t for t in node.tools or () if t not in (node.tool_servers or {})]
+        if live and unpinned:
+            # A compiled skill calls a loop's tool only on the server the IR
+            # pins it to. Looking for it across every registered server would
+            # contact the user's other servers with their credentials, which
+            # rote does only for servers a skill names.
+            raise PlanError(
+                f"{node.id}: agent loop tool(s) {', '.join(unpinned)} name no server. A "
+                "compiled skill calls a loop's tool only on the server its tool_servers pins, "
+                "so tool_servers must pin each one (tool_servers: {<tool>: <server>})"
+            )
         body = [body_step(pipeline.node_by_id(i)) for i in node.loop_body or ()]
         return {
             "description": node.description.strip(),
@@ -255,7 +266,7 @@ def build_plan(
             "tools": list(node.tools or ()),
             "tool_servers": dict(node.tool_servers or {}),
             "body": body,
-            "task": loop_task(node, [b["id"] for b in body if body_tool(b, judges)]),
+            "task": loop_task(node),
             "output_schema": contract.schema,
             "unwrap_key": contract.unwrap_key,
         }
@@ -321,17 +332,17 @@ def build_plan(
 _LOOP_INPUTS = "\x00rote-loop-inputs\x00"
 
 
-def loop_task(node: Node, tool_names: list[str]) -> list[str]:
+def loop_task(node: Node) -> list[str]:
     """``[head, tail]``: an agent loop's task prompt, split where its inputs go.
 
     The prompt every loop lane sends
     (``rote.inference._runtime_helper._agent_task_prompt``): the
     description, then the inputs where the emitted loop puts its payload's
-    JSON, the body sub-nodes it may call (``tool_names``), the stop
-    condition, and the structured-answer line, because a compiled skill's
-    loop always answers through ``answer`` against a schema (the declared
-    output, or ``{"result": <text>}``). The driver joins the halves around
-    the inputs at run time.
+    JSON, then the stop condition. Two parts of it the LOOP block already
+    says, so they are left out: the list of body sub-nodes (the block lists
+    every tool), and the closing answer paragraph (the block's own first
+    line, its answer schema and its ``answer`` command). The driver joins the
+    halves around the inputs at run time.
     """
     from rote.inference._runtime_helper import _agent_task_prompt
 
@@ -339,18 +350,13 @@ def loop_task(node: Node, tool_names: list[str]) -> list[str]:
         description=node.description,
         task=_LOOP_INPUTS,
         termination=node.termination.condition if node.termination else None,
-        local_tool_names=sorted(tool_names),
+        local_tool_names=[],
         submit="schema",
     )
-    head, tail = prompt.split(_LOOP_INPUTS)
+    kept, closing = prompt.rsplit("\n\n", 1)
+    assert closing.startswith("When you are done"), closing
+    head, tail = kept.split(_LOOP_INPUTS)
     return [head, tail]
-
-
-def body_tool(step: dict[str, Any], judges: JudgeMode) -> bool:
-    """Whether a loop calls body ``step`` as a tool. A judge the session
-    answers is not one: the LOOP block gives it as a rule the agent applies."""
-    kind = step.get("kind")
-    return kind in ("call", "mcp") or (kind == "judge" and judges == "helper")
 
 
 def body_tool_schema(node: Node) -> dict[str, Any]:

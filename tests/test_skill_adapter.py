@@ -443,23 +443,17 @@ def test_an_identity_rote_cannot_use_is_refused(tmp_path: Path, front: str, reas
 # ───────── plans the driver cannot run, and stubs ─────────
 
 
-@pytest.mark.parametrize(
-    ("compiled", "stubs"),
-    [
-        (EXAMPLES / "bdr-outreach" / "expected", "scripts/extracted/zoominfo.py"),
-        (EXAMPLES / "invoice-push" / "expected", "scripts/extracted/browser.py"),
-    ],
-)
 def test_a_pipeline_with_agent_loops_emits_and_is_refused_only_for_its_stubs(
-    tmp_path: Path, compiled: Path, stubs: str
+    tmp_path: Path,
 ) -> None:
-    """An agent loop is a LOOP block now. These examples' vendor code is still
-    stubs, and that is the refusal, named; with --allow-stubs they emit."""
+    """An agent loop is a LOOP block now. bdr-outreach's vendor code is still
+    stubs, and that is the refusal, named; with --allow-stubs it emits."""
+    compiled = EXAMPLES / "bdr-outreach" / "expected"
     pipeline = load_pipeline(compiled / "pipeline.yaml")
     assert refusal(pipeline) is None
     with pytest.raises(ValueError, match="would still be stubs") as e:
         emit(compiled, tmp_path / "refused")
-    assert stubs in str(e.value) and "agent loop" not in str(e.value)
+    assert "scripts/extracted/zoominfo.py" in str(e.value) and "agent loop" not in str(e.value)
     emit(compiled, tmp_path / "out", allow_stubs=True)
     body = (tmp_path / "out" / "SKILL.md").read_text(encoding="utf-8")
     assert "- LOOP: yours to do. Do the task yourself with only the tools it lists" in body
@@ -467,20 +461,28 @@ def test_a_pipeline_with_agent_loops_emits_and_is_refused_only_for_its_stubs(
     assert (tmp_path / "out" / "scripts" / "_rote_mcp.py").is_file()
     plan = json.loads((tmp_path / "out" / "scripts" / "plan.json").read_text(encoding="utf-8"))
     loops = [s["id"] for s in plan["steps"] if s["kind"] == "loop"]
-    assert loops == [n.id for n in pipeline.nodes if n.kind == "agent_loop" and n.id in loops]
-    assert loops, "the example has an agent loop"
+    assert loops == ["target_research", "lead_generation_loop"]
 
 
-@pytest.mark.parametrize("compiled", [BDR, INVOICE_PUSH])
-def test_an_older_compiles_loops_are_refused_only_for_its_impls_constants(
-    tmp_path: Path, compiled: Path
+@pytest.mark.parametrize(
+    ("compiled", "node"),
+    [
+        (EXAMPLES / "invoice-push" / "expected", "collect_rows_loop"),
+        (INVOICE_PUSH, "process_invoices_loop"),
+        (BDR, "target_research"),
+    ],
+)
+def test_a_loop_tool_no_server_is_pinned_to_is_refused_at_emit(
+    tmp_path: Path, compiled: Path, node: str
 ) -> None:
-    """The committed 2026-07 compiles hard-code their constants, which every
-    runtime now passes as keyword arguments: that, not the loop, refuses them."""
-    with pytest.raises(ValueError, match="do not accept their node's constants"):
+    """A compiled skill never looks for a tool across the user's servers, so
+    every loop tool must be pinned (tool_servers), and the refusal says so."""
+    match = f"{node}: agent loop tool\\(s\\) .* name no server.*tool_servers must pin each one"
+    with pytest.raises(PlanError, match=match):
         emit(compiled, tmp_path / "out")
-    assert not (tmp_path / "out" / "SKILL.md").exists()  # refused before any file
-    assert refusal(load_pipeline(compiled / "pipeline.yaml")) is None
+    assert not (tmp_path / "out" / "SKILL.md").exists()
+    reason = refusal(load_pipeline(compiled / "pipeline.yaml"))
+    assert reason is not None and reason.startswith(f"{node}: agent loop tool(s)")
 
 
 def test_a_legacy_signature_judge_is_refused_naming_its_node(tmp_path: Path) -> None:
@@ -563,9 +565,10 @@ def test_the_compiles_dry_emit_reports_what_the_skill_runtime_refuses(tmp_path: 
         EmitTarget("skill")
     target = EmitTarget("skill", skill_dir=EXAMPLES / "invoice-push" / "skill")
     (finding,) = emit_findings(load_pipeline(INVOICE_PUSH / "pipeline.yaml"), INVOICE_PUSH, target)
-    # The loop runs now; what refuses this older compile is its hard-coded constants.
-    assert finding.kind == "emit_refused" and "ConstantsNotAccepted" in finding.message
-    assert "agent loop" not in finding.message
+    # The loop runs now; what refuses this older compile is its unpinned tools.
+    assert finding.kind == "emit_refused"
+    assert "process_invoices_loop: agent loop tool(s) browser_navigate" in finding.message
+    assert "tool_servers must pin each one" in finding.message
     # Stubs are the compile's documented path, reported elsewhere: the dry
     # emit does not send them back for the agent to write from memory.
     ok = EmitTarget("skill", skill_dir=EXAMPLES / "deal-monitor" / "skill")

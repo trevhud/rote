@@ -226,20 +226,20 @@ def test_an_agent_loop_carries_its_tools_cap_and_output_contract() -> None:
     }
     assert not set(enrich_node.constants or {}) & set(enrich["tool_schema"]["properties"])
     assert vet["tool_schema"] == vet_spec.input_schema
-    # The task is the loop lanes' prompt, split where the inputs go; the
-    # session answers the judge body, so only the code body is a tool.
+    # The task is the loop lanes' prompt, split where the inputs go, less
+    # what the LOOP block says itself: the tool list and the answer paragraph.
     from rote.inference._runtime_helper import _agent_task_prompt
 
     head, tail = loop["task"]
-    assert head + "INPUTS" + tail == _agent_task_prompt(
+    full = _agent_task_prompt(
         description=node.description,
         task="INPUTS",
         termination=node.termination.condition if node.termination else None,
-        local_tool_names=["enrich_contact_batch"],
+        local_tool_names=[],
         submit="schema",
     )
-    helper = _steps(build_plan(pipeline, mcp="live", judges="helper"))["lead_generation_loop"]
-    assert "available to you as tools: enrich_contact_batch, vet_contact" in helper["task"][1]
+    assert full.startswith(head + "INPUTS" + tail + "\n\nWhen you are done")
+    assert tail.endswith(f"Stop when: {node.termination.condition}" if node.termination else "")
 
 
 def test_a_loop_body_step_the_driver_cannot_run_is_refused() -> None:
@@ -251,6 +251,7 @@ def test_a_loop_body_step_the_driver_cannot_run_is_refused() -> None:
             "kind": "agent_loop",
             "description": "d",
             "tools": ["t"],
+            "tool_servers": {"t": "s"},
             "loop_body": ["inner"],
         },
     ]
@@ -320,12 +321,22 @@ def test_every_committed_example_plans_live_or_says_why() -> None:
             continue
         json.loads(plan_text(plan))  # plain JSON throughout
         planned.append(rel)
-    # Every current pipeline plans; only old snapshots from before data-flow
-    # threading are refused, each with its reason, never a crash.
-    assert not [r for r, _ in refused if "/runs/" not in r], refused
+    # Every current pipeline plans, or has an agent loop whose tools no
+    # server is pinned to (the skill runtime never searches for a server);
+    # old snapshots from before data-flow threading are refused too, each
+    # with its reason, never a crash.
+    unpinned = "name no server"
+    current = sorted(r for r, why in refused if "/runs/" not in r)
+    assert current == [
+        "holdout/incident-triage/expected/pipeline.yaml",
+        "invoice-push/expected/pipeline.yaml",
+    ], refused
     assert len(planned) >= 15
     for rel, why in refused:
-        assert "signature_spec" in why or "nothing to fan over" in why, (rel, why)
+        assert "signature_spec" in why or "nothing to fan over" in why or unpinned in why, (
+            rel,
+            why,
+        )
 
 
 def test_the_plan_hash_follows_the_plan_bytes() -> None:

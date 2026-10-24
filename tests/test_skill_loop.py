@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from rote.ir import Pipeline, load_pipeline
-from rote.plan import build_plan
+from rote.plan import PlanError, build_plan
 from rote.skill_target import write_scripts
 from tests._messages_api import reject_like_the_api, send_json, structured_message
 from tests._skill_driver import (
@@ -109,7 +109,10 @@ def _loop_pipeline(
             "kind": "llm_judge",
             "description": "Vet one title.",
             "signature_spec": {
-                "prompt": "Keep {{ title }} only if it names the topic.",
+                "prompt": (
+                    "Keep {{ title }} only if it names the topic.\n\n"
+                    "Return your decision via the structured output tool."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {"title": {"type": "string"}},
@@ -202,8 +205,10 @@ def test_the_loop_block_carries_the_task_its_inputs_tools_rules_and_answer_schem
     # where the emitted loop puts its payload, and nothing else upstream.
     assert "Find the best match for the topic.\n\n" + '{"topic":"owl","quota":2}' in out
     assert "UPSTREAM-NOT-DECLARED" not in out
-    assert "Pipeline steps available to you as tools: scaled" in out
     assert "Stop when: a best match is found" in out
+    # What the block says anyway is not said twice: the tool list and the
+    # answer paragraph of the lanes' prompt are left out.
+    assert "Pipeline steps available" not in out and "follow-up" not in out
     # Tools: the declared MCP tools with their live input schemas, and the
     # code body sub-node with its payload's shape (its constant left out).
     tools = lines[lines.index("--- TOOLS (at most 3 calls in all; 3 left) ---") + 2 :]
@@ -217,10 +222,13 @@ def test_the_loop_block_carries_the_task_its_inputs_tools_rules_and_answer_schem
     assert not any(line.startswith("write_note") for line in tools)
     assert "they may write: write_note." in out
     # The judge body is a rule the agent applies, not a tool.
-    assert "vetted: Keep {{ title }} only if it names the topic." in out
+    # Its decoder instruction is dropped: the agent has no such tool.
+    assert "vetted: Keep {{ title }} only if it names the topic.\nvetted gives:" in out
+    assert "structured output tool" not in out
     assert "vetted gives: {keep: boolean}" in out
-    schema_line = lines[lines.index("--- ANSWER SCHEMA (json) ---") + 1]
-    assert json.loads(schema_line)["required"] == ["best", "count"]
+    assert lines[lines.index("--- ANSWER SHAPE (key? = optional) ---") + 1] == (
+        "{best: string, count: integer}"
+    )
     assert lines[-1] == f"rote skill run looper answer {run} explore '<your JSON>'"
     assert fx.calls() == []  # listing tools calls none of them
 
@@ -262,10 +270,8 @@ def test_a_single_type_output_is_unwrapped_and_no_output_is_the_final_text(
 ) -> None:
     listed = _skill(tmp_path / "a", output="list[str]")
     run, out = _start(listed)
-    schema = json.loads(
-        out.splitlines()[out.splitlines().index("--- ANSWER SCHEMA (json) ---") + 1]
-    )
-    assert schema["required"] == ["result"]
+    shape = out.splitlines()[out.splitlines().index("--- ANSWER SHAPE (key? = optional) ---") + 1]
+    assert shape == "{result: [string]}"
     _, done = drive(listed, "answer", run, "explore", '{"result": ["owl 0", "owl 2"]}')
     assert result_of(done) == {"explore": ["owl 0", "owl 2"]}
     text = _skill(tmp_path / "b", output={})
@@ -371,27 +377,98 @@ def test_a_tool_is_called_only_on_the_server_tool_servers_names(
     assert fx.calls("search") == []
 
 
-def _registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **servers: FixtureServer) -> None:
-    path = tmp_path / "mcp.json"
-    path.write_text(json.dumps({"servers": {n: {"url": s.url} for n, s in servers.items()}}))
-    monkeypatch.setenv("ROTE_MCP_CONFIG", str(path))
+class _Counted(BaseHTTPRequestHandler):
+    """A registered server that should never hear from a run: it counts requests."""
+
+    hits = 0
+
+    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        type(self).hits += 1
+        self.send_response(500)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_DELETE = do_POST  # noqa: N815
+
+    def log_message(self, *args: object) -> None:
+        return
 
 
-def test_an_unpinned_tool_binds_to_the_one_registered_server_that_offers_it(
-    tmp_path: Path, fx: FixtureServer, other: FixtureServer, monkeypatch: pytest.MonkeyPatch
+def test_an_unpinned_tool_is_refused_and_no_other_server_is_contacted(
+    tmp_path: Path, fx: FixtureServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("ROTE_MCP_FX_URL")
-    monkeypatch.delenv("ROTE_MCP_OTHER_URL")
-    _registry(tmp_path, monkeypatch, fx=fx, other=other)
-    # lookup: only fx offers it. search: both do, and nothing says which.
-    scripts = _skill(tmp_path / "a", tools=["lookup"], tool_servers={})
+    """Looking for a tool across the user's other servers would send them
+    requests, and their headers' secrets, for a skill that never named them."""
+    with pytest.raises(
+        PlanError, match=r"explore: agent loop tool\(s\) lookup, write_note name no server"
+    ):
+        build_plan(
+            Pipeline.model_validate(_loop_pipeline(tool_servers={"search": "fx"})), mcp="live"
+        )
+    # A plan from elsewhere is refused by the driver too, before any request.
+    _Counted.hits = 0
+    bystander = HTTPServer(("127.0.0.1", 0), _Counted)
+    threading.Thread(target=bystander.serve_forever, daemon=True).start()
+    try:
+        registry = tmp_path / "mcp.json"
+        url = f"http://127.0.0.1:{bystander.server_port}/mcp"
+        registry.write_text(json.dumps({"servers": {"bystander": {"url": url}}}))
+        monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
+        pins = {"search": "fx", "lookup": "fx"}
+        scripts = _skill(tmp_path, tools=["search", "lookup"], tool_servers=pins)
+        plan = json.loads((scripts / "plan.json").read_text())
+        (loop,) = [s for s in plan["steps"] if s["kind"] == "loop"]
+        del loop["tool_servers"]["lookup"]
+        (scripts / "plan.json").write_text(json.dumps(plan))
+        status, out = drive(scripts, "start", '{"topic": "owl", "quota": 2}')
+    finally:
+        bystander.shutdown()
+        bystander.server_close()
+    assert status == 1 and "its tool(s) lookup name no server in tool_servers" in out
+    assert _Counted.hits == 0 and fx.calls() == []
+
+
+def test_an_mcp_bound_body_sub_node_that_may_write_is_withheld_like_a_declared_tool(
+    tmp_path: Path, fx: FixtureServer
+) -> None:
+    pipeline = _loop_pipeline()
+    pipeline["nodes"].append(
+        {
+            "id": "noted",
+            "kind": "external_call",
+            "description": "Write a note.",
+            "input": {"text": "str"},
+            "mcp": {"server": "fx", "tool": "write_note"},
+        }
+    )
+    pipeline["nodes"][1]["loop_body"].append("noted")
+    scripts = make_skill(tmp_path, pipeline, MODULES)
     run, out = _start(scripts)
-    status, _ = _tool(scripts, run, "lookup", {"id": "x"})
-    assert status == 0 and len(fx.calls("lookup")) == 1
-    scripts = _skill(tmp_path / "b", tools=["search"], tool_servers={})
+    assert "they may write: noted, write_note." in out
+    assert not any(line.startswith("noted ") for line in out.splitlines())
+    status, refused = _tool(scripts, run, "noted", {"text": "hi"})
+    assert status == 2 and refused.splitlines()[0].endswith("tool=noted refused"), refused
+    assert "fx.write_note may write" in refused
+    assert fx.calls("write_note") == [] and _calls(out) == 0
+    # With consent it is a tool like any other, and its call reaches fx.
+    run, out = _start(scripts, allow_writes=True)
+    assert "noted {text: string}: Write a note." in out
+    status, wrote = _tool(scripts, run, "noted", {"text": "hi"}, allow_writes=True)
+    assert status == 0 and wrote.splitlines()[1] == '{"written":"hi"}', wrote
+    assert [c["arguments"] for c in fx.calls("write_note")] == [{"text": "hi"}]
+
+
+def test_a_server_url_in_an_error_never_shows_its_query_or_userinfo(
+    tmp_path: Path, other: FixtureServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = other.url.replace("http://", "http://alice:pa55@") + "?api_key=SECRET-KEY"
+    monkeypatch.setenv("ROTE_MCP_OTHER_URL", secret)
+    pins = {"search": "other", "lookup": "other"}
+    scripts = _skill(tmp_path, tools=["search", "lookup"], tool_servers=pins)
     status, out = drive(scripts, "start", '{"topic": "owl", "quota": 2}')
-    assert status == 1 and "its tool search is offered by fx and other" in out
-    assert "pin it in the node's tool_servers" in out
+    assert status == 1 and "does not offer it" in out, out
+    assert "SECRET-KEY" not in out and "pa55" not in out and "alice" not in out
+    assert f"and other at {other.url}?<redacted> does not offer it" in out
 
 
 # ───────── the cap ─────────
@@ -544,7 +621,10 @@ def test_under_helper_judges_a_judge_body_is_a_tool_the_helper_answers(
         status, kept = _tool(scripts, run, "vetted", {"title": "owl 0"})
         assert status == 0 and kept.splitlines()[1] == '{"keep":true}', kept
         (sent,) = _Messages.requests
-        assert sent["messages"][0]["content"] == "Keep owl 0 only if it names the topic."
+        assert sent["messages"][0]["content"] == (
+            "Keep owl 0 only if it names the topic.\n\n"
+            "Return your decision via the structured output tool."
+        )
     finally:
         stub.shutdown()
         stub.server_close()
@@ -556,7 +636,8 @@ def test_under_helper_judges_a_judge_body_is_a_tool_the_helper_answers(
 def test_bdr_outreachs_lead_generation_loop_block_stays_small(tmp_path: Path) -> None:
     """Every byte of a LOOP block stays in the agent's context. bdr's
     lead_generation_loop, with its real task, rule and body tool, an empty
-    input and its two ZoomInfo tools at a one-field schema."""
+    input, and its two ZoomInfo tools at schemas the size of ZoomInfo's own
+    search parameters."""
     pipeline = load_pipeline(REPO / "examples/bdr-outreach/expected/pipeline.yaml")
     plan = build_plan(pipeline, mcp="live")
     scripts = tmp_path / "scripts"
@@ -566,17 +647,68 @@ def test_bdr_outreachs_lead_generation_loop_block_stays_small(tmp_path: Path) ->
     tools, withheld = driver._loop_tools({**step, "tools": []}, "0" * 12)
     assert list(tools) == ["enrich_contact_batch"] and withheld == {}
     for name in step["tools"]:
-        tools[name] = {"server": "zoominfo", "schema": _ONE_FIELD, "description": "Search."}
+        tools[name] = {"server": "zoominfo", "schema": _ZOOMINFO[name], "description": _SEARCH}
     head, tail = step["task"]
     pending = {"task": head + "{}" + tail, "tools": tools, "withheld": {}}
     text = driver._loop_block("0" * 12, step, pending, 0).text()
     assert "vet_contact: You are vetting a contact" in text  # the judge, as a rule
     assert "enrich_contact_batch {contacts: [any]}: Batch enrich contacts" in text
     assert "batch_size" not in text  # its constant never reaches the agent
-    assert len(text.encode()) <= 2600, len(text.encode())
+    assert "structured output tool" not in text
+    assert len(text.encode()) <= 2900, len(text.encode())
 
 
-_ONE_FIELD = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+_SEARCH = "Search ZoomInfo and return matching records, one page at a time."
+_PAGING = {
+    "page": {"type": "integer", "minimum": 1},
+    "rpp": {"type": "integer", "maximum": 100},
+    "sortOrder": {"type": "string", "enum": ["asc", "desc"]},
+}
+#: ZoomInfo's documented search parameters, as an MCP server would declare them.
+_ZOOMINFO = {
+    "zoominfo_search_contacts": {
+        "type": "object",
+        "properties": {
+            "jobTitle": {"type": "string"},
+            "managementLevel": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["C Level Exec", "VP Level Exec", "Director", "Manager", "Non Manager"],
+                },
+            },
+            "department": {"type": "string"},
+            "companyId": {"type": "string"},
+            "companyName": {"type": "string"},
+            "state": {"type": "string"},
+            "country": {"type": "string"},
+            "contactAccuracyScoreMin": {"type": "integer"},
+            "requiredFields": {"type": "array", "items": {"type": "string"}},
+            "excludePartialProfiles": {"type": "boolean"},
+            "sortBy": {
+                "type": "string",
+                "enum": ["contactAccuracyScore", "lastName", "companyName"],
+            },
+            **_PAGING,
+        },
+    },
+    "zoominfo_search_companies": {
+        "type": "object",
+        "properties": {
+            "companyName": {"type": "string"},
+            "companyWebsite": {"type": "string"},
+            "industryCodes": {"type": "array", "items": {"type": "string"}},
+            "revenueMin": {"type": "integer"},
+            "revenueMax": {"type": "integer"},
+            "employeeRangeMin": {"type": "integer"},
+            "employeeRangeMax": {"type": "integer"},
+            "state": {"type": "string"},
+            "country": {"type": "string"},
+            "sortBy": {"type": "string", "enum": ["name", "employeeCount", "revenue"]},
+            **_PAGING,
+        },
+    },
+}
 
 
 def test_every_committed_loop_builds_a_block(tmp_path: Path) -> None:
@@ -584,6 +716,16 @@ def test_every_committed_loop_builds_a_block(tmp_path: Path) -> None:
     for ir in sorted(REPO.glob("examples/*/expected/pipeline.yaml")):
         pipeline = load_pipeline(ir)
         if not any(n.kind == "agent_loop" for n in pipeline.nodes):
+            continue
+        unpinned = [
+            t
+            for n in pipeline.nodes
+            for t in n.tools or ()
+            if n.kind == "agent_loop" and t not in (n.tool_servers or {})
+        ]
+        if unpinned:  # invoice-push: refused at emit, naming the tools
+            with pytest.raises(PlanError, match="name no server"):
+                build_plan(pipeline, mcp="live")
             continue
         plan = build_plan(Pipeline.model_validate(pipeline.model_dump()), mcp="live")
         scripts = tmp_path / ir.parent.parent.name / "scripts"
@@ -594,3 +736,116 @@ def test_every_committed_loop_builds_a_block(tmp_path: Path) -> None:
             pending = {"task": "".join(step["task"]), "tools": tools, "withheld": {}}
             text = driver._loop_block("0" * 12, step, pending, 0).text()
             assert text.startswith(f"ROTE/1 LOOP {plan['name']} "), ir
+
+
+# ───────── through `rote skill run`, from the verified bytes ─────────
+
+#: The body sub-node reports who loaded it and who would load the inference
+#: helper: the launch's in-memory finder (``Verified``), never a file loader.
+LAUNCHED = MODULES["loopmods.py"].replace(
+    "def scale(values, factor):\n    return [v * factor for v in values]\n",
+    "def scale(values, factor):\n"
+    "    import importlib.util\n"
+    "\n"
+    "    helper = importlib.util.find_spec('_rote_inference')\n"
+    "    return {\n"
+    "        'values': [v * factor for v in values],\n"
+    "        'loader': type(__spec__.loader).__name__,\n"
+    "        'helper_loader': type(helper.loader).__name__,\n"
+    "    }\n",
+)
+
+
+def _emit_and_install(root: Path, capsys: pytest.CaptureFixture[str]) -> Path:
+    import yaml
+
+    from rote.adapters import get_adapter
+    from rote.cli import main
+
+    source = root / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: looper\ndescription: Find the best match.\n---\n# Looper\n", encoding="utf-8"
+    )
+    compiled = root / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "loopmods.py").write_text(LAUNCHED, encoding="utf-8")
+    pins = {"search": "fx", "lookup": "fx"}
+    (compiled / "pipeline.yaml").write_text(
+        yaml.safe_dump(_loop_pipeline(tools=["search", "lookup"], tool_servers=pins))
+    )
+    out = root / "looper"
+    get_adapter("skill", extracted_source_dir=compiled, skill_dir=source, judges="helper").emit(
+        load_pipeline(compiled / "pipeline.yaml"), out
+    )
+    assert main(["skill", "install", str(out), "--yes"]) == 0, capsys.readouterr().err
+    capsys.readouterr()
+    return out
+
+
+def _skill_run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str]:
+    from rote.cli import main
+
+    status = main(["skill", "run", "looper", *argv])
+    captured = capsys.readouterr()
+    return status, captured.out
+
+
+def test_a_loop_runs_to_done_through_rote_skill_run(
+    tmp_path: Path,
+    server: FixtureServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+    from rote.skill_target.trust import CA_VARS, PROXY_VARS
+
+    for var in (*PROXY_VARS, *CA_VARS):
+        monkeypatch.delenv(var, raising=False)
+    server.reset()
+    save_registry(McpRegistry(servers={"fx": McpServerConfig(url=server.url)}))
+    _emit_and_install(tmp_path, capsys)
+    status, out = _skill_run(capsys, "start", '{"topic": "owl", "quota": 2}')
+    assert status == 0 and header(out)["kind"] == "LOOP", out
+    run = header(out)["run"]
+    assert f"rote skill run looper tool {run} explore <tool>" in out
+    status, found = _skill_run(capsys, "tool", run, "explore", "search", '{"query": "owl"}')
+    assert status == 0 and found.splitlines()[0].endswith("tool=search call=1/3"), found
+    assert [c["arguments"] for c in server.calls("search")] == [{"query": "owl"}]
+    args = tmp_path / "args.json"
+    args.write_text('{"values": [1, 2], "factor": 99}')
+    status, scaled = _skill_run(capsys, "tool", run, "explore", "scaled", "--file", str(args))
+    assert status == 0, scaled
+    assert json.loads(scaled.splitlines()[1]) == {
+        "values": [10, 20],  # the constant, merged last
+        "loader": "Verified",  # the body module came from the checked bytes
+        "helper_loader": "Verified",  # and so would the inference helper
+    }
+    status, refused = _skill_run(capsys, "tool", run, "explore", "write_note", '{"text": "x"}')
+    assert status == 2 and "is not one of this loop's tools" in refused
+    status, done = _skill_run(capsys, "answer", run, "explore", '{"best": "owl 0", "count": 3}')
+    assert status == 0 and header(done)["kind"] == "DONE", done
+    assert result_of(done) == {"reported": {"line": "owl 0 (3)"}}
+    assert server.calls("write_note") == []
+
+
+def test_a_loop_judges_helper_knobs_reach_the_launched_driver() -> None:
+    """The knobs each helper judge honors, its loop sub-nodes included."""
+    from rote.skill_target.launch import child_env
+
+    plan = build_plan(Pipeline.model_validate(_loop_pipeline()), mcp="live", judges="helper")
+    bound = {"mcp_config": "c", "token_dir": "t", "run_dir": "r", "cloud_cred": "k"}
+    environ = {
+        "ROTE_MODEL_VETTED": "claude-haiku-5-5",
+        "ROTE_EFFORT_VETTED": "low",
+        "ROTE_INFERENCE_VETTED": "api",
+        "ROTE_TEMPERATURE_VETTED": "",
+        "ROTE_MODEL_SCALED": "not-a-judge",
+    }
+    env, _ = child_env(environ, plan, bound)
+    assert {k: v for k, v in env.items() if k.endswith("_VETTED")} == {
+        k: v for k, v in environ.items() if k.endswith("_VETTED")
+    }
+    assert "ROTE_MODEL_SCALED" not in env  # a code sub-node has no judge knob
+    session = build_plan(Pipeline.model_validate(_loop_pipeline()), mcp="live")
+    assert "ROTE_MODEL_VETTED" not in child_env(environ, session, bound)[0]
