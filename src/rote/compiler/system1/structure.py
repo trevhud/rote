@@ -61,6 +61,7 @@ from rote.compiler.system1.parse import (
 )
 from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
 from rote.compiler.tool_grounding import parameters
+from rote.ir import GATE_MESSAGE_PLACEHOLDER
 from rote.tool_schema import checkable
 
 #: How a structure-pass note starts in ``Plan.review``; the report titles it by it.
@@ -92,6 +93,7 @@ _SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
 _PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 
 _DURATION = re.compile(r"^\d+[smhd]$")
+_GATE_PLACEHOLDER = re.compile(GATE_MESSAGE_PLACEHOLDER)
 _URL = re.compile(r"https?://[^\s)`>\]]+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
 _LOCAL_PATH = re.compile(r"(?<![\w.])[~/][\w.-]*/[\w./-]*|\b[\w-]+/[\w.-]+\.\w{1,5}\b")
 _RESERVED_IDS = frozenset({"pipeline", "request", "input"})
@@ -187,6 +189,24 @@ SCHEMA: dict[str, Any] = _obj(
                             "signal": _str(),
                             "payload": {"type": "array", "items": _str()},
                             "timeout": _str(description="e.g. '72h', '7d', or ''"),
+                            "shows": {
+                                "type": "array",
+                                "items": _obj(
+                                    {
+                                        "name": _str(description="snake_case"),
+                                        "from": _str(
+                                            description="'<node id>.<output key>', "
+                                            "'<node id>' for a result with no keys, or "
+                                            "'pipeline.input.<field>'"
+                                        ),
+                                    }
+                                ),
+                                "description": "only what the person needs to see to decide",
+                            },
+                            "message": _str(
+                                description="one or two sentences to the person; each "
+                                "{name} is a name in shows"
+                            ),
                         }
                     ),
                     "loop": _obj(
@@ -300,6 +320,21 @@ Per node:
   back, and the timeout if the skill states one. Else empty. The step the
   approval guards waits for it: that node reads the gate, or lists it in
   after. A final sign-off comes after every other step.
+  shows: the data the person must see to make this decision, and nothing
+  more: each a snake_case name and where it comes from, one output key of
+  an earlier node ("<node id>.<key>", a key in that node's outputs), a whole
+  result that has no keys ("<node id>": a fanned node's list, an MCP call's
+  result), or a field of the run's input ("pipeline.input.<field>"). Pick
+  the key that holds what they review (the review queue, the contacts to
+  approve) and any short value that says what it is for (the period, the
+  campaign), not every result upstream: the person reads all of it. A gate
+  that only asks the person for data they hold shows only what that
+  question needs, often nothing. message: one or two plain sentences to
+  the person saying what to decide. A {{name}} placeholder is filled with
+  a shown short value (a period, a name, a count); a shown list or object
+  is printed below the message, so name it in words ("Approve or reject
+  each review item in the queue below for {{period}}."). The gate
+  waits for every node in its reads and after, whatever it shows.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty.
 - confidence: how sure you are of this node, 0 to 1. why: one short clause.
@@ -569,6 +604,8 @@ def check(
     seen: dict[str, dict[str, Any]] = {}
     signals: set[str] = set()
     ui_session = False
+    fanned_over = {str(n.get("fan_out_over")) for n in answer.get("nodes") or []} - {""}
+    run_outputs = {str(k) for k in answer.get("run_outputs") or []}
     for pos, n in enumerate(answer.get("nodes") or []):
         nid = str(n.get("id", ""))
         where = f"node {nid or f'#{pos}'}"
@@ -668,6 +705,9 @@ def check(
                 out.append(f"{where}: gate payload keys must be identifiers, at least one")
             if gate.get("timeout") and not _DURATION.match(str(gate["timeout"])):
                 out.append(f"{where}: gate timeout {gate['timeout']!r} is not like '72h' or '7d'")
+            out += _check_gate_shows(
+                where, n, seen, fanned_over, run_outputs, _input_names(answer, sample)
+            )
         if kind == "agent_loop":
             lp = n.get("loop") or {}
             unknown = [t for t in lp.get("tools") or [] if t not in by_tool]
@@ -793,6 +833,113 @@ def _check_gate_waiters(answer: dict[str, Any]) -> list[str]:
         f"every other step, so it is the only exit node; the exit nodes now are {exits}"
         for gate, exits in _gates_nothing_waits_for(list(answer.get("nodes") or []))
     ]
+
+
+def result_keys(
+    n: Mapping[str, Any], fanned_over: set[str], run_outputs: set[str]
+) -> list[str] | None:
+    """The keys a node's result has in the IR, or None when none are decided.
+
+    The rules :func:`to_plan` renders ``output`` by: a gate returns its
+    payload, a node another fans over returns ``items`` (and its run
+    outputs), and a fanned node (a list) or an MCP call (the tool's own
+    shape) has no keys the skeleton decides."""
+    kind = n.get("kind")
+    if kind == "hitl_gate":
+        return [str(k) for k in (n.get("gate") or {}).get("payload") or []]
+    if n.get("fan_out_over"):
+        return None
+    if kind == "external_call" and (n.get("system") or {}).get("how") == "declared_tool":
+        return None
+    keys = [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
+    if str(n.get("id")) in fanned_over:
+        return ["items", *(k for k in keys if k in run_outputs and k != "items")]
+    return keys or None
+
+
+def _show_problem(
+    show: Mapping[str, Any],
+    earlier: Mapping[str, Mapping[str, Any]],
+    fanned_over: set[str],
+    run_outputs: set[str],
+    input_names: set[str],
+) -> str | None:
+    """Why one value a gate shows the person does not resolve to real data, or None."""
+    name, ref = str(show.get("name", "")), str(show.get("from", ""))
+    if not _IDENTIFIER.match(name):
+        return f"shows {name!r}: the name must be a snake_case identifier"
+    if ref.startswith("pipeline.input."):
+        field_ = ref.removeprefix("pipeline.input.")
+        if field_ not in input_names:
+            return (
+                f"shows {name!r} from {ref!r}, but the input has no field {field_!r} "
+                f"(it has {sorted(input_names)})"
+            )
+        return None
+    head, _, key = ref.partition(".")
+    source = earlier.get(head)
+    if source is None or source.get("in_loop"):
+        return (
+            f"shows {name!r} from {ref!r}, but {head!r} is not an earlier node outside a "
+            "loop; write '<node id>.<output key>' or 'pipeline.input.<field>'"
+        )
+    keys = result_keys(source, fanned_over, run_outputs)
+    if not key:
+        if keys is not None:
+            return (
+                f"shows {name!r} from the whole result of {head!r}; name the one key the "
+                f"person needs, one of {keys}"
+            )
+        return None
+    if keys is None:
+        return (
+            f"shows {name!r} from {ref!r}, but the result of {head!r} has no decided keys "
+            f"(a list, or a tool's own result): show it whole, as {head!r}"
+        )
+    if key not in keys:
+        return f"shows {name!r} from {ref!r}, but {head!r} returns only {keys}"
+    return None
+
+
+def _message_problem(message: str, names: set[str]) -> str | None:
+    """The message's ``{name}`` placeholders that name nothing the gate shows.
+
+    The IR refuses them too (``Node._validate_gate_shows_what_it_binds``):
+    caught here, they go back to the model in a repair round."""
+    unbound = sorted(set(_GATE_PLACEHOLDER.findall(message)) - names)
+    if not unbound:
+        return None
+    return (
+        f"its message uses {', '.join(f'{{{p}}}' for p in unbound)}, which it does not "
+        f"show; each {{name}} must be a name in shows ({sorted(names) or 'none'})"
+    )
+
+
+def _check_gate_shows(
+    where: str,
+    n: Mapping[str, Any],
+    earlier: Mapping[str, Mapping[str, Any]],
+    fanned_over: set[str],
+    run_outputs: set[str],
+    input_names: set[str],
+) -> list[str]:
+    """What a gate shows the person is real upstream data, each named once, and
+    its message names only that. Evidence only: which data the decision needs
+    is the model's reading of the skill."""
+    gate = n.get("gate") or {}
+    out: list[str] = []
+    names: set[str] = set()
+    for show in gate.get("shows") or []:
+        problem = _show_problem(show, earlier, fanned_over, run_outputs, input_names)
+        if problem is None and str(show.get("name")) in names:
+            problem = f"shows {show.get('name')!r} twice"
+        if problem:
+            out.append(f"{where}: {problem}")
+        names.add(str(show.get("name")))
+    problem = _message_problem(str(gate.get("message") or ""), names)
+    if problem:
+        out.append(f"{where}: {problem}")
+    return out
 
 
 def _check_gates(answer: dict[str, Any], sample: Any) -> list[str]:
@@ -1442,10 +1589,32 @@ def resolve(
             signals.add(sig)
             payload = [str(k) for k in gate.get("payload") or [] if _IDENTIFIER.match(str(k))]
             timeout = gate.get("timeout") if _DURATION.match(str(gate.get("timeout", ""))) else ""
+            # What the gate shows: only what resolves to real data. A message
+            # naming anything else is dropped whole, never half-filled.
+            earlier = {str(m["id"]): m for m in nodes}
+            fanned_over = {str(m.get("fan_out_over")) for m in answer.get("nodes") or []} - {""}
+            run_outputs = {str(k) for k in answer.get("run_outputs") or []}
+            inputs_known = _input_names(answer, sample)
+            shows: list[dict[str, str]] = []
+            for show in gate.get("shows") or []:
+                problem = _show_problem(show, earlier, fanned_over, run_outputs, inputs_known)
+                if problem is None and str(show.get("name")) in {s["name"] for s in shows}:
+                    problem = f"shows {show.get('name')!r} twice"
+                if problem:
+                    notes.append(f"`{nid}`: dropped what it showed the person: {problem}")
+                    continue
+                shows.append({"name": str(show["name"]), "from": str(show["from"])})
+            message = str(gate.get("message") or "").strip()
+            problem = _message_problem(message, {s["name"] for s in shows})
+            if problem:
+                notes.append(f"`{nid}`: dropped its message to the person: {problem}")
+                message = ""
             n["gate"] = {
                 "signal": sig,
                 "payload": payload or ["approved", "notes"],
                 "timeout": timeout,
+                "shows": shows,
+                "message": message,
             }
         if n["kind"] == "agent_loop":
             lp = n.get("loop") or {}
@@ -1557,6 +1726,20 @@ def mcp_args(
     return out
 
 
+def gate_inputs(shows: list[dict[str, Any]]) -> dict[str, str]:
+    """A gate's ``inputs:`` from what it shows: ``<node>.<key>`` reads that key
+    of the node's output, ``<node>`` its whole result, and ``pipeline.input.<f>``
+    the input field."""
+    out: dict[str, str] = {}
+    for show in shows:
+        ref = str(show["from"])
+        if not ref.startswith("pipeline.input."):
+            head, _, key = ref.partition(".")
+            ref = f"{head}.output.{key}" if key else f"{head}.output"
+        out[str(show["name"])] = ref
+    return out
+
+
 def system_of(n: Mapping[str, Any]) -> dict[str, Any]:
     return dict(n.get("system") or {})
 
@@ -1653,8 +1836,22 @@ def to_plan(
                 node.inputs[fan] = f"{fan}.output.items"
                 by_id[fan].lists_output = True
             node.decide("fan_out", True, conf, rule)
-        node.decide("inputs", dict(node.inputs), conf, rule)
         node.after = [str(a) for a in n.get("after") or [] if str(a) in by_id]
+        if kind == "hitl_gate":
+            # A gate's inputs are what the person sees, and only that: the
+            # compiled skill prints every bound input in its HUMAN block. The
+            # nodes it reads but does not show still order it, as edges.
+            shown = gate_inputs((n.get("gate") or {}).get("shows") or [])
+            shown_from = {r.split(".", 1)[0] for r in shown.values()}
+            for ref in node.inputs.values():
+                src = ref.split(".", 1)[0]
+                if src == "pipeline" or src in shown_from or src in node.reads_unshown:
+                    continue
+                node.reads_unshown.append(src)
+                if src not in node.after:
+                    node.after.append(src)
+            node.inputs = shown
+        node.decide("inputs", dict(node.inputs), conf, rule)
         if node.after:
             node.decide("after", list(node.after), conf, rule)
         if kind not in ("agent_loop", "hitl_gate"):
@@ -1731,8 +1928,11 @@ def to_plan(
             node.signal = gate["signal"]
             node.payload = list(gate["payload"])
             node.timeout = gate.get("timeout") or None
+            node.message = str(gate.get("message") or "").strip() or None
             node.decide("signal", node.signal, conf, rule)
             node.decide("payload", node.payload, conf, rule)
+            if node.message is not None:
+                node.decide("message", node.message, conf, rule)
         loop = n.get("in_loop") or ""
         if loop:
             node.in_loop = loop

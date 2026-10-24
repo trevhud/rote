@@ -755,8 +755,16 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
         "signal": "lead_ok",
         "payload": ["approved", "reviewer"],
         "timeout": "",
+        "shows": [],
+        "message": "",
     }
-    assert by_id["budget_gate"] == {"signal": "budget_ok", "payload": ["budget"], "timeout": ""}
+    assert by_id["budget_gate"] == {
+        "signal": "budget_ok",
+        "payload": ["budget"],
+        "timeout": "",
+        "shows": [],
+        "message": "",
+    }
     assert "`budget_gate`: signal 'money_check' renamed to the sample's 'budget_ok'" in notes
 
 
@@ -1746,3 +1754,233 @@ def test_a_gate_still_unguarded_after_repair_is_an_open_question(skill: Any) -> 
     note = next(r for r in rec.resolved if r.startswith("`approve_digest`"))
     assert "rote does not guess which step it guards" in note
     assert f"{structure.STRUCTURE_NOTE_PREFIX}{note}" in plan.review
+
+
+# ── what a gate shows the person ──────────────────────────────────────────
+
+
+def _showing(*shows: dict[str, str], message: str = "") -> dict[str, Any]:
+    """good_answer with an approval of the rendered digest before it is sent.
+
+    The gate reads render_digest; what it shows is ``shows``."""
+    answer = good_answer()
+    answer["nodes"][2]["outputs"] = ["digest", "flagged_total"]
+    gate = dict(GATE, shows=list(shows), message=message)
+    answer["nodes"].append(
+        node("approve_digest", 3, "hitl_gate", gate=gate, reads=["render_digest"])
+    )
+    answer["nodes"].append(node("send_digest", 3, "pure_function", reads=["approve_digest"]))
+    return answer
+
+
+DIGEST = {"name": "digest", "from": "render_digest.digest"}
+DAY = {"name": "day", "from": "pipeline.input.day"}
+
+
+def _show_findings(answer: dict[str, Any], skill: Any) -> list[str]:
+    declared = structure.declared_tools(skill, TOOLS)
+    return [c for c in structure.check(answer, skill, SKILL, declared) if "approve_digest" in c]
+
+
+def test_a_gate_shows_the_one_key_it_names_and_waits_for_what_it_reads(skill: Any) -> None:
+    """The gate's inputs are exactly what it shows: the compiled skill prints
+    every bound input, so the person sees the digest and the day, not the
+    whole input and every upstream result (the expense-audit eval's 5-9 extra
+    turns). The node it reads but does not show still orders it."""
+    flagged = {"name": "flagged", "from": "render_digest.flagged_total"}
+    answer = _showing(DIGEST, flagged, DAY, message="Approve the digest below for {day}.")
+    answer["nodes"][3]["reads"] = ["summarize_email", "render_digest"]
+    assert _show_findings(answer, skill) == []
+    plan, rec, _ = run(skill, answer)
+    assert rec.rounds == 1
+    gate = {n.id: n for n in plan.nodes}["approve_digest"]
+    assert gate.inputs == {
+        "digest": "render_digest.output.digest",
+        "flagged": "render_digest.output.flagged_total",
+        "day": "pipeline.input.day",
+    }
+    assert gate.after == ["summarize_email"]
+    assert gate.message == "Approve the digest below for {day}."
+    doc = pipeline_doc(plan)
+    node_doc = next(n for n in doc["nodes"] if n["id"] == "approve_digest")
+    assert node_doc["inputs"] == gate.inputs
+    assert node_doc["notify"] == {"message_template": "Approve the digest below for {day}."}
+    into = [e for e in doc["edges"] if e["to"] == "approve_digest"]
+    assert into == [
+        {"from": "render_digest", "to": "approve_digest"},
+        {"from": "summarize_email", "to": "approve_digest"},
+    ]
+    # A node reading the gate still reads what the gate reads, shown or not.
+    send = next(n for n in doc["nodes"] if n["id"] == "send_digest")
+    assert set(send["inputs"]) == {"request", "approve_digest", "render_digest", "summarize_email"}
+    Pipeline.model_validate(doc)
+
+
+def test_a_gate_that_shows_nothing_binds_nothing(skill: Any) -> None:
+    """A gate that asks for data the person holds: no inputs, no message,
+    and the node it read becomes an ordering edge, never a binding."""
+    plan, _, _ = run(skill, _showing())
+    gate = {n.id: n for n in plan.nodes}["approve_digest"]
+    assert gate.inputs == {} and gate.after == ["render_digest"] and gate.message is None
+    doc = pipeline_doc(plan)
+    assert "notify" not in next(n for n in doc["nodes"] if n["id"] == "approve_digest")
+    assert {"from": "render_digest", "to": "approve_digest"} in doc["edges"]
+    Pipeline.model_validate(doc)
+
+
+@pytest.mark.parametrize(
+    ("show", "message", "expected"),
+    [
+        (
+            {"name": "digest", "from": "render_digst.digest"},
+            "",
+            "shows 'digest' from 'render_digst.digest', but 'render_digst' is not an earlier "
+            "node outside a loop; write '<node id>.<output key>' or 'pipeline.input.<field>'",
+        ),
+        (
+            {"name": "digest", "from": "send_digest.digest"},  # a later node
+            "",
+            "shows 'digest' from 'send_digest.digest', but 'send_digest' is not an earlier "
+            "node outside a loop; write '<node id>.<output key>' or 'pipeline.input.<field>'",
+        ),
+        (
+            {"name": "digest", "from": "render_digest.summary"},
+            "",
+            "shows 'digest' from 'render_digest.summary', but 'render_digest' returns only "
+            "['digest', 'flagged_total']",
+        ),
+        (
+            {"name": "digest", "from": "render_digest"},
+            "",
+            "shows 'digest' from the whole result of 'render_digest'; name the one key the "
+            "person needs, one of ['digest', 'flagged_total']",
+        ),
+        (
+            {"name": "summaries", "from": "summarize_email.summary"},
+            "",
+            "shows 'summaries' from 'summarize_email.summary', but the result of "
+            "'summarize_email' has no decided keys (a list, or a tool's own result): show it "
+            "whole, as 'summarize_email'",
+        ),
+        (
+            {"name": "emails", "from": "fetch_emails.messages"},  # an MCP result
+            "",
+            "shows 'emails' from 'fetch_emails.messages', but the result of 'fetch_emails' "
+            "has no decided keys (a list, or a tool's own result): show it whole, as "
+            "'fetch_emails'",
+        ),
+        (
+            {"name": "week", "from": "pipeline.input.week"},
+            "",
+            "shows 'week' from 'pipeline.input.week', but the input has no field 'week' "
+            "(it has ['day'])",
+        ),
+        (
+            {"name": "the digest", "from": "render_digest.digest"},
+            "",
+            "shows 'the digest': the name must be a snake_case identifier",
+        ),
+        (
+            DIGEST,
+            "Approve {digest} for {day} by {deadline}.",
+            "its message uses {day}, {deadline}, which it does not show; each {name} must be "
+            "a name in shows (['digest'])",
+        ),
+    ],
+)
+def test_what_a_gate_shows_must_resolve_to_real_data(
+    skill: Any, show: dict[str, str], message: str, expected: str
+) -> None:
+    assert _show_findings(_showing(show, message=message), skill) == [
+        f"node approve_digest: {expected}"
+    ]
+
+
+def test_whole_results_with_no_keys_and_input_fields_are_shown(skill: Any) -> None:
+    """The positive half of the table above: each form it refuses on one
+    source is accepted on a source where it resolves."""
+    shows = (
+        {"name": "summaries", "from": "summarize_email"},  # a fanned list
+        {"name": "emails", "from": "fetch_emails"},  # an MCP call's own result
+        {"name": "flagged", "from": "render_digest.flagged_total"},
+        DAY,
+    )
+    assert _show_findings(_showing(*shows, message="Approve for {day}: {flagged}."), skill) == []
+
+
+def test_a_name_shown_twice_is_a_contradiction(skill: Any) -> None:
+    twice = {"name": "digest", "from": "render_digest.flagged_total"}
+    assert _show_findings(_showing(DIGEST, twice), skill) == [
+        "node approve_digest: shows 'digest' twice"
+    ]
+
+
+def test_a_bad_show_goes_back_for_repair_and_the_repair_is_taken(skill: Any) -> None:
+    bad = _showing({"name": "digest", "from": "render_digest.summary"})
+    plan, rec, fake = run(skill, bad, _showing(DIGEST))
+    assert rec.rounds == 2
+    assert "shows 'digest' from 'render_digest.summary'" in fake.prompts[1]
+    gate = {n.id: n for n in plan.nodes}["approve_digest"]
+    assert gate.inputs == {"digest": "render_digest.output.digest"}
+
+
+def test_resolve_keeps_only_what_resolves_and_never_a_half_bound_message(skill: Any) -> None:
+    """After the repair rounds: an unresolved show is dropped, and a message
+    naming anything not shown is dropped whole, never sent with a raw
+    ``{placeholder}``."""
+    week = {"name": "week", "from": "pipeline.input.week"}
+    answer = _showing(DIGEST, week, message="For {week}.")
+    declared = structure.declared_tools(skill, TOOLS)
+    fixed, notes = structure.resolve(answer, skill, SKILL, declared)
+    gate = next(n for n in fixed["nodes"] if n["id"] == "approve_digest")["gate"]
+    assert gate["shows"] == [DIGEST]
+    assert gate["message"] == ""
+    assert any(n.startswith("`approve_digest`: dropped what it showed the person:") for n in notes)
+    assert any(n.startswith("`approve_digest`: dropped its message to the person:") for n in notes)
+    kept = _showing(DIGEST, message="Approve the {digest}.")
+    fixed, notes = structure.resolve(kept, skill, SKILL, declared)
+    gate = next(n for n in fixed["nodes"] if n["id"] == "approve_digest")["gate"]
+    assert gate["shows"] == [DIGEST] and gate["message"] == "Approve the {digest}."
+    assert not [n for n in notes if "approve_digest" in n]
+
+
+def _settled(tmp_path: Path, skill: Any, answer: dict[str, Any], notify: Any) -> dict[str, Any]:
+    """The gate after enforce, when the text agent wrote ``notify`` on it."""
+    from rote.compiler.system1.enforce import enforce
+    from rote.compiler.system1.skeleton import BRIEF_DIRNAME, SKELETON_FILENAME
+
+    plan, _, _ = run(skill, answer)
+    doc = pipeline_doc(plan)
+    work = tmp_path / "work"
+    (work / BRIEF_DIRNAME).mkdir(parents=True)
+    (work / BRIEF_DIRNAME / SKELETON_FILENAME).write_text(yaml.safe_dump(doc))
+    agent = copy.deepcopy(doc)
+    next(n for n in agent["nodes"] if n["id"] == "approve_digest")["notify"] = notify
+    (work / "pipeline.yaml").write_text(yaml.safe_dump(agent))
+    enforce(work)
+    settled = yaml.safe_load((work / "pipeline.yaml").read_text())
+    return next(n for n in settled["nodes"] if n["id"] == "approve_digest")
+
+
+def test_the_structure_passs_message_is_a_decision_the_agent_cannot_change(
+    tmp_path: Path, skill: Any
+) -> None:
+    rewritten = {"channel": "slack", "target": "#x", "message_template": "Approve it."}
+    answer = _showing(DIGEST, message="Approve the {digest}.")
+    gate = _settled(tmp_path, skill, answer, rewritten)
+    assert gate["notify"] == {"message_template": "Approve the {digest}."}
+
+
+def test_without_a_decided_message_the_agents_notify_stays(tmp_path: Path, skill: Any) -> None:
+    """The rules path, or a gate the pass gave no message: the text agent's
+    notify is text, kept as written (the IR still checks its placeholders)."""
+    written = {"channel": "email", "target": "ops@example.com", "message_template": "Approve."}
+    assert _settled(tmp_path, skill, _showing(DIGEST), written)["notify"] == written
+
+
+def test_a_gate_message_needs_no_channel_or_target() -> None:
+    """The skill rarely names where an approval goes and the compile must not
+    invent one; the compiled skill reaches the person through its agent."""
+    from rote.ir import NotifyConfig
+
+    assert NotifyConfig.model_validate({"message_template": "Approve."}).channel is None

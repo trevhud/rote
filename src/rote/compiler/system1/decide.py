@@ -160,6 +160,12 @@ class NodePlan:
     #: Earlier nodes it waits for without reading them: an ordering its step's
     #: text states, rendered as edges (the structure pass's `after`).
     after: list[str] = field(default_factory=list)
+    #: A gate's message to the person, its ``{name}`` placeholders its inputs
+    #: (the structure pass's ``gate.message``); rendered as ``notify``.
+    message: str | None = None
+    #: The nodes a gate reads but does not show: they order it (edges), and a
+    #: node reading the gate reads them through it (:func:`_through_gates`).
+    reads_unshown: list[str] = field(default_factory=list)
 
     def decide(self, name: str, value: Any, confidence: float, rule: str) -> None:
         self.decisions.append(Decision(name, value, round(confidence, 2), rule))
@@ -947,7 +953,8 @@ def _through_gates(sources: list[str], by_id: Mapping[str, NodePlan]) -> list[st
         gate = by_id.get(src)
         if gate is None or gate.kind != "hitl_gate":
             continue
-        for ref in gate.inputs.values():
+        refs = [*gate.inputs.values(), *(f"{r}.output" for r in gate.reads_unshown)]
+        for ref in refs:
             upstream = ref.split(".", 1)[0]
             if upstream != "pipeline" and upstream not in sources and upstream not in out:
                 out.append(upstream)

@@ -227,8 +227,13 @@ class NotifyConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    channel: str = Field(description="slack | email | webhook")
-    target: str = Field(description="Channel name, email address, or webhook URL")
+    # Both optional: a skill rarely names where its approval goes, the compile
+    # must not invent one, and no runtime sends to them (the compiled skill
+    # reaches the person through its agent, with the message alone).
+    channel: str | None = Field(default=None, description="slack | email | webhook")
+    target: str | None = Field(
+        default=None, description="Channel name, email address, or webhook URL"
+    )
     message_template: str | None = Field(
         default=None,
         description=(
