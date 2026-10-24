@@ -130,10 +130,10 @@ dev = [
 ]
 
 [project.scripts]
-rote = "rote.cli:main"
+rote = "rote.entry:main"
 # `uvx rote-cli ...` runs the command named after the distribution, so the
 # distribution name is also a command. Both run the same entry point.
-rote-cli = "rote.cli:main"
+rote-cli = "rote.entry:main"
 
 [project.urls]
 Homepage = "https://roteskills.com"

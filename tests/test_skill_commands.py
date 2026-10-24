@@ -1199,3 +1199,125 @@ def test_run_passes_the_driver_command_through(
     assert status == 2
     assert out.startswith("ROTE/1 ERROR docs-digest\nbogus is not a command here.")
     assert os.environ.get("ROTE_SKILL_RUN_DIR")  # conftest isolation stayed in place
+
+
+# ───────── start-up cost: every block pays it ─────────
+
+
+def test_skill_run_skips_the_cli_and_the_ir(digest: Path) -> None:
+    """``rote skill run`` goes from the console script straight to the launcher.
+
+    The full CLI imports the compiler, the adapters and the IR to build its
+    parser (measured 170 ms of a 2.5 s ``start``); the launcher needs none of
+    them. Run the real entry point in a fresh interpreter and list what it
+    imported."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys\n"
+        "from rote.entry import main\n"
+        "status = main(['skill', 'run', 'docs-digest', 'bogus'])\n"
+        "heavy = ('rote.cli', 'rote.ir', 'rote.compiler', 'anthropic')\n"
+        "print('LOADED', [m for m in heavy if m in sys.modules], status)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.stdout.startswith("ROTE/1 ERROR docs-digest\nbogus is not a command here.")
+    assert done.stdout.splitlines()[-1] == "LOADED [] 2"
+
+
+def test_skill_run_forms_the_fast_path_does_not_take_reach_the_cli(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``-h`` or a missing name is argparse's to answer, as before."""
+    from rote.entry import main as entry_main
+
+    with pytest.raises(SystemExit) as exited:
+        entry_main(["skill", "run"])
+    assert exited.value.code == 2
+    assert "the following arguments are required: name" in capsys.readouterr().err
+
+
+SKILL_RUN_FORMS = [
+    ["skill", "run", "d"],
+    ["skill", "run", "d", "start", '{"a": 1}'],
+    ["skill", "run", "d", "start", "--file", "in.json"],
+    ["skill", "run", "d", "answer", "r1", "s1", "{}", "--said", "yes"],
+    ["skill", "run", "d", "--", "start"],
+    ["skill", "run", "d", "--"],
+    ["skill", "run", "d", "--", "--", "x"],
+    ["skill", "run", "d", "start", "--", "x"],
+    ["skill", "run", "d", "-x"],
+    ["skill", "run", "d", "--help"],
+    ["skill", "run", "d", "-h"],
+    ["skill", "run", "--", "d", "start"],
+    ["skill", "run", "-h"],
+    ["skill", "run"],
+    ["skill", "list"],
+    ["run", "d", "start"],
+]
+
+
+@pytest.mark.parametrize("argv", SKILL_RUN_FORMS, ids=" ".join)
+def test_the_fast_path_reads_skill_run_exactly_as_the_cli_parser(argv: list[str]) -> None:
+    """Every form the fast path takes, it must read as argparse does; the rest it
+    leaves to the CLI. A new option on `skill run` that argparse reads
+    differently fails here instead of drifting."""
+    from rote.cli import _build_parser
+    from rote.entry import skill_run_args
+
+    fast = skill_run_args(argv)
+    if fast is None:
+        return
+    args = _build_parser().parse_args(argv)
+    assert (args.command, args.skill_command) == ("skill", "run")
+    assert (args.name, list(args.driver_args)) == fast
+
+
+def test_the_cli_parser_does_not_import_the_anthropic_sdk() -> None:
+    """``--help`` text reads the api driver's default model, which once imported
+    the anthropic SDK (~490 ms) on every rote command."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys\n"
+        "import rote.cli\n"
+        "rote.cli._build_parser()\n"
+        "print([m for m in ('anthropic',) if m in sys.modules])\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[]"
+
+
+def test_the_driver_keeps_rotes_bytecode_and_writes_none_into_the_skill(
+    digest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The child runs without ``-B``: on an install with no bytecode (``uv tool
+    install``), ``-B`` recompiled fastmcp on every block (1.0 s against 0.5 s).
+    The skill's own modules come from the frame and are never cached, so two
+    real runs leave no ``__pycache__`` in the skill for the check to refuse."""
+    import subprocess
+
+    from rote.skill_target import launch
+
+    argv = launch.driver_argv(0, [])
+    flags = argv[: argv.index("-c")]
+    done = subprocess.run(
+        [*flags, "-c", "import sys; print(sys.flags.dont_write_bytecode)"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.stdout.strip() == "0", done.stderr
+    for _ in range(2):
+        status, out, err = _start(capsys)
+        assert status == 0, out + err
+        assert header(out)["kind"] == "DONE"
+    assert list(digest.rglob("__pycache__")) == []

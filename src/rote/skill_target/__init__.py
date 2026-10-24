@@ -13,8 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rote.plan import plan_text
-
 _HERE = Path(__file__).resolve().parent
 
 DRIVER_PATH = _HERE / "_driver.py"
@@ -71,6 +69,10 @@ def helper_judge_ids(plan: dict[str, Any]) -> list[str]:
 
 def script_files(plan: dict[str, Any]) -> dict[str, str]:
     """``{name in scripts/: text}``: ``plan.json`` and the verbatim helpers ``plan`` needs."""
+    # Imported here, not at the top: rote.plan pulls in the IR (pydantic), and
+    # `rote skill run` imports this package on every block without needing it.
+    from rote.plan import plan_text
+
     needed = {
         "_rote_skill.py": True,
         "_rote_schema.py": True,

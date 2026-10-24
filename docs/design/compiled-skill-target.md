@@ -253,9 +253,13 @@ private copy on disk would not do: the agent runs as the same user, and a
 review rewrote rote's 0700 snapshot mid-run. Only a recorded CA bundle lands
 on disk, because the TLS stack reads a file.
 
-Then it starts the driver with rote's interpreter, `-I`
-(no `PYTHON*` variables, no user site, no cwd on the path) and `-B` (no
-`__pycache__` for the next check to refuse). The import path is the skill's
+Then it starts the driver with rote's interpreter and `-I`
+(no `PYTHON*` variables, no user site, no cwd on the path). The bootstrap
+compiles the skill's modules from the frame without caching them and no
+path finder reads the skill dir, so no `__pycache__` lands there for the
+next check to refuse. It runs without `-B`, so rote's own dependencies keep
+their bytecode: on a `uv tool install`, which compiles none, `-B` made every
+call recompile fastmcp (about 0.6 s a block). The import path is the skill's
 scripts dir plus rote's site-packages, where fastmcp lives. rote's own
 modules are never imported inside a skill run. It starts the driver through
 a fixed bootstrap rather than `scripts/run.py`, because the write consent is

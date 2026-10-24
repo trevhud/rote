@@ -28,13 +28,13 @@ def test_distribution_name_is_a_console_script() -> None:
     project = _project()
     scripts = project["scripts"]
     assert isinstance(scripts, dict)
-    assert scripts[project["name"]] == "rote.cli:main"
+    assert scripts[project["name"]] == "rote.entry:main"
 
 
 def test_rote_command_still_exists() -> None:
     scripts = _project()["scripts"]
     assert isinstance(scripts, dict)
-    assert scripts["rote"] == "rote.cli:main"
+    assert scripts["rote"] == "rote.entry:main"
 
 
 def test_no_source_file_compiles_with_a_warning() -> None:

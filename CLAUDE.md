@@ -2567,9 +2567,24 @@ command must approve exactly the files the user vouched for
   matches `.rote-manifest.json`), in the app registry entry's `trust`. A
   run refuses a changed, new, missing, symlinked or special file, and
   `__pycache__` counts as new: an unchecked `.pyc` with the source's mtime
-  shadows a listed `.py`. The driver also runs with `-B`, though since its
-  code comes over a pipe (below) that flag is defense in depth, and
-  removing it fails no test.
+  shadows a listed `.py`. The driver runs WITHOUT `-B`: its code comes over
+  a pipe (below) and is never cached, so no `__pycache__` reaches the skill
+  dir, while `-B` made every block recompile fastmcp on a `uv tool install`
+  (no bytecode shipped, 1.0 s against 0.5 s cached).
+  `test_the_driver_keeps_rotes_bytecode_and_writes_none_into_the_skill`
+  pins both halves.
+- **Every block pays the start-up, so keep `skill run` light.** The console
+  script is `rote.entry:main`, which hands `skill run <name> ...` to
+  `launch.run` without importing `rote.cli` (whose parser imports the
+  compiler, the adapters and the IR). Keep `rote.skill_target`'s package
+  import free of the IR, and keep vendor SDKs out of `_build_parser`
+  (`anthropic` cost 0.5 s on every command). The child leaves with
+  `os._exit` after flushing, skipping an 85 ms teardown. Measured on
+  docs-digest (2026-10-24): what is left is fastmcp's own import (~0.5 s)
+  and the MCP round trips. Each request opens a new TCP+TLS connection
+  (the SDK closes an SSE response before its last chunk, so HTTP/1.1
+  cannot reuse it), and each call also pays a `server/discover` probe and
+  a session `DELETE`.
 - **The env is an allowlist, never a scrub list** (`launch.child_env`).
   Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
   next command every block prints), base URLs, `XDG_*`, proxies and CA

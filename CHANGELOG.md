@@ -98,6 +98,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`rote skill run` starts faster on every block.** Measured on docs-digest
+  against the real Microsoft Learn and DeepWiki servers, the median `start`
+  went from 3.47 s to 2.46 s on an install without bytecode (`uv tool
+  install`) and from 2.90 s to 2.40 s with it. The `rote` command now hands
+  `skill run` straight to its launcher instead of building the whole CLI
+  (`rote.entry`), the CLI's parser no longer imports the anthropic SDK (about
+  0.5 s on every command with the `api` extra), the driver runs without `-B`
+  so fastmcp keeps its bytecode, and it exits with `os._exit` once its block
+  is printed.
 - **A Python judge whose IR sets `temperature` runs again.** anthropic 1.0
   removed the sampling keywords from `messages.create`, so every such judge
   raised `TypeError: ... unexpected keyword argument 'temperature'` before
