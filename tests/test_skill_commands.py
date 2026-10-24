@@ -300,6 +300,77 @@ def test_the_driver_takes_its_plan_and_code_from_the_frame_alone(
     assert result_of(out) == demo.load_reference().pipeline_output
 
 
+def test_the_headers_helper_runs_the_verified_mcp_helper_not_the_file(
+    tmp_path: Path,
+) -> None:
+    """An agent loop's headersHelper is a subprocess. It used to exec
+    ``_rote_mcp.__file__``, which under the in-memory launch is the unchecked
+    file in the skill dir. Through the real bootstrap: tamper that file, build
+    the loop's MCP config, run its headersHelper, and the verified code answers."""
+    import base64
+    import subprocess
+
+    from rote.inference import _runtime_helper as inference
+    from rote.mcp import _runtime_helper as mcp_helper
+    from rote.skill_target import launch
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "gh": McpServerConfig(
+                    url="https://api.example.com/mcp", headers={"Authorization": "Bearer ${GH_T}"}
+                )
+            }
+        )
+    )
+    root = tmp_path / "skill" / "scripts"
+    (root / "extracted").mkdir(parents=True)
+    marker = tmp_path / "tampered-helper-ran"
+    tampered = f"open({str(marker)!r}, 'w').write('x')\nprint('{{}}')\n"
+    for rel in ("_rote_mcp.py", "extracted/_rote_mcp.py"):
+        (root / rel).write_text(tampered)
+    driver = (
+        "import json, shlex, subprocess, sys\n"
+        "import _rote_inference\n"
+        "def main(argv, *args, **kwargs):\n"
+        "    mcp = _rote_inference._mcp_config_for(['lookup'], {'lookup': 'gh'})\n"
+        "    helper = mcp.servers['gh']['headersHelper']\n"
+        "    run = subprocess.run(shlex.split(helper), capture_output=True, text=True)\n"
+        "    sys.stdout.write(run.stdout + run.stderr)\n"
+        "    return run.returncode\n"
+    )
+    sources = {
+        "_rote_skill.py": driver,
+        "_rote_inference.py": Path(inference.__file__).read_text(),
+        "extracted/__init__.py": "",
+        "extracted/_rote_mcp.py": Path(mcp_helper.__file__).read_text(),
+        "plan.json": "{}",
+    }
+    frame = json.dumps(
+        {
+            "spec": {"scripts": str(root), "command": "x", "allow_writes": False, "skill": "s"},
+            "files": {k: base64.b64encode(v.encode()).decode() for k, v in sources.items()},
+        }
+    ).encode()
+    read_fd, write_fd = os.pipe()
+    env = {**os.environ, "GH_T": "secret-value"}
+    proc = subprocess.Popen(
+        launch.driver_argv(read_fd, []),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(read_fd,),
+    )
+    os.close(read_fd)
+    with os.fdopen(write_fd, "wb") as pipe:
+        pipe.write(frame)
+    out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 0, out + err
+    assert json.loads(out) == {"Authorization": "Bearer secret-value"}
+    assert not marker.exists()
+
+
 def test_code_swapped_in_after_the_check_never_runs(
     digest: Path, tmp_path: Path, fx: FixtureServer
 ) -> None:

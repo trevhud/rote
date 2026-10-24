@@ -263,7 +263,9 @@ def test_an_agent_loop_never_puts_a_header_value_in_its_config(
     assert "headers" not in servers["gh"]
     assert "secret-value" not in json.dumps(servers)
     helper = servers["gh"]["headersHelper"]
-    assert " -P " in helper and "_runtime_helper.py headers gh" in helper
+    words = shlex.split(helper)
+    assert words[1:3] == ["-I", "-c"] and words[-2:] == ["headers", "gh"]
+    assert "secret-value" not in helper
     run = subprocess.run(shlex.split(helper), capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == {"Authorization": "Bearer secret-value"}

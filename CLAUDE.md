@@ -2683,7 +2683,10 @@ A registry header's `${NAME}` is filled at connection time by one rule in
 every helper (`expand_headers`, TS `_HEADER_TEMPLATE_TS` in the Node
 helper); unset or empty is a `RoteMcpConfigError`, never an empty header.
 No filled value goes on a command line: the agent loop's `--mcp-config`
-(argv) carries a `headersHelper` running the emitted helper file instead.
+(argv) carries a `headersHelper` instead: `python -I -c <the MCP helper's
+source, from its module loader>`. Never exec `_rote_mcp.__file__`: under
+`rote skill run` the module came from checked bytes, and the file at that
+path is the unchecked one an agent can rewrite.
 `tests/test_mcp_header_template_parity_e2e.py` pins the twins together.
 
 Client config readers (`rote.clients`) only read: never run the client,

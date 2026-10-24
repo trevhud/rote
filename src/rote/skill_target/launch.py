@@ -98,6 +98,10 @@ class Verified(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         return None
     def create_module(self, spec):
         return None
+    def get_source(self, name):
+        rel = name.replace(".", "/")
+        data = files.get(rel + ".py", files.get(rel + "/__init__.py"))
+        return None if data is None else data.decode("utf-8")
     def exec_module(self, module):
         origin = module.__spec__.origin
         if origin and origin.startswith(root + "/"):
