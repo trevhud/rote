@@ -134,17 +134,35 @@ def _run_command(runtime_dir: Path, pipeline: Pipeline | None, pipeline_path: Pa
     """
     import shlex
 
-    command = f"rote run {shlex.quote(str(runtime_dir))}"
+    from rote.adapters.skill import emitted_skill
+
+    candidates = []
+    if pipeline_path is not None:
+        candidates = [
+            pipeline_path.parent / "input.json",
+            pipeline_path.parent.parent / "input.json",
+        ]
+    if emitted_skill(runtime_dir) is not None:
+        # A compiled skill is run by its own driver, one command per block,
+        # with rote's interpreter (it has fastmcp); `start` takes the input.
+        command = (
+            f"{shlex.quote(sys.executable)} -I "
+            f"{shlex.quote(str(runtime_dir / 'scripts' / 'run.py'))} start"
+        )
+        file_flag, inline = "--file", ""
+        if pipeline_path is not None:
+            # A compiled skill's own sample input (the examples keep one there).
+            candidates += [p / "skill" / "input.json" for p in pipeline_path.parents[:2]]
+    else:
+        command = f"rote run {shlex.quote(str(runtime_dir))}"
+        file_flag, inline = "--input", "--input "
     if pipeline is None or pipeline_path is None or not pipeline.required_input_fields:
-        return command
-    for candidate in (
-        pipeline_path.parent / "input.json",
-        pipeline_path.parent.parent / "input.json",
-    ):
+        return command if inline else f"{command} '{{}}'"
+    for candidate in candidates:
         if candidate.is_file():
-            return f"{command} --input {shlex.quote(str(candidate))}"
+            return f"{command} {file_flag} {shlex.quote(str(candidate))}"
     fields = ", ".join(pipeline.required_input_fields)
-    return f"{command} --input '<JSON object with {fields}>'"
+    return f"{command} {inline}'<JSON object with {fields}>'"
 
 
 def _print_stub_todo(
@@ -185,6 +203,101 @@ def _print_stub_todo(
     print(f"{indent}next: fill those in, then {run}", file=out)
 
 
+def _add_skill_runtime_args(parser: argparse.ArgumentParser, *, with_skill_dir: bool) -> None:
+    """The ``--runtime skill`` options, shared by emit and compile."""
+    from rote.plan import JUDGE_MODES
+
+    group = parser.add_argument_group("--runtime skill")
+    if with_skill_dir:
+        group.add_argument(
+            "--skill",
+            default=None,
+            metavar="DIR",
+            dest="skill_dir",
+            help=(
+                "The source skill's directory, whose name and description the compiled "
+                "skill keeps (default: the pipeline's source_skill, when the "
+                "provenance.json beside pipeline.yaml vouches for it)"
+            ),
+        )
+    group.add_argument(
+        "--judges",
+        default=None,
+        choices=JUDGE_MODES,
+        help=(
+            "Who answers the compiled skill's judges: 'session' (default), the agent "
+            "running the skill, in a DECIDE block; or 'helper', rote's inference helper "
+            "on the IR's model, one call per element, which bills the Claude "
+            "subscription, an API key or rote cloud. Recorded in the manifest"
+        ),
+    )
+    group.add_argument(
+        "--allow-stubs",
+        action="store_true",
+        help=(
+            "Emit the skill although an extracted/ module is still a stub (a run stops "
+            "with an ERROR at its first call)"
+        ),
+    )
+
+
+def _skill_runtime_options(args: argparse.Namespace) -> dict[str, Any]:
+    """The adapter options ``--runtime skill`` takes, from either command's flags."""
+    if args.runtime != "skill":
+        return {}
+    return {
+        "skill_dir": getattr(args, "skill_dir", None),
+        "judges": args.judges,
+        "allow_stubs": args.allow_stubs,
+    }
+
+
+def _reject_skill_flags_off_skill(args: argparse.Namespace, command: str) -> bool:
+    """Print an error and return True when a skill-only flag targets another runtime."""
+    given = [
+        flag
+        for flag, value in (
+            ("--skill", getattr(args, "skill_dir", None)),
+            ("--judges", args.judges),
+            ("--allow-stubs", args.allow_stubs),
+        )
+        if value
+    ]
+    if given and args.runtime != "skill":
+        print(
+            f"error: rote {command}: {', '.join(given)} only apply to --runtime skill "
+            f"(the runtime is {args.runtime})",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
+def _record_emitted_app(out_dir: Path, runtime: str, pipeline: Pipeline) -> None:
+    """Record an emitted app in the apps registry; a compiled skill under its skill name."""
+    from rote.adapters.skill import emitted_skill
+    from rote.app_registry import record_app
+
+    skill = emitted_skill(out_dir) if runtime == "skill" else None
+    record_app(out_dir, runtime, pipeline.name, name=skill["name"] if skill else None)
+
+
+def _note_skill_dir_name(out_dir: Path) -> None:
+    """One stderr note when a compiled skill's directory is not named after it.
+
+    The agentskills.io spec has the folder match ``name``, and some clients
+    name the skill by its folder; the skill still works, so it is a note."""
+    from rote.adapters.skill import emitted_skill
+
+    skill = emitted_skill(out_dir)
+    if skill and out_dir.resolve().name != skill["name"]:
+        print(
+            f"rote emit: note: clients expect a skill's folder to be named after it; this one "
+            f"is {out_dir.resolve().name!r}, and the skill is {skill['name']!r}",
+            file=sys.stderr,
+        )
+
+
 def _cmd_emit(args: argparse.Namespace) -> int:
     """Render a runtime adapter from a pipeline.yaml.
 
@@ -208,6 +321,8 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     args.runtime = runtime_rv.value or "dbos"
+    if _reject_skill_flags_off_skill(args, "emit"):
+        return 2
     _note_missing_runtime_extra("emit", args.runtime)
 
     try:
@@ -229,6 +344,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
             # pipeline.yaml; Python-emitting adapters use them verbatim
             # instead of stubs.
             extracted_source_dir=pipeline_path.parent,
+            **_skill_runtime_options(args),
         )
     except KeyError as e:
         print(f"error: {e.args[0]}", file=sys.stderr)
@@ -246,9 +362,9 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     # Record the app so later commands (e.g. `rote mcp login` releasing
     # parked workflows) can find it without being told where it lives.
-    from rote.app_registry import record_app
-
-    record_app(out_dir, args.runtime, pipeline.name)
+    _record_emitted_app(out_dir, args.runtime, pipeline)
+    if args.runtime == "skill":
+        _note_skill_dir_name(out_dir)
 
     mcp_servers = _mcp_requirements(pipeline, args.backend, args.runtime)
 
@@ -910,9 +1026,22 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # note, never a stop: `rote run` on the result offers the install.
     _note_missing_runtime_extra("compile", args.runtime)
 
+    if _reject_skill_flags_off_skill(args, "compile"):
+        return 2
     out_dir = Path(args.out)
     compiled_dir = out_dir / "compiled"
     runtime_dir = out_dir / "runtime" / args.runtime
+    if args.runtime == "skill":
+        # The compiled skill keeps this skill's name and description, so a
+        # skill rote cannot name is refused before the agent spends money.
+        # Its folder is named after it, as clients expect.
+        from rote.adapters.skill import SkillIdentityError, read_identity
+
+        try:
+            runtime_dir = runtime_dir / read_identity(skill_path).name
+        except SkillIdentityError as e:
+            print(f"error: --runtime skill: {e}", file=sys.stderr)
+            return 2
 
     # ── Optional measured baseline (before the compiler spends money) ──
     baseline_result = None
@@ -1025,7 +1154,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
-        emit_target=EmitTarget(args.runtime, args.backend),
+        emit_target=EmitTarget(
+            args.runtime,
+            args.backend,
+            skill_dir=skill_path if args.runtime == "skill" else None,
+            judges=args.judges,
+        ),
     )
 
     try:
@@ -1061,6 +1195,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             # Use the just-compiled extracted/ implementations verbatim
             # in the runtime dir (Python-emitting adapters only).
             extracted_source_dir=compiled_dir,
+            **{**_skill_runtime_options(args), "skill_dir": skill_path},
         )
     except KeyError as e:
         if progress_sink is not None:
@@ -1112,9 +1247,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         _print_emit_failure_after_compile(e, compiled_dir, runtime_dir, args)
         return 1
 
-    from rote.app_registry import record_app
-
-    record_app(runtime_dir, args.runtime, pipeline.name)
+    _record_emitted_app(runtime_dir, args.runtime, pipeline)
 
     # ── Deliverable verification ── the compiler already ran it (and fed
     # failures back to the agent for repair); this reports the final
@@ -1618,6 +1751,12 @@ def _print_emit_failure_after_compile(
     retry = ["rote", "emit", str(pipeline_yaml), "--runtime", args.runtime]
     if args.backend != "mcp":
         retry += ["--backend", args.backend]  # backend.json records it too
+    if args.runtime == "skill":
+        retry += ["--skill", str(Path(args.skill_path))]
+        if args.judges:
+            retry += ["--judges", args.judges]
+        if args.allow_stubs:
+            retry.append("--allow-stubs")
     retry += ["--out", str(runtime_dir)]
     from rote.adapters._py_common import ConstantsNotAccepted
 
@@ -1679,6 +1818,8 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--decider", args.decider is not None),
         ("--tiebreak", args.tiebreak is not None),
         ("--structure", args.structure is not None),
+        ("--judges", args.judges is not None),
+        ("--allow-stubs", args.allow_stubs),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -3151,6 +3292,11 @@ def _build_analysis(
         untargetable["python"] = (
             "pipeline parks on a human gate (hitl_gate); needs durable execution"
         )
+    from rote.adapters.skill import refusal as skill_refusal
+
+    skill_problem = skill_refusal(pipeline)
+    if skill_problem:
+        untargetable["skill"] = skill_problem
     targetable = [name for name in sorted(ADAPTERS) if name not in untargetable]
 
     return {
@@ -5126,8 +5272,12 @@ def _build_parser() -> argparse.ArgumentParser:
     emit.add_argument(
         "--out",
         required=True,
-        help="Output directory (created if missing)",
+        help=(
+            "Output directory (created if missing). For --runtime skill this is the "
+            "skill's own directory, which clients expect to be named after the skill"
+        ),
     )
+    _add_skill_runtime_args(emit, with_skill_dir=True)
     emit.add_argument(
         "--json",
         action="store_true",
@@ -5200,8 +5350,12 @@ def _build_parser() -> argparse.ArgumentParser:
     compile_p.add_argument(
         "--out",
         required=True,
-        help="Output directory for the compiled artifacts",
+        help=(
+            "Output directory for the compiled artifacts. --runtime skill writes the "
+            "skill to <out>/runtime/skill/<its name>/"
+        ),
     )
+    _add_skill_runtime_args(compile_p, with_skill_dir=False)
     compile_p.add_argument(
         "--agent",
         choices=sorted(DRIVERS),

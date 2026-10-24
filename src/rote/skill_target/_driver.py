@@ -48,6 +48,13 @@ Not here yet, on purpose: ``LOOP`` (an agent loop needs the tool proxy, the
 refuses a plan with a loop before anything runs, and the journal already
 counts ``tool_calls`` per loop for it), and the Codex sandbox check (the
 values ``CODEX_SANDBOX_NETWORK_DISABLED`` takes are unverified).
+
+A plan emitted with ``--judges helper`` (``"judges": "helper"``) never
+asks the agent to decide: each judge runs in code through the verbatim
+``_rote_inference.py`` (:mod:`rote.inference._runtime_helper`), one call
+per element, on the IR's model, exactly as the emitted Python judge calls
+it, and its answer is checked against the output schema the same way an
+agent's would be.
 """
 
 from __future__ import annotations
@@ -67,6 +74,15 @@ from typing import Any
 PROTOCOL = "ROTE/1"
 PLAN_FORMAT = "rote-plan/1"
 RUN_FORMAT = "rote-skill-run/1"
+
+#: The plan step kinds this driver runs. ``loop`` joins with the tool proxy;
+#: until then ``start`` refuses a plan that has one, and so does the emitter
+#: (``rote.adapters.skill``), which reads this tuple.
+STEP_KINDS = ("call", "mcp", "judge", "gate")
+#: The skill names a driver accepts (the agentskills.io ``name`` rule). The
+#: name is a directory under the run root and a word in a shell command.
+SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+SKILL_NAME_MAX = 64
 
 #: Answers per step before the run stops with an ERROR (still resumable).
 MAX_ANSWER_ATTEMPTS = 3
@@ -336,18 +352,57 @@ def _call_impl(fn: Any, payload: dict[str, Any]) -> Any:
     return result
 
 
+def unrunnable_step(plan: dict[str, Any]) -> str | None:
+    """Why this driver cannot run ``plan``, naming the first step it cannot run; or None.
+
+    ``start`` refuses on it before any folder exists, and the emitter refuses
+    the same plan before writing a file, from this one sentence.
+    """
+    for step in plan.get("steps") or []:
+        if step.get("kind") in STEP_KINDS:
+            continue
+        if step.get("kind") == "loop":
+            # The LOOP block hands the agent a bounded task whose tools it may
+            # call only through this driver (`tool <run> <step> <tool>`), so
+            # the cap, the declared tools and the read-only gate hold. Without
+            # that proxy a LOOP block would let the agent use any tool it has.
+            return (
+                f"step {step['id']} is an agent loop, and this driver does not run agent "
+                "loops yet: they need its tool proxy."
+            )
+        return (
+            f"step {step.get('id')} is a {step.get('kind')!r} step, which this driver cannot run."
+        )
+    return None
+
+
 # ───────── the driver ─────────
 
 
 class Driver:
-    def __init__(self, scripts: Path, command: str | None = None) -> None:
+    def __init__(self, scripts: Path, command: str | None = None, skill: str | None = None) -> None:
+        """``skill`` is the compiled skill's name (its SKILL.md ``name``, which
+        ``run.py`` passes): what the agent types after ``rote skill run`` and
+        the run root's folder. Without one, the pipeline's name stands in."""
         self.scripts = scripts
         self.plan_text = (scripts / "plan.json").read_text(encoding="utf-8")
         import hashlib
 
         self.plan_hash = hashlib.sha256(self.plan_text.encode("utf-8")).hexdigest()
         self.plan: dict[str, Any] = json.loads(self.plan_text)
-        self.name = str(self.plan["name"])
+        self.name = skill or str(self.plan["name"])
+        if skill is not None and not (len(skill) <= SKILL_NAME_MAX and SKILL_NAME.fullmatch(skill)):
+            self.name = str(self.plan["name"])
+            raise Stop(
+                self._error(
+                    None,
+                    f"{skill!r} is not a skill name (lowercase letters, digits and single "
+                    f"hyphens, at most {SKILL_NAME_MAX} characters).",
+                    "re-emit the skill with rote emit --runtime skill",
+                )
+            )
+        #: Who answers judges: the agent (DECIDE) or the inference helper.
+        self.helper_judges = self.plan.get("judges") == "helper"
         if self.plan.get("format") != PLAN_FORMAT:
             raise Stop(
                 self._error(
@@ -501,7 +556,9 @@ class Driver:
                             step=step["id"],
                         )
                     )
-            elif step["kind"] in ("judge", "loop") and record.get("answered_by") != "agent":
+            elif step["kind"] in ("judge", "loop") and record.get("answered_by") != (
+                "helper" if step["kind"] == "judge" and self.helper_judges else "agent"
+            ):
                 raise Stop(
                     self._error(
                         path.name,
@@ -552,16 +609,11 @@ class Driver:
         problem = missing_inputs_error(run_input, self.plan["required_inputs"])
         if problem:
             return self._error(None, problem + ".", "pass every required field", usage=True)
-        loops = [s["id"] for s in self.steps if s["kind"] == "loop"]
-        if loops:
-            # The LOOP block hands the agent a bounded task whose tools it may
-            # call only through this driver (`tool <run> <step> <tool>`), so
-            # the cap, the declared tools and the read-only gate hold. Without
-            # that proxy a LOOP block would let the agent use any tool it has.
+        unrunnable = unrunnable_step(self.plan)
+        if unrunnable:
             return self._error(
                 None,
-                f"step {loops[0]} is an agent loop, and this driver does not run agent "
-                "loops yet: they need its tool proxy.",
+                unrunnable,
                 "compile this skill for a workflow runtime (rote compile --runtime dbos)",
             )
         self.sweep()
@@ -900,11 +952,10 @@ class Driver:
             self._claim_handle = None
 
     def _run_forward(self, path: Path, results: dict[str, Any]) -> Block:
+        in_code = ("call", "mcp", "judge") if self.helper_judges else ("call", "mcp")
         for wave in sorted({int(s["wave"]) for s in self.steps}):
             in_wave = [s for s in self.steps if int(s["wave"]) == wave]
-            runnable = [
-                s for s in in_wave if s["kind"] in ("call", "mcp") and s["id"] not in results
-            ]
+            runnable = [s for s in in_wave if s["kind"] in in_code and s["id"] not in results]
             if runnable:
                 with self._locked(path):
                     state = self._read(path)
@@ -938,8 +989,11 @@ class Driver:
             except BaseException as exc:  # noqa: BLE001 (reported as the step's failure)
                 outcomes[step["id"]] = exc
                 return
+            record: dict[str, Any] = {"result": value, "at": _now()}
+            if step["kind"] == "judge":
+                record["answered_by"] = "helper"
             with self._locked(path):
-                self._write_node(path, step["id"], {"result": value, "at": _now()})
+                self._write_node(path, step["id"], record)
                 parts = path / "nodes" / f"{step['id']}.parts"
                 if parts.is_dir() and not parts.is_symlink():
                     import shutil
@@ -973,6 +1027,8 @@ class Driver:
         payload = _payload(step, run_input, results)
         if step["kind"] == "mcp":
             _progress(f"calling {step['server']}.{step['tool']}")
+        elif step["kind"] == "judge":
+            _progress(f"asking {step['lane']['model']} to judge {step['id']}")
         else:
             _progress(f"running {step['id']}")
         fan = step.get("fan_param")
@@ -1044,6 +1100,8 @@ class Driver:
         if step["kind"] == "call":
             fn = getattr(importlib.import_module(step["module"]), step["symbol"])
             return _serialize(_call_impl(fn, {**payload, **(step.get("constants") or {})}))
+        if step["kind"] == "judge":
+            return self._judge_by_helper(step, payload)
         mcp = importlib.import_module("_rote_mcp")
         if step["args"] is None:
             arguments = payload
@@ -1053,6 +1111,46 @@ class Driver:
                 for arg, origin, value in step["args"]
             }
         return _run_async(mcp.call_mcp_tool(step["server"], step["url"], step["tool"], arguments))
+
+    @staticmethod
+    def _judge_by_helper(step: dict[str, Any], payload: dict[str, Any]) -> Any:
+        """One judge call through the inference helper, as the emitted Python judge makes it.
+
+        The input is checked and projected through the judge's input schema
+        and rendered with the same ``interpolate``; the model, endpoint and
+        temperature are the IR's, each overridable per node by the
+        ``ROTE_MODEL_`` / ``ROTE_BASE_URL_`` / ``ROTE_TEMPERATURE_<ID>``
+        knobs every runtime reads. The answer is held to the output schema
+        and projected as the judge's model would dump it.
+        """
+        schema = _schema()
+        errors = schema.schema_errors(step["input_schema"], payload, "input")
+        if errors:
+            raise ValueError(
+                f"{step['id']}'s input does not fit its input schema: " + "; ".join(errors[:5])
+            )
+        prompt = interpolate(step["prompt"], schema.project(step["input_schema"], payload))
+        lane = step["lane"]
+        knob = step["id"].upper()
+        kwargs: dict[str, Any] = {}
+        if lane.get("temperature") is not None:
+            temperature = os.environ.get(f"ROTE_TEMPERATURE_{knob}", str(lane["temperature"]))
+            kwargs["sampling"] = {"temperature": float(temperature)} if temperature.strip() else {}
+        answer = importlib.import_module("_rote_inference").call_judge(
+            node_id=step["id"],
+            client=lane["client"],
+            model=os.environ.get(f"ROTE_MODEL_{knob}", lane["model"]),
+            base_url=os.environ.get(f"ROTE_BASE_URL_{knob}", lane.get("base_url")),
+            prompt=prompt,
+            output_schema=step["output_schema"],
+            **kwargs,
+        )
+        errors = schema.schema_errors(step["output_schema"], answer)
+        if errors:
+            raise ValueError(
+                f"{step['id']}'s judge answered outside its output schema: " + "; ".join(errors[:5])
+            )
+        return schema.project(step["output_schema"], answer)
 
     def _failure_block(
         self, path: Path, state: dict[str, Any], step: dict[str, Any], exc: BaseException
@@ -1572,8 +1670,12 @@ def main(
     command: str | None = None,
     *,
     allow_writes: bool = False,
+    skill: str | None = None,
 ) -> int:
     """Run one command and print its one block. The skill's scripts dir goes first on the path.
+
+    ``skill`` is the compiled skill's name, which the emitted ``run.py``
+    passes (see :class:`Driver`).
 
     ``allow_writes`` is the user's consent to write tools, and it is a
     parameter, never read from the environment: the agent's shell sets the
@@ -1592,7 +1694,7 @@ def main(
     os.environ.pop("ROTE_MCP_READ_ONLY_SERVERS", None)
     driver: Driver | None = None
     try:
-        driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None)
+        driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None, skill)
         block = dispatch(driver, argv)
     except Stop as stop:
         block = stop.block
