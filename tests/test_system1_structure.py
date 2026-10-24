@@ -448,9 +448,6 @@ def test_an_argument_binds_from_an_input_field_or_an_upstream_field(skill: Any) 
     answer = good_answer()
     answer["nodes"][0]["args"] = [{"param": "query", "source": "input_field", "value": "day"}]
     answer["nodes"][0]["outputs"] = ["next_query"]
-    # Not fanned over: a listing node's output declares only `items`, so the
-    # IR would refuse a read of `next_query` (_validate_input_fields_declared).
-    answer["nodes"][1]["fan_out_over"] = ""
     answer["nodes"].append(
         node(
             "refine",

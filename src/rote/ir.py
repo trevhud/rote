@@ -157,6 +157,16 @@ class InputRef:
     field: str | None
 
 
+def _closed_object_properties(schema: Any) -> dict[str, Any] | None:
+    """A JSON Schema's properties when it is an object that admits no other key
+    (``additionalProperties: false``), else None: an open schema lists only
+    some of its keys."""
+    if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
+        return None
+    props = schema.get("properties")
+    return props if isinstance(props, dict) else {}
+
+
 def parse_input_ref(ref: str) -> InputRef:
     """Parse an ``inputs:`` source reference string.
 
@@ -1163,8 +1173,10 @@ class Pipeline(BaseModel):
         A System-1 review found a gate bound to ``render_digest.output.items``
         of a node whose output had no ``items``, and the IR accepted it.
         An empty mapping or a type name declares no keys, so it is not
-        checked. Loop-body sub-nodes' inputs describe rather than bind, the
-        same exemption as the reachability rule above."""
+        checked, and neither is an MCP node's ``output`` (a guess at the
+        tool's result) unless its ``output_schema`` closes the object.
+        Loop-body sub-nodes' inputs describe rather than bind, the same
+        exemption as the reachability rule above."""
         by_id = {n.id: n for n in self.nodes}
         owned = {sub for n in self.nodes for sub in n.loop_body or ()}
         errors: list[str] = []
@@ -1176,7 +1188,16 @@ class Pipeline(BaseModel):
                 source = by_id.get(parsed.node_id) if parsed.node_id is not None else None
                 if source is None or parsed.field is None:
                     continue
-                declared = source.output
+                declared: dict[str, Any] | str = source.output
+                if source.mcp is not None:
+                    # An MCP result's keys are a guess (inferred from a recording,
+                    # an open outputSchema, the interface's reading of the skill),
+                    # so `output` is not a complete list: a read of another key
+                    # may be right. Only a schema that closes the object lists them.
+                    closed = _closed_object_properties(source.output_schema)
+                    if closed is None:
+                        continue
+                    declared = closed
                 if isinstance(declared, dict) and declared and parsed.field not in declared:
                     errors.append(
                         f"Node {node.id!r} input {param!r} references {ref!r}, but "
