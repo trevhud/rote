@@ -81,15 +81,37 @@ REPORT_PY = "def report(summary, score):\n    return {'line': f'{summary} / {sco
 
 SERVER = "research_tools"
 
+#: A submission the declared output refuses: ``score`` is not an integer.
+BAD = {**SUBMITTED, "score": "7"}
+
+#: What the submit tool told the model each time it refused a submission.
+REFUSALS: list[str] = []
+
+#: The refusal every runtime's submit tool gives :data:`BAD`, word for word.
+REFUSAL = (
+    "Not recorded: this output breaks the step's schema: output.score: expected "
+    "integer, got string. Fix those fields and call submit_result again."
+)
+
+
+def _result_text(block: dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, list):
+        return "".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return str(content)
+
 
 class MessagesStub(BaseHTTPRequestHandler):
     """Plays the model: turn 1 calls ``submit_result``, turn 2 ends.
 
     ``mode`` varies that: ``"forced"`` ends turn 1 with text and answers
     only the schema-locked (``output_config``) turn that follows; ``"bad"``
-    submits a score of the wrong type. A request the real API would refuse
-    (forced ``tool_choice`` on the current Sonnet, which ``loop_env`` runs
-    the loop on) gets the real API's 400. ``POST /token`` answers a refresh grant, which
+    submits a score of the wrong type, and keeps it through the forced turn;
+    ``"resubmit"`` submits that bad score, then the right one once the
+    submit tool has refused it (:data:`REFUSALS` records what it was told).
+    A request the real API would refuse (forced ``tool_choice`` on the
+    current Sonnet, which ``loop_env`` runs the loop on) gets the real
+    API's 400. ``POST /token`` answers a refresh grant, which
     the Workers MCP helper needs before it will call even an
     unauthenticated server.
     """
@@ -106,21 +128,31 @@ class MessagesStub(BaseHTTPRequestHandler):
         type(self).requests.append(payload)
         if reject_like_the_api(self, payload):
             return
-        if type(self).mode == "forced" and "format" in payload.get("output_config", {}):
-            send_json(self, structured_message(payload, SUBMITTED))
+        mode = type(self).mode
+        if mode in ("forced", "bad") and "format" in payload.get("output_config", {}):
+            send_json(self, structured_message(payload, SUBMITTED if mode == "forced" else BAD))
             return
-        submitted = any(
-            isinstance(block, dict) and block.get("type") == "tool_result"
+        results = [
+            block
             for message in payload.get("messages", [])
             if isinstance(message.get("content"), list)
             for block in message["content"]
-        )
-        answer = {**SUBMITTED, "score": "7"} if type(self).mode == "bad" else SUBMITTED
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        answer = BAD if mode in ("bad", "resubmit") and not results else SUBMITTED
+        submitted = bool(results) and not (mode == "resubmit" and len(results) == 1)
+        if mode == "resubmit" and len(results) == 1:
+            REFUSALS.append(_result_text(results[0]))
         submit = [
-            {"type": "tool_use", "id": "toolu_submit", "name": "submit_result", "input": answer}
+            {
+                "type": "tool_use",
+                "id": f"toolu_submit_{len(results)}",
+                "name": "submit_result",
+                "input": answer,
+            }
         ]
         content: list[dict[str, Any]]
-        if type(self).mode == "forced":
+        if mode == "forced":
             content = [{"type": "text", "text": "Done, I think."}]
             submitted = True
         else:
@@ -153,6 +185,7 @@ class MessagesStub(BaseHTTPRequestHandler):
 def messages_stub() -> Iterator[str]:
     MessagesStub.requests = []
     MessagesStub.mode = "submit"
+    REFUSALS.clear()
     server = HTTPServer(("127.0.0.1", 0), MessagesStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -224,6 +257,26 @@ def test_downstream_reads_the_loops_declared_keys(
     assert run.error is None, run.error
     assert run.output == EXPECTED
     assert_the_model_was_offered_the_declared_output()
+
+
+@pytest.mark.parametrize("runtime", ["dbos", "python"])
+def test_a_refused_submission_is_fixed_inside_the_loop(
+    runtime: str,
+    messages_stub: str,
+    mcp_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The submit tool refuses a bad answer back to the model, which fixes it
+    in the same loop; the node does not fail and nothing reruns."""
+    MessagesStub.mode = "resubmit"
+    for key, value in loop_env(messages_stub, mcp_server, tmp_path).items():
+        monkeypatch.setenv(key, value)
+    run = run_pipeline_trial(_emit(runtime, tmp_path), {"account": "acme"}, timeout_seconds=120)
+    assert run.error is None, run.error
+    assert run.output == EXPECTED
+    assert REFUSALS == [REFUSAL]
+    assert len(MessagesStub.requests) == 3  # submit, resubmit, end: one loop
 
 
 def test_temporal_downstream_reads_the_loops_declared_keys(

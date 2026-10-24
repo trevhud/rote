@@ -12,9 +12,9 @@
     "extracted/zoominfo.py": "fa1c524a3c98440dde9fb4c8861e2400b9d9919221f9cc21d48917e0f8ca74b5",
     "requirements.txt": "c1ede8ee36219a1006ae0322932ad10ba017d30d3d247661b06eda680db261a8",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "918236aa0ddafe86a0fb23e63f90eedb493732345421bf4f6d590b700f1e6eca",
+    "signatures/_rote_inference.py": "889231d1b34e0eddc9f3b2efaf4b2fbe2e69f5ec7d81b8e6b1269ce88dfb3ee2",
     "signatures/personalize_email.py": "e6f6a9d698e015900e628a2bf1d917461b69d587840112cc9cd2b54828736300",
     "signatures/vet_contact.py": "edfa9fdb847071cc622e38a7cb5964ca6a5f0babcd259280288cd107664aa9f9",
-    "workflow.py": "5239d8cd642e3deebfb6ff0af9a9bca74c836e685c9f44b02d5701777ff209df"
+    "workflow.py": "a50d9fe4d3a7d8b963bc40f0d572592a05bec9c130ed4837086c782edd9c31a5"
   }
 }

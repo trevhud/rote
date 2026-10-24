@@ -477,15 +477,25 @@ def test_parallel_wave_keeps_each_node_retry_policy() -> None:
     ast.parse(src)
 
 
-def test_parallel_wave_omits_retry_policy_when_ir_declares_none() -> None:
-    """No retry in the IR means no retry_policy kwarg — not a default."""
+def test_a_node_with_no_retry_gets_one_attempt_never_temporals_unbounded_default() -> None:
+    """No ``retry:`` means one attempt, as on dbos, dbos-ts and python. With
+    no ``retry_policy`` Temporal retries forever, so a paid judge that kept
+    missing its schema would bill without end. Every activity carries a
+    policy; a declared one keeps its own budget (the negative half)."""
     pipeline = _two_node_wave_pipeline()
-    for node in pipeline.nodes:
-        node.retry = None
+    pipeline.nodes[0].retry = None
     src = TemporalAdapter().emit_workflow(pipeline)
 
     assert "asyncio.gather(" in src
-    assert "retry_policy=" not in src
+    # Every execute_activity call carries a policy.
+    assert src.count("workflow.execute_activity(") == src.count("retry_policy=") == 2
+    # fetch_a (no retry:) gets exactly one attempt...
+    fetch_a = src[src.index('"fetch_a"') : src.index('"fetch_b"')]
+    assert "retry_policy=RetryPolicy(maximum_attempts=1)," in fetch_a
+    # ...and fetch_b keeps its declared max=2, not the one-attempt default.
+    fetch_b = src[src.index('"fetch_b"') :]
+    assert "RetryPolicy(maximum_attempts=3, backoff_coefficient=1.0)" in fetch_b
+    assert "maximum_attempts=1)" not in fetch_b
     ast.parse(src)
 
 

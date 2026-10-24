@@ -119,6 +119,7 @@ from rote.adapters._ts_common import (
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
+    SCHEMA_ERRORS_TS,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -131,6 +132,7 @@ from rote.adapters._ts_common import (
     judge_env_arg,
     llm_clients,
     module_imports,
+    needs_schema_helper,
     payload_ts_literal,
     required_inputs_ts_guard,
 )
@@ -1224,6 +1226,10 @@ class InngestAdapter:
         if agent_loops:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
+            )
+        if needs_schema_helper(pipeline):
+            written["signatures/_roteSchema"] = writer.write(
+                "src", "signatures", "_roteSchema.ts", content=SCHEMA_ERRORS_TS
             )
         # The IR's undefined named types, as aliases the user narrows once.
         types_module = emit_types_module(pipeline)

@@ -1,21 +1,31 @@
-"""``rote.plan._schema`` against the emitted judges' own Pydantic models.
+"""One schema validator, proven the same in Python, TS and the emitted models.
 
-A compiled skill checks an agent's answer with :func:`schema_errors` and
-hands downstream steps :func:`project`'s value. On every other runtime the
-same answer goes through the judge's generated Pydantic model. So for every
-judge schema committed under ``examples/`` (input and output), a corpus of
-values built from the schema (valid ones, and one mutation each of the
-kinds both sides enforce) must get the same verdict from both, and every
-accepted value must come out of :func:`project` exactly as
-``model_dump(by_alias=True)`` returns it.
+``schema_errors`` (``rote.inference._runtime_helper``, the verbatim
+``_rote_inference.py``) checks every answer rote validates outside a
+schema-locked decoder, on every lane: a judge's answer and an agent loop's
+declared output on every Python runtime, and a compiled skill's judge, gate
+and loop answers. Its TS twin, ``SCHEMA_ERRORS_TS`` (emitted as
+``signatures/_roteSchema.ts``), checks judges and agent loops on the TS
+runtimes. Three legs, one corpus:
 
-The constraints the model does not carry (bounds, ``pattern``, ``const``,
-item counts) are stricter here on purpose, and tested on their own below.
+- **Python against the emitted Pydantic models**, for every judge schema
+  under ``examples/`` (input and output): valid values and one mutation of
+  each kind the model enforces get the same verdict, and every accepted value
+  comes out of :func:`project` exactly as ``model_dump(by_alias=True)``
+  returns it. The constraints the model does not carry (bounds, ``pattern``,
+  ``const``, item counts) are stricter here on purpose, tested rule by rule.
+- **Python against TS, run by real node**: the same corpus plus every agent
+  loop's and gate's schema in ``examples/``, and a positive and a negative
+  case for each rule (:data:`RULES`), must get the same verdict and name the
+  same paths. Slow: it needs node.
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -25,24 +35,36 @@ import pydantic
 import pytest
 import yaml
 
+from rote.adapters._common import agent_loop_output
 from rote.adapters._py_common import emit_signature_module
+from rote.adapters._ts_common import SCHEMA_ERRORS_TS
+from rote.inference._runtime_helper import project, schema_errors
 from rote.ir import Node, NodeKind, Pipeline
-from rote.plan._schema import project, schema_errors
+from rote.plan import gate_answer_schema
 
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _judges() -> list[tuple[str, Node]]:
-    found: list[tuple[str, Node]] = []
+def _pipelines() -> list[tuple[str, Pipeline]]:
+    found: list[tuple[str, Pipeline]] = []
     for path in sorted((REPO / "examples").rglob("pipeline.yaml")):
         if "runtime" in path.parts:
             continue
         pipeline = Pipeline.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-        for node in pipeline.nodes:
-            if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None:
-                rel = path.relative_to(REPO / "examples").parent
-                found.append((f"{rel}:{node.id}", node))
+        found.append((str(path.relative_to(REPO / "examples").parent), pipeline))
     return found
+
+
+PIPELINES = _pipelines()
+
+
+def _judges() -> list[tuple[str, Node]]:
+    return [
+        (f"{rel}:{node.id}", node)
+        for rel, pipeline in PIPELINES
+        for node in pipeline.nodes
+        if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None
+    ]
 
 
 JUDGES = _judges()
@@ -419,3 +441,312 @@ def test_an_open_object_keeps_and_a_declared_one_drops_undeclared_keys() -> None
     declared = {"type": "object", "properties": {"a": {"type": "integer"}}}
     assert schema_errors(declared, {"a": 1, "b": 2}) == []
     assert project(declared, {"a": 1, "b": 2}) == {"a": 1}
+
+
+# ───────── Python against TS ─────────
+
+_OPTIONALS = {
+    "type": "object",
+    "properties": {
+        "req": {"type": "string"},
+        "opt": {"type": "string"},
+        "dflt": {"type": "string", "default": "d"},
+    },
+    "required": ["req", "dflt"],
+}
+
+_NESTED = {
+    "type": "object",
+    "properties": {
+        "o": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}
+    },
+}
+
+_EMOJI = "\U0001f600"
+
+#: Every rule both validators enforce: ``(rule, schema, accepted, rejected)``.
+#: Each rejected value breaks that rule and nothing else.
+RULES: list[tuple[str, Any, list[Any], list[Any]]] = [
+    ("type string", {"type": "string"}, ["", "x"], [3, None, True, [], {}]),
+    ("type integer", {"type": "integer"}, [0, -4, 3.0], [3.5, "3", True, None]),
+    ("type number", {"type": "number"}, [0, 1.5, -2], ["1.5", False, None]),
+    ("type boolean", {"type": "boolean"}, [True, False], [0, 1, "true", None]),
+    ("type null", {"type": "null"}, [None], [0, "", False]),
+    ("type object", {"type": "object"}, [{}, {"a": 1}], [[], "x", None]),
+    ("type array", {"type": "array"}, [[], [1]], [{}, "x", None]),
+    ("type list", {"type": ["string", "null"]}, ["x", None], [1, []]),
+    ("required", _OPTIONALS, [{"req": "a"}, {"req": "a", "dflt": "b"}], [{}, {"opt": "a"}]),
+    (
+        "nullable optional",
+        _OPTIONALS,
+        [{"req": "a", "opt": None}],
+        [{"req": None}, {"req": "a", "dflt": None}],
+    ),
+    (
+        "additionalProperties false",
+        {"type": "object", "properties": {"a": {}}, "additionalProperties": False},
+        [{}, {"a": 1}],
+        [{"b": 1}],
+    ),
+    (
+        "undeclared keys pass an open object",
+        {"type": "object", "properties": {"a": {"type": "integer"}}},
+        [{"a": 1, "b": "x"}],
+        [{"a": "x", "b": "x"}],
+    ),
+    (
+        "typed map",
+        {"type": "object", "additionalProperties": {"type": "integer"}},
+        [{}, {"a": 1, "b": 2}],
+        [{"a": "1"}],
+    ),
+    ("nested", _NESTED, [{"o": {"n": 1}}], [{"o": {}}, {"o": {"n": "1"}}]),
+    ("enum", {"enum": ["a", 1, None]}, ["a", 1, 1.0, None], ["b", True, 2]),
+    (
+        "enum deep",
+        {"enum": [[1, {"k": True}]]},
+        [[1, {"k": True}]],
+        [[1, {"k": 1}], [True, {"k": True}], [1]],
+    ),
+    ("const", {"const": {"v": 1}}, [{"v": 1}, {"v": 1.0}], [{"v": True}, {"v": 1, "w": 2}]),
+    ("const bool", {"const": False}, [False], [0, None]),
+    (
+        "anyOf",
+        {"anyOf": [{"type": "string"}, {"type": "object", "required": ["a"]}]},
+        ["x", {"a": 1}],
+        [{"b": 1}, 3],
+    ),
+    ("oneOf", {"oneOf": [{"type": "string"}, {"type": "integer"}]}, ["x", 2], [1.5, None]),
+    ("allOf", {"allOf": [{"type": "integer"}, {"minimum": 3}]}, [3, 9], [2, 3.5]),
+    ("items", {"type": "array", "items": {"type": "integer"}}, [[], [1, 2]], [[1, "2"]]),
+    ("items false", {"type": "array", "items": False}, [[]], [[1]]),
+    (
+        "$ref",
+        {
+            "type": "object",
+            "properties": {"t": {"$ref": "#/$defs/T"}},
+            "$defs": {"T": {"$ref": "#/$defs/U"}, "U": {"enum": ["A"]}},
+        },
+        [{"t": "A"}],
+        [{"t": "B"}],
+    ),
+    ("minimum", {"type": "number", "minimum": 1}, [1, 2.5], [0.5]),
+    ("maximum", {"type": "number", "maximum": 1}, [1, -3], [1.5]),
+    ("exclusiveMinimum", {"type": "number", "exclusiveMinimum": 0}, [0.5], [0, -1]),
+    ("exclusiveMaximum", {"type": "number", "exclusiveMaximum": 0}, [-0.5], [0, 1]),
+    ("multipleOf", {"type": "number", "multipleOf": 0.1}, [0.3, 1, 0], [0.35]),
+    ("multipleOf integer", {"type": "integer", "multipleOf": 5}, [10, -5], [7]),
+    ("minLength", {"type": "string", "minLength": 2}, ["ab", _EMOJI * 2], ["a", _EMOJI]),
+    ("maxLength", {"type": "string", "maxLength": 2}, ["ab", _EMOJI * 2], ["abc", _EMOJI + "ab"]),
+    ("pattern", {"type": "string", "pattern": "^[A-Z]{3}$"}, ["USD"], ["usd", "USDX"]),
+    ("pattern search", {"type": "string", "pattern": "[0-9]+"}, ["a1b"], ["abc"]),
+    ("minItems", {"type": "array", "minItems": 2}, [[1, 2]], [[1]]),
+    ("maxItems", {"type": "array", "maxItems": 1}, [[], [1]], [[1, 2]]),
+    (
+        "uniqueItems",
+        {"type": "array", "uniqueItems": True},
+        [[1, 2], [{"a": 1}, {"a": True}], [1, True]],
+        [[1, 1.0], [{"a": 1, "b": 2}, {"b": 2, "a": 1}]],
+    ),
+    ("untyped keyword", {"minLength": 2}, ["ab", 1, None], ["a"]),
+    ("description only", {"description": "a named type"}, [None, 1, {"a": [1]}], []),
+    ("true", True, [None, 1], []),
+    ("false", False, [], [None, 1]),
+    ("empty", {}, [None, {"a": 1}], []),
+]
+
+#: Schemas both validators refuse to read at all.
+REFUSED: list[tuple[str, Any]] = [
+    ("unknown type", {"type": "date"}),
+    ("foreign $ref", {"$ref": "https://example.com/s.json"}),
+    ("cyclic $ref", {"$ref": "#/$defs/A", "$defs": {"A": {"$ref": "#/$defs/A"}}}),
+    ("missing $ref target", {"$ref": "#/$defs/Nope"}),
+    ("not a schema", 3),
+    ("pattern neither engine compiles", {"type": "string", "pattern": "(unclosed"}),
+]
+
+#: Patterns only one engine compiles: refused, by name, by the other.
+PYTHON_ONLY_PATTERN = "(?P<code>[A-Z]+)"  # JS spells a named group (?<code>...)
+JS_ONLY_PATTERN = "(?<code>[A-Z]+)"
+
+
+def _schema_cases(schema: Any) -> list[tuple[str, Any]]:
+    """Values for an example schema: :func:`_corpus` for an object, else three."""
+    example = _example(schema, schema, full=True)
+    if isinstance(example, dict) and isinstance(schema, dict) and schema.get("properties"):
+        return _corpus(schema)
+    return [("example", example), ("wrong type", [example]), ("null", None)]
+
+
+def _cross_corpus() -> list[tuple[str, Any, Any]]:
+    """``(label, schema, value)`` for every schema the examples declare, and :data:`RULES`."""
+    corpus: list[tuple[str, Any, Any]] = []
+    for label, node in JUDGES:
+        assert node.signature_spec is not None
+        for side in ("input_schema", "output_schema"):
+            schema = getattr(node.signature_spec, side)
+            corpus += [(f"{label} {side} {c}", schema, v) for c, v in _corpus(schema)]
+    for rel, pipeline in PIPELINES:
+        for node in pipeline.nodes:
+            if node.kind is NodeKind.AGENT_LOOP:
+                schema = agent_loop_output(node).schema
+            elif node.kind is NodeKind.HITL_GATE:
+                schema = gate_answer_schema(node)
+            else:
+                continue
+            if schema is not None:
+                label = f"{rel}:{node.id}"
+                corpus += [(f"{label} {c}", schema, v) for c, v in _schema_cases(schema)]
+    for name, schema, cases in PROBES:
+        corpus += [(f"probe {name} {c}", schema, v) for c, v in cases]
+    for rule, schema, good, bad in RULES:
+        corpus += [(f"{rule} accepts {v!r}", schema, v) for v in good]
+        corpus += [(f"{rule} rejects {v!r}", schema, v) for v in bad]
+    # Round-trip through JSON so both sides read exactly the same input.
+    loaded: list[tuple[str, Any, Any]] = json.loads(json.dumps(corpus))
+    return loaded
+
+
+CROSS = _cross_corpus()
+
+_TS_MAIN = """
+import { readFileSync } from "node:fs";
+
+const cases = JSON.parse(readFileSync(0, "utf8")) as [string, unknown, unknown][];
+const out = cases.map(([, schema, value]) => {
+    try {
+        return schemaErrors(schema, value, "answer");
+    } catch {
+        return null;
+    }
+});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _paths(errors: list[str]) -> list[str]:
+    """Where each error is: the part both languages word the same way."""
+    return sorted(e.split(": ", 1)[0] for e in errors)
+
+
+def _python_verdict(schema: Any, value: Any) -> list[str] | None:
+    """The sorted error paths, ``[]`` when valid, None when the schema is refused."""
+    try:
+        return _paths(schema_errors(schema, value, "answer"))
+    except ValueError:
+        return None
+
+
+def _ts_verdicts(tmp: Path, cases: list[tuple[str, Any, Any]]) -> list[list[str] | None]:
+    """The same, from ``SCHEMA_ERRORS_TS`` run by real node (which strips the types)."""
+    node = shutil.which("node")
+    assert node, "node is required to run the TS validator"
+    script = tmp / "schema_parity.mts"
+    script.write_text(SCHEMA_ERRORS_TS + _TS_MAIN, encoding="utf-8")
+    done = subprocess.run(
+        [node, str(script)], input=json.dumps(cases), capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return [None if e is None else _paths(e) for e in json.loads(done.stdout)]
+
+
+def test_every_rule_has_both_halves_and_the_corpus_is_not_degenerate() -> None:
+    """Python agrees with each rule's own labels, and the corpus both accepts
+    and rejects plenty, so a TS validator that said yes (or no) to everything
+    could not pass the parity test below."""
+    for rule, schema, good, bad in RULES:
+        assert good or bad, rule
+        for value in good:
+            assert schema_errors(schema, value) == [], (rule, value)
+        for value in bad:
+            assert schema_errors(schema, value), (rule, value)
+    for _, schema in REFUSED:
+        with pytest.raises(ValueError):
+            schema_errors(schema, "x")
+    verdicts = [_python_verdict(schema, value) for _, schema, value in CROSS]
+    assert sum(1 for v in verdicts if v) >= 200
+    assert sum(1 for v in verdicts if v == []) >= 200
+
+
+@pytest.mark.slow
+def test_python_and_ts_reach_the_same_verdicts(tmp_path: Path) -> None:
+    cases = CROSS + [(f"refused {name}", schema, "x") for name, schema in REFUSED]
+    theirs = _ts_verdicts(tmp_path, cases)
+    differ = [
+        (label, ours, ts)
+        for (label, schema, value), ts in zip(cases, theirs, strict=True)
+        if (ours := _python_verdict(schema, value)) != ts
+    ]
+    assert not differ, differ[:10]
+
+
+def test_a_pattern_python_cannot_compile_is_refused_by_name() -> None:
+    schema = {"type": "string", "pattern": JS_ONLY_PATTERN}
+    with pytest.raises(ValueError, match="pattern '\\(\\?<code>.*Python can compile"):
+        schema_errors(schema, "ABC", "output.code")
+    assert schema_errors({"type": "string", "pattern": PYTHON_ONLY_PATTERN}, "ABC") == []
+
+
+def test_ir_load_refuses_a_pattern_python_cannot_compile() -> None:
+    """At load, not at the first answer: every judge, node and input schema."""
+    bad = {
+        "type": "object",
+        "properties": {"code": {"anyOf": [{"type": "string", "pattern": "(unclosed"}]}},
+    }
+    with pytest.raises(pydantic.ValidationError, match="Python can compile"):
+        Node.model_validate(
+            {
+                "id": "probe",
+                "kind": "llm_judge",
+                "description": "d",
+                "signature_spec": {"prompt": "p", "input_schema": {}, "output_schema": bad},
+            }
+        )
+    with pytest.raises(pydantic.ValidationError, match="Python can compile"):
+        Node.model_validate(
+            {
+                "id": "probe",
+                "kind": "pure_function",
+                "description": "d",
+                "impl": "extracted/p.py:p",
+                "output_schema": bad,
+            }
+        )
+    # A property that is merely *named* pattern is not a pattern.
+    named = {"type": "object", "properties": {"pattern": {"type": "string"}}}
+    Node.model_validate(
+        {
+            "id": "probe",
+            "kind": "llm_judge",
+            "description": "d",
+            "signature_spec": {"prompt": "p", "input_schema": {}, "output_schema": named},
+        }
+    )
+
+
+@pytest.mark.slow
+def test_a_pattern_javascript_cannot_compile_is_refused_by_name(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    assert node, "node is required to run the TS validator"
+    python_only = json.dumps({"type": "string", "pattern": PYTHON_ONLY_PATTERN})
+    js_only = json.dumps({"type": "string", "pattern": JS_ONLY_PATTERN})
+    script = tmp_path / "pattern.mts"
+    script.write_text(
+        SCHEMA_ERRORS_TS
+        + "\ntry {\n"
+        + f'    schemaErrors({python_only}, "ABC", "output.code");\n'
+        + '    console.log("accepted");\n'
+        + "} catch (err) {\n"
+        + "    console.log((err as Error).message);\n"
+        + "}\n"
+        + f'console.log(JSON.stringify(schemaErrors({js_only}, "ABC")));\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    refused, accepted = done.stdout.strip().splitlines()
+    assert refused.startswith(
+        'output.code: the schema\'s pattern "(?P<code>[A-Z]+)" is not a regular '
+        "expression JavaScript can compile ("
+    ), refused
+    assert accepted == "[]"

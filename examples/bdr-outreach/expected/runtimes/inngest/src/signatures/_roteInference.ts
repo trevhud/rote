@@ -32,6 +32,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
+import { schemaErrors } from "./_roteSchema";
+
 /** A tool the agent may call, in the one currency all lanes accept. */
 export interface BoundTool {
     name: string;
@@ -102,10 +104,12 @@ interface LaneAnswer {
     iterations: number | null;
 }
 
-/** The submit tool for a declared output, recording what the agent sends. */
+/** The submit tool for a declared output, recording what the agent sends
+ *  (and, in `refused`, the errors of each submission it turned down). */
 function submitTool(
     outputSchema: Record<string, unknown>,
     submitted: Record<string, unknown>[],
+    refused: string[][],
     strict: boolean,
 ): BoundTool {
     return {
@@ -116,69 +120,23 @@ function submitTool(
             "task is done; the next pipeline steps read these fields.",
         parameters: outputSchema,
         run: async (args: Record<string, unknown>) => {
+            // Checked here, so the model can fix a bad answer in this loop
+            // instead of failing the node and rerunning the whole loop (its
+            // writes included) on a durable retry. Same text as the Python
+            // helper's _rejected_submission.
+            const errors = schemaErrors(outputSchema, args, "output");
+            if (errors.length > 0) {
+                refused.push(errors);
+                return (
+                    "Not recorded: this output breaks the step's schema: " +
+                    errors.join("; ") +
+                    `. Fix those fields and call ${SUBMIT_TOOL} again.`
+                );
+            }
             submitted.push(args);
             return "Recorded. The step is complete; end your turn.";
         },
     };
-}
-
-/**
- * Where `value` breaks `schema`: types, required keys, extra keys. The
- * subset rote's agent-loop schemas use, the same as the Python twin's
- * `_schema_errors`; a description-only schema (a named type the IR never
- * defines) accepts anything.
- */
-function schemaErrors(schema: Record<string, unknown>, value: unknown, path: string): string[] {
-    const anyOf = schema.anyOf as Record<string, unknown>[] | undefined;
-    if (anyOf) {
-        return anyOf.some((option) => schemaErrors(option, value, path).length === 0)
-            ? []
-            : [`${path}: matches none of its allowed types`];
-    }
-    const allowed = schema.enum as unknown[] | undefined;
-    if (allowed && !allowed.includes(value)) {
-        return [`${path}: ${JSON.stringify(value)} is not one of ${JSON.stringify(allowed)}`];
-    }
-    const kind = schema.type as string | undefined;
-    if (kind === undefined) return [];
-    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
-    const ok: Record<string, boolean> = {
-        string: typeof value === "string",
-        integer: typeof value === "number" && Number.isInteger(value),
-        number: typeof value === "number",
-        boolean: typeof value === "boolean",
-        null: value === null,
-        object: isObject,
-        array: Array.isArray(value),
-    };
-    if (kind in ok && !ok[kind]) {
-        const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-        return [`${path}: expected ${kind}, got ${got}`];
-    }
-    const errors: string[] = [];
-    if (kind === "object") {
-        const record = value as Record<string, unknown>;
-        const properties = (schema.properties as Record<string, Record<string, unknown>>) ?? {};
-        for (const key of (schema.required as string[] | undefined) ?? []) {
-            if (!Object.prototype.hasOwnProperty.call(record, key)) {
-                errors.push(`${path}: missing key '${key}'`);
-            }
-        }
-        for (const [key, item] of Object.entries(record)) {
-            if (key in properties) {
-                errors.push(...schemaErrors(properties[key], item, `${path}.${key}`));
-            } else if (schema.additionalProperties === false) {
-                errors.push(`${path}: unexpected key '${key}'`);
-            }
-        }
-    }
-    const items = schema.items as Record<string, unknown> | undefined;
-    if (kind === "array" && items) {
-        (value as unknown[]).forEach((item, index) => {
-            errors.push(...schemaErrors(items, item, `${path}[${index}]`));
-        });
-    }
-    return errors;
 }
 
 /** The final answer, validated against the declared output on every lane. */
@@ -187,9 +145,22 @@ function declaredOutput(
     provider: Provider,
     outputSchema: Record<string, unknown>,
     answer: unknown,
+    refused: string[][],
 ): Record<string, unknown> {
     const prefix = `agent loop ${nodeId} (${provider}) did not hand back its declared output: `;
-    if (answer === null || answer === undefined) {
+    const missing = answer === null || answer === undefined;
+    const errors = missing ? [] : schemaErrors(outputSchema, answer, "output");
+    const answers = errors.length > 0 ? [...refused, errors] : refused;
+    const last = answers.at(-1);
+    if (refused.length > 0 && (missing || errors.length > 0) && last !== undefined) {
+        // Every answer broke the schema (same text as the Python helper).
+        throw new Error(
+            prefix +
+                `every answer it gave (${answers.length}) broke the step's schema; ` +
+                `the last: ${last.join("; ")}`,
+        );
+    }
+    if (missing) {
         throw new Error(
             prefix +
                 (provider === "workers-ai"
@@ -197,7 +168,6 @@ function declaredOutput(
                     : `it never called ${SUBMIT_TOOL}, even when asked once more`),
         );
     }
-    const errors = schemaErrors(outputSchema, answer, "output");
     if (errors.length > 0) throw new Error(prefix + errors.join("; "));
     return answer as Record<string, unknown>;
 }
@@ -568,12 +538,14 @@ export async function runAgentLoop(opts: {
         opts.withheld ?? {},
     );
     const submitted: Record<string, unknown>[] | null = outputSchema ? [] : null;
+    const refused: string[][] = [];
     const tools = submitted
         ? [
               ...opts.tools,
               submitTool(
                   outputSchema as Record<string, unknown>,
                   submitted,
+                  refused,
                   opts.outputStrict ?? false,
               ),
           ]
@@ -608,6 +580,6 @@ export async function runAgentLoop(opts: {
             `turn(s) on the ${ran.provider} lane`,
     );
     if (outputSchema === null) return { result: ran.answer as string };
-    const declared = declaredOutput(opts.nodeId, ran.provider, outputSchema, ran.answer);
+    const declared = declaredOutput(opts.nodeId, ran.provider, outputSchema, ran.answer, refused);
     return opts.unwrapKey ? declared[opts.unwrapKey] : declared;
 }

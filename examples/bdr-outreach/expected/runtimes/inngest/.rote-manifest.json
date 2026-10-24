@@ -18,9 +18,10 @@
     "src/index.ts": "e362bc56c1ea4d3d48f0efd9befb08b713d969cce7061b43b224f9f91d035dc1",
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
     "src/inngest/pipeline.ts": "484f5f03fdc42c26b89bf19dfe14797bfc5811de571541852e7fbd6182a55263",
-    "src/signatures/_roteInference.ts": "bc0e000370b340520517aa1b891e430021e5c8b66df03cb4aa32c9e097f9e18a",
-    "src/signatures/personalize_email.ts": "62183e37d17b9204fc08821156cc5b9766bc18cb84c32c59489af565f96663ec",
-    "src/signatures/vet_contact.ts": "3198a3a13a598524a2a44fafdd59cb1a6878eaf9002a915a7945b64dcd026037",
+    "src/signatures/_roteInference.ts": "790f29b716d13edce912be92bc3f5bcfa42560408ee49dbff83c2e182aa8811e",
+    "src/signatures/_roteSchema.ts": "b176eb2b1d3e854eb06d7e534343d8f965aca8d8c8fbedb9b5f9addc2c0d2f59",
+    "src/signatures/personalize_email.ts": "235139e292e0ad8aaf4c0c534a55ff24bf90bf1a07ac74e3182acb0e1a2bed2f",
+    "src/signatures/vet_contact.ts": "d312680ff247af921792501495fc15e1e79626f5dd03cc3b2951e2c8c05e1b53",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }

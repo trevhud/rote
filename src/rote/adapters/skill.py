@@ -18,9 +18,9 @@ Output layout::
             run.py                  # entry point (PEP 723 header): argv -> _rote_skill.main
             plan.json               # rote.plan.build_plan, live: data, no code
             _rote_skill.py          # verbatim rote.skill_target._driver
-            _rote_schema.py         # verbatim rote.plan._schema
+            _rote_inference.py      # verbatim rote.inference._runtime_helper: the schema
+                                    # validator, and the judges under --judges helper
             _rote_mcp.py            # verbatim rote.mcp._runtime_helper, when a step calls MCP
-            _rote_inference.py      # verbatim rote.inference._runtime_helper, --judges helper
             extracted/<module>.py   # the compile's real implementations
 
 There is no generated workflow code. The driver interprets ``plan.json``,
