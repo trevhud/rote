@@ -29,7 +29,9 @@ from rote.interact.prompter import PromptRequired
 #: The exit code a run that stopped for a missing answer or consent returns.
 EXIT_ACTION_REQUIRED = 2
 
-Reason = Literal["missing_answer", "confirmation_required", "authorization_pending"]
+Reason = Literal[
+    "missing_answer", "confirmation_required", "authorization_pending", "person_required"
+]
 
 
 def next_command(argv: Sequence[str], extra: Sequence[str]) -> str:
@@ -64,6 +66,35 @@ def action_required(
         "next": [{"command": command}],
         **extra,
     }
+
+
+class PersonRequired(RuntimeError):
+    """A plan only a person at a terminal may approve: no flag stands in for them.
+
+    For consent that guards against the agent itself (letting a compiled
+    skill's tools write, which bypasses the client's per-tool prompts):
+    ``--yes`` is exactly what an agent would pass, so it is not enough."""
+
+    def __init__(self, message: str, command: str, plan: Any = None) -> None:
+        super().__init__(message)
+        self.command = command
+        self.plan = plan
+
+
+def person_required(error: PersonRequired) -> dict[str, Any]:
+    """The ``--json`` object for a run that stopped for :class:`PersonRequired`."""
+    payload: dict[str, Any] = {
+        "ok": False,
+        "status": "action_required",
+        "reason": "person_required",
+        "message": str(error),
+        "missing": [],
+        "next": [{"command": error.command, "who": "the user, in their own terminal"}],
+    }
+    if error.plan is not None:
+        # No flag applies this plan, so it names none.
+        payload["plan"] = {**error.plan.to_dict(), "needs": []}
+    return payload
 
 
 def authorization_pending(

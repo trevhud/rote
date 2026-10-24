@@ -1706,9 +1706,10 @@ def main(
 
     ``allow_writes`` is the user's consent to write tools, and it is a
     parameter, never read from the environment: the agent's shell sets the
-    environment. The caller that holds the consent record (``rote skill
-    run``, from the trust registry) passes it; until that exists every
-    write tool is refused before it is called. For the same reason the
+    environment. ``rote skill run`` passes it, from the consent ``rote
+    skill trust --allow-writes`` recorded for this plan
+    (:mod:`rote.skill_target.launch`); ``run.py`` never does, so a run
+    started without rote refuses every write tool before calling it. For the same reason the
     read-only server list the MCP helper honors is never taken from the
     environment: it is rebuilt from the user's own declarations, the
     servers ``rote mcp add --read-only`` registered (:func:`_read_only_servers`).

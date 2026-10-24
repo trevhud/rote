@@ -7,7 +7,7 @@ apps for workflows parked on a ``rote:auth:<server>`` topic and releases
 them after a successful authentication.
 
 The file is plain JSON (``{"version": 1, "apps": [{path, runtime,
-pipeline[, name]}]}``), deduplicated by resolved path — re-emitting to the same
+pipeline[, name][, trust]}]}``), deduplicated by resolved path — re-emitting to the same
 directory updates its entry rather than appending. Entries can go stale
 (directories get moved or deleted); consumers must treat a missing
 directory as skippable, not fatal. Override the location with
@@ -17,6 +17,15 @@ directory as skippable, not fatal. Override the location with
 name: a compiled skill (``--runtime skill``) is recorded under its SKILL.md
 ``name``, which ``rote skill run <name>`` resolves (bdr-outreach's pipeline
 is ``bdr-campaign``). Other runtimes record none.
+
+``trust`` is a compiled skill's install record (``rote skill install``,
+``rote skill trust``; :mod:`rote.skill_target.trust`): the hash of every
+file the user vouched for, the state paths the install was made against,
+and any write consent. Emit never writes it. A re-emit to the same path
+keeps it, so the next ``rote skill run`` sees what changed and refuses
+until the user trusts it again. Every write keeps every other entry's
+record, which is why the file is parsed and rendered by one pair
+(:func:`parse_apps`, :func:`render_apps`).
 """
 
 from __future__ import annotations
@@ -25,8 +34,9 @@ import contextlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from rote.xdg import data_home
 
@@ -40,6 +50,8 @@ class RegisteredApp:
     pipeline: str
     #: A compiled skill's name (see the module docstring); None otherwise.
     name: str | None = None
+    #: A compiled skill's install record (see the module docstring).
+    trust: dict[str, Any] | None = None
 
 
 def apps_path() -> Path:
@@ -49,50 +61,74 @@ def apps_path() -> Path:
     return data_home() / "rote" / "apps.json"
 
 
-def registered_apps() -> list[RegisteredApp]:
-    path = apps_path()
-    if not path.is_file():
+def parse_apps(text: str | None) -> list[RegisteredApp]:
+    """The entries in a registry file's ``text`` (None: no file yet)."""
+    if text is None:
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    entries = data.get("apps", [])
+    data = json.loads(text)
+    entries = data.get("apps", []) if isinstance(data, dict) else []
     apps: list[RegisteredApp] = []
     if isinstance(entries, list):
         for entry in entries:
             if isinstance(entry, dict) and entry.get("path"):
+                trust = entry.get("trust")
                 apps.append(
                     RegisteredApp(
                         path=Path(str(entry["path"])),
                         runtime=str(entry.get("runtime", "")),
                         pipeline=str(entry.get("pipeline", "")),
                         name=str(entry["name"]) if entry.get("name") else None,
+                        trust=trust if isinstance(trust, dict) else None,
                     )
                 )
     return apps
 
 
-def _entry(app: RegisteredApp) -> dict[str, str]:
-    entry = {"path": str(app.path), "runtime": app.runtime, "pipeline": app.pipeline}
+def registered_apps() -> list[RegisteredApp]:
+    path = apps_path()
+    if not path.is_file():
+        return []
+    return parse_apps(path.read_text(encoding="utf-8"))
+
+
+def _entry(app: RegisteredApp) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "path": str(app.path),
+        "runtime": app.runtime,
+        "pipeline": app.pipeline,
+    }
     if app.name:
         entry["name"] = app.name
+    if app.trust is not None:
+        entry["trust"] = app.trust
     return entry
+
+
+def render_apps(apps: list[RegisteredApp]) -> str:
+    """The registry file's text for ``apps``, exactly as :func:`record_app` writes it."""
+    return json.dumps({"version": 1, "apps": [_entry(a) for a in apps]}, indent=2) + "\n"
 
 
 def record_app(
     app_dir: Path | str, runtime: str, pipeline: str, *, name: str | None = None
 ) -> None:
-    """Record (or refresh) an emitted app directory in the registry."""
+    """Record (or refresh) an emitted app directory in the registry.
+
+    A compiled skill's install record at the same path is kept (see the
+    module docstring)."""
     resolved = Path(app_dir).resolve()
-    apps = [a for a in registered_apps() if a.path != resolved]
-    apps.append(RegisteredApp(path=resolved, runtime=runtime, pipeline=pipeline, name=name))
+    existing = registered_apps()
+    kept = next((a.trust for a in existing if a.path == resolved and a.runtime == runtime), None)
+    apps = [a for a in existing if a.path != resolved]
+    fresh = RegisteredApp(path=resolved, runtime=runtime, pipeline=pipeline, name=name)
+    apps.append(replace(fresh, trust=kept))
 
     path = apps_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = {"version": 1, "apps": [_entry(a) for a in apps]}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".apps-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(doc, f, indent=2)
-            f.write("\n")
+            f.write(render_apps(apps))
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):

@@ -2545,6 +2545,48 @@ changed (`__pycache__` and `node_modules` excepted). When an adapter
 change is intended, regenerate with the `scripts/isolated-rote emit`
 command the failing snapshot test prints, and commit the result.
 
+### `rote skill run` runs only what the user installed, in an allowlisted environment
+
+A Claude Code allow rule pre-approves `rote skill run <name> *`, so the
+command must approve exactly the files the user vouched for
+(`rote.skill_target.trust`, `launch`, `commands`; design in
+`docs/design/compiled-skill-target.md` section 2). Things to keep:
+
+- **Every file is hashed, and anything else is refused.** `rote skill
+  install` records the hash of every file in the dir (after checking it
+  matches `.rote-manifest.json`), in the app registry entry's `trust`. A
+  run refuses a changed, new, missing, symlinked or special file, and
+  `__pycache__` counts as new: an unchecked `.pyc` with the source's mtime
+  shadows a listed `.py`. So the driver runs with `-B`, and a regression
+  shows up as the second run of a skill being refused.
+- **The env is an allowlist, never a scrub list** (`launch.child_env`).
+  Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
+  next command every block prints), base URLs, `XDG_*`, proxies and CA
+  bundles are dropped. Header-template variables pass only when the bound
+  registry names them for this plan's servers.
+- **State paths are bound to the install, not merely read.** The MCP
+  registry, login store and run dir each widen trust when forged (a server
+  declared read-only, someone else's login, a gate nobody answered).
+  Their overrides stay, for tests and `isolated-rote`. A run whose paths
+  resolve elsewhere than at install is refused. `ROTE_APPS_PATH` is the
+  root and is not bound: whoever sets rote's env can set `PYTHONPATH` too.
+- **Write consent is a driver parameter, from the registry only.** The
+  bootstrap (`launch.BOOTSTRAP`) passes `allow_writes` to `main`. Never add
+  a flag or variable for it: `uv run scripts/run.py` would take it too.
+  `rote skill trust --allow-writes` needs a person at a terminal
+  (`PersonRequired`, exit 2), and the consent is bound to the plan's hash.
+- **The allow rule is its own Action, never `--yes`**
+  (`--save-allow-rule`), written only to `<project>/.claude/settings.local.json`,
+  the one file measured to work. Tests always pass `--claude-project
+  <tmp>`, because the default target is the cwd, which under pytest is
+  the repo.
+- **`record_app` keeps every entry's `trust`.** It used to rebuild entries
+  from four fields, which would have dropped every install record on any
+  emit.
+
+Regressions: `tests/test_skill_commands.py`, every assertion verified by a
+mutation.
+
 ### Repo maintenance runs rote through `scripts/isolated-rote`
 
 A plain `rote emit` appends its output dir to the developer's real
