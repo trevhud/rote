@@ -212,6 +212,34 @@ def test_an_agent_loop_carries_its_tools_cap_and_output_contract() -> None:
     assert "bindings" not in enrich and enrich["fan_param"] is None
     # Loop-body sub-nodes run inside the loop, never as top-level steps.
     assert not set(node.loop_body or ()) & set(steps)
+    # The agent calls the code body with its payload, constants left out
+    # (they are merged last); the judge body's arguments are its input schema.
+    assert enrich["tool_schema"] == {
+        "type": "object",
+        "properties": {
+            "contacts": {
+                "type": "array",
+                "items": enrich["tool_schema"]["properties"]["contacts"]["items"],
+            }
+        },
+        "required": ["contacts"],
+    }
+    assert not set(enrich_node.constants or {}) & set(enrich["tool_schema"]["properties"])
+    assert vet["tool_schema"] == vet_spec.input_schema
+    # The task is the loop lanes' prompt, split where the inputs go; the
+    # session answers the judge body, so only the code body is a tool.
+    from rote.inference._runtime_helper import _agent_task_prompt
+
+    head, tail = loop["task"]
+    assert head + "INPUTS" + tail == _agent_task_prompt(
+        description=node.description,
+        task="INPUTS",
+        termination=node.termination.condition if node.termination else None,
+        local_tool_names=["enrich_contact_batch"],
+        submit="schema",
+    )
+    helper = _steps(build_plan(pipeline, mcp="live", judges="helper"))["lead_generation_loop"]
+    assert "available to you as tools: enrich_contact_batch, vet_contact" in helper["task"][1]
 
 
 def test_a_loop_body_step_the_driver_cannot_run_is_refused() -> None:

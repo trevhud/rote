@@ -444,15 +444,43 @@ def test_an_identity_rote_cannot_use_is_refused(tmp_path: Path, front: str, reas
 
 
 @pytest.mark.parametrize(
-    ("compiled", "node"), [(BDR, "target_research"), (INVOICE_PUSH, "process_invoices_loop")]
+    ("compiled", "stubs"),
+    [
+        (EXAMPLES / "bdr-outreach" / "expected", "scripts/extracted/zoominfo.py"),
+        (EXAMPLES / "invoice-push" / "expected", "scripts/extracted/browser.py"),
+    ],
 )
-def test_an_agent_loop_is_refused_at_emit_naming_its_node(
-    tmp_path: Path, compiled: Path, node: str
+def test_a_pipeline_with_agent_loops_emits_and_is_refused_only_for_its_stubs(
+    tmp_path: Path, compiled: Path, stubs: str
 ) -> None:
-    with pytest.raises(PlanError, match=f"step {node} is an agent loop"):
+    """An agent loop is a LOOP block now. These examples' vendor code is still
+    stubs, and that is the refusal, named; with --allow-stubs they emit."""
+    pipeline = load_pipeline(compiled / "pipeline.yaml")
+    assert refusal(pipeline) is None
+    with pytest.raises(ValueError, match="would still be stubs") as e:
+        emit(compiled, tmp_path / "refused")
+    assert stubs in str(e.value) and "agent loop" not in str(e.value)
+    emit(compiled, tmp_path / "out", allow_stubs=True)
+    body = (tmp_path / "out" / "SKILL.md").read_text(encoding="utf-8")
+    assert "- LOOP: yours to do. Do the task yourself with only the tools it lists" in body
+    # A loop's tools are MCP tools, so the MCP helper ships with the skill.
+    assert (tmp_path / "out" / "scripts" / "_rote_mcp.py").is_file()
+    plan = json.loads((tmp_path / "out" / "scripts" / "plan.json").read_text(encoding="utf-8"))
+    loops = [s["id"] for s in plan["steps"] if s["kind"] == "loop"]
+    assert loops == [n.id for n in pipeline.nodes if n.kind == "agent_loop" and n.id in loops]
+    assert loops, "the example has an agent loop"
+
+
+@pytest.mark.parametrize("compiled", [BDR, INVOICE_PUSH])
+def test_an_older_compiles_loops_are_refused_only_for_its_impls_constants(
+    tmp_path: Path, compiled: Path
+) -> None:
+    """The committed 2026-07 compiles hard-code their constants, which every
+    runtime now passes as keyword arguments: that, not the loop, refuses them."""
+    with pytest.raises(ValueError, match="do not accept their node's constants"):
         emit(compiled, tmp_path / "out")
-    assert not (tmp_path / "out").exists()
-    assert refusal(load_pipeline(compiled / "pipeline.yaml")) is not None
+    assert not (tmp_path / "out" / "SKILL.md").exists()  # refused before any file
+    assert refusal(load_pipeline(compiled / "pipeline.yaml")) is None
 
 
 def test_a_legacy_signature_judge_is_refused_naming_its_node(tmp_path: Path) -> None:
@@ -535,7 +563,9 @@ def test_the_compiles_dry_emit_reports_what_the_skill_runtime_refuses(tmp_path: 
         EmitTarget("skill")
     target = EmitTarget("skill", skill_dir=EXAMPLES / "invoice-push" / "skill")
     (finding,) = emit_findings(load_pipeline(INVOICE_PUSH / "pipeline.yaml"), INVOICE_PUSH, target)
-    assert finding.kind == "emit_refused" and "is an agent loop" in finding.message
+    # The loop runs now; what refuses this older compile is its hard-coded constants.
+    assert finding.kind == "emit_refused" and "ConstantsNotAccepted" in finding.message
+    assert "agent loop" not in finding.message
     # Stubs are the compile's documented path, reported elsewhere: the dry
     # emit does not send them back for the agent to write from memory.
     ok = EmitTarget("skill", skill_dir=EXAMPLES / "deal-monitor" / "skill")
