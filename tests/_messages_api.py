@@ -82,8 +82,27 @@ def format_schema_problem(schema: Any, path: str = "#") -> str | None:
     return None
 
 
-def api_rejection(payload: dict[str, Any]) -> str | None:
-    """The 400 message the real API returns for ``payload``, or None."""
+#: Sampling parameters API version 2026-10-21 removed. Any of them, even
+#: at its default value, is a 400 there (the migration guide,
+#: platform.claude.com/docs/en/api/migration-2026-10-21#sampling-parameters).
+#: Documented, not measured: no inference was spent on it, so the stub's
+#: message text is its own, not the API's.
+SAMPLING_PARAMETERS = ("temperature", "top_p", "top_k")
+
+#: The API version anthropic 2.x and @anthropic-ai/sdk 1.x send.
+SAMPLING_FREE_API_VERSION = "2026-10-21"
+
+
+def api_rejection(payload: dict[str, Any], api_version: str | None = None) -> str | None:
+    """The 400 message the real API returns for ``payload``, or None.
+
+    ``api_version`` is the request's ``anthropic-version`` header.
+    """
+    sent = [name for name in SAMPLING_PARAMETERS if name in payload]
+    if sent and api_version == SAMPLING_FREE_API_VERSION:
+        return f"`{sent[0]}` is not supported in API version {api_version}"
+    if payload.get("model") == CURRENT_SONNET and payload.get("temperature", 1.0) != 1.0:
+        return "`temperature` is not supported on this model"
     choice = payload.get("tool_choice") or {}
     if payload.get("model") == CURRENT_SONNET and choice.get("type") in ("tool", "any"):
         return FORCED_TOOL_CHOICE_ERROR
@@ -106,7 +125,7 @@ def send_json(handler: BaseHTTPRequestHandler, body: dict[str, Any], status: int
 
 def reject_like_the_api(handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> bool:
     """Send the real API's 400 when it would refuse ``payload``; True if sent."""
-    message = api_rejection(payload)
+    message = api_rejection(payload, handler.headers.get("anthropic-version"))
     if message is None:
         return False
     send_json(
