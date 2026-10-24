@@ -2445,13 +2445,26 @@ suite bills someone on every push, gets slower as it grows, and fails
 for reasons that have nothing to do with the change under test. Both
 halves of the split are enforced, not just documented:
 
-- `tests/conftest.py::_no_inference_in_tests` scrubs every vendor
-  credential from the environment and makes a bare-name `shutil.which`
-  lookup of `claude` / `codex` return None. The second half is the one
-  that matters: `claude -p` authenticates from an OAuth session, so
-  having no API key is *not* protection — not finding the binary is.
-  Two DBOS e2e suites burned real subscription inference on every run
-  until it was caught by wall-clock timing.
+- `tests/conftest.py::pytest_configure` changes `os.environ` once, before
+  collection (`tests/_inference_guard.py`): every vendor credential
+  scrubbed, every `rote.isolation.STATE_PATHS` entry moved under a
+  session temp dir, and each PATH entry holding `claude` / `codex`
+  replaced by a mirror of that dir without them (so `node`, `uv` or
+  `rote` beside them still resolve). The PATH half is the one that
+  matters: `claude -p` authenticates from an OAuth session, so having
+  no API key is *not* protection. Not finding the binary is. Two DBOS
+  e2e suites burned real subscription inference on every run until it
+  was caught by wall-clock timing. It used to be a per-test
+  monkeypatch of `shutil.which`, and that leaked twice: a
+  `monkeypatch.undo()` removed it, and a child process never saw it, so
+  a test's `python -m rote compile` subprocess found `claude`, billed
+  $0.29 and wrote into the real app registry. Never move it back into a
+  per-test fixture, and never use a failing `claude` stub instead of the
+  mirror: a stub makes `which("claude")` succeed, which rote reads as
+  "available".
+- `conftest.pytest_runtest_call` fails (never skips) any test during
+  which a bare `claude` / `codex` resolves, in-process or from a child
+  shell, before and after its body.
 - `tests/test_no_inference_in_tests.py` verifies the guard itself,
   because its failure mode is silent spending that no other assertion
   would notice.
