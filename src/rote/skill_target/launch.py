@@ -8,13 +8,21 @@ The order is the point:
    variables, servers trusted read-only) against the record
    (:func:`rote.skill_target.trust.check`);
 3. start rote's interpreter with ``-I`` (no ``PYTHON*`` variable, no user
-   site, no cwd on the path), ``-B`` and :data:`BOOTSTRAP` as ``-c``, and hand
+   site, no cwd on the path) and :data:`BOOTSTRAP` as ``-c``, and hand
    it those checked bytes of ``scripts/`` (``plan.json`` included) over an
    inherited pipe (:func:`frame`). The driver and the extracted modules are
    imported from those bytes, so no copy of the running code exists on disk
    for a process of the same user to rewrite mid-run, and the skill dir is
    never read again. rote's site-packages stay on the path for fastmcp. The
    environment is built from an allowlist (:func:`child_env`).
+
+No ``-B``: the bootstrap compiles the skill's modules from the frame and
+never caches them, and no path finder ever looks in the skill dir, so no
+``__pycache__`` can land there for the next check to refuse. What ``-B``
+did stop was caching rote's own dependencies: on an install with no
+bytecode (``uv tool install`` and ``uvx`` compile none by default), every
+call recompiled fastmcp and the MCP SDK, measured 1.0 to 1.2 s against
+0.46 to 0.57 s cached, on every block.
 
 The driver is started through :data:`BOOTSTRAP`, not ``scripts/run.py``,
 because the write consent is a parameter of ``_rote_skill.main`` and nothing
@@ -74,7 +82,10 @@ from rote.skill_target.trust import SkillTrustError, Verified
 #: ``scripts/`` (base64), and a meta-path finder serves the driver and the
 #: extracted modules from those bytes. The skill's scripts dir is the modules'
 #: ``__file__`` (so errors name file:line), and its ``sys.path`` entry is
-#: disabled, so no import ever reads the dir. Stdlib only.
+#: disabled, so no import ever reads the dir. Stdlib only. The driver has
+#: journaled, released its claim and printed its block when ``main`` returns,
+#: so the child flushes and leaves with ``os._exit``: tearing down the
+#: interpreter with fastmcp loaded took ~85 ms of every block, for nothing.
 BOOTSTRAP = """\
 import base64, importlib.abc, importlib.util, json, os, sys
 from pathlib import Path
@@ -110,8 +121,11 @@ class Verified(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 sys.meta_path.insert(0, Verified())
 sys.path_importer_cache[root] = None
 from _rote_skill import main
-sys.exit(main(sys.argv[2:], Path(root), spec["command"], allow_writes=spec["allow_writes"],
-              skill=spec["skill"], plan_text=files["plan.json"].decode("utf-8")))
+status = main(sys.argv[2:], Path(root), spec["command"], allow_writes=spec["allow_writes"],
+              skill=spec["skill"], plan_text=files["plan.json"].decode("utf-8"))
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(status)
 """
 
 
@@ -201,7 +215,7 @@ def frame(verified: Verified, *, allow_writes: bool) -> bytes:
 
 
 def driver_argv(read_fd: int, argv: list[str]) -> list[str]:
-    return [sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(read_fd), *argv]
+    return [sys.executable, "-I", "-c", BOOTSTRAP, str(read_fd), *argv]
 
 
 def error_block(name: str, error: SkillTrustError) -> tuple[str, int]:
