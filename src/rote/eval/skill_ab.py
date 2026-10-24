@@ -1316,9 +1316,17 @@ def compile_for_eval(
         log(f"  {setting.flag[2:]}: {setting.value}, pinned by {caller} ({setting.why})")
     env = isolated_env(work / "compile-state")
     started = time.monotonic()
-    proc = subprocess.run(
-        [sys.executable, "-m", "rote", *argv], env=env, capture_output=True, text=True
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "rote", *argv], env=env, capture_output=True, text=True
+        )
+    except BaseException:
+        # Interrupted (Ctrl-C, a kill): the compile may have spent anything up
+        # to now, so it is recorded at its estimate, never as free.
+        ledger.record(
+            "compile", f"compile {_skill_name(skill_dir)} (interrupted)", None, estimate_usd
+        )
+        raise
     wall = time.monotonic() - started
     compiled = out_dir / "compiled"
     meta = read_compile_metrics(compiled)

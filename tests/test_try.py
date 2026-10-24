@@ -13,6 +13,7 @@ non-interactive path.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -229,13 +230,24 @@ def test_a_person_confirms_each_step_and_sees_the_result(
         ("confirm", "--yes"),
     ]
     assert len(world.compiles) == 1 and len(world.evals) == 1
-    assert "rote try docs-digest: reproduced 2 of 2 fields in every pair" in err
-    assert "Same result on all 2 fields expected to match exactly." in err
-    # Two trials: the original against itself is the noise floor (1 pair).
-    row = next(line for line in err.splitlines() if line.startswith("  reading_list "))
-    assert row.split() == ["reading_list", "drifts", "2", "of", "2", "pairs", "1", "of", "1"]
-    # Time and tokens on each side, and what was spent.
-    assert "wall time" in err and "input tokens" in err and "Spent $" in err
+    lines = err.splitlines()
+    start = lines.index(
+        "rote try docs-digest: Same answer: the compiled skill matched sections and "
+        "reading_list_size in both runs."
+    )
+    # Two trials: the original against itself is the noise floor.
+    assert lines[start + 1] == (
+        "For scale, the original skill matched its own other run(s) on 4 of 4 fields."
+    )
+    # The live-data fields, each with the reason it is not expected to match.
+    why = {f.name: f.why for f in demo.load_reference().fields}
+    assert f"  reading_list: matched in 2 of 2 runs. {why['reading_list']}" in lines
+    assert f"  repo_outline: matched in 2 of 2 runs. {why['repo_outline']}" in lines
+    # The metrics come last, before the spend and the next steps.
+    metrics = next(i for i, line in enumerate(lines) if line.startswith("How each ran"))
+    assert metrics > lines.index("Not expected to match (live data or model wording):")
+    assert any(line.startswith("  input tokens") for line in lines[metrics:])
+    assert "Spent $" in err
     result = json.loads((world.out / try_skill.RESULT_FILE).read_text())
     assert result["same_result"] is True and result["noise_pairs"] == 1
     # The installed skill is the compiled one, in the user's own registry.
@@ -292,7 +304,7 @@ def test_an_agent_stops_at_each_consent_point_and_resumes(
     assert len(world.compiles) == 1 and len(world.evals) == 1
     assert [s["state"] for s in payload["steps"]] == ["skipped", "skipped", "applied"]
     assert payload["same_result"] is True and payload["noise_pairs"] == 0
-    assert "not measured (1 trial)" in err
+    assert "Each skill ran once, so run-to-run variation was not measured." in err
 
 
 # ───────── resume ─────────
@@ -319,7 +331,7 @@ def test_an_interrupted_eval_resumes_without_recompiling_and_a_done_run_costs_no
     status, _, err = _confirmed(capsys, monkeypatch, *flags, yeses=0)
     assert status == 0
     assert err.count("done already") == 3
-    assert "reproduced 2 of 2 fields in every pair" in err
+    assert "Same answer: the compiled skill matched sections and reading_list_size" in err
     assert world.ledger() == spent and len(world.evals) == 1
 
 
@@ -362,8 +374,8 @@ def test_no_same_result_claim_from_zero_compared_fields(
     assert status == 1
     assert payload["headline"] == "no fields to compare exactly"
     assert (payload["same_result"], payload["ok"], payload["compared"]) == (False, False, 0)
-    assert "no same-result claim is made" in err
-    assert "Same result" not in err
+    assert "rote try docs-digest: No same-answer claim: none of the fields" in err
+    assert "Same answer" not in err
 
 
 def test_a_field_that_differs_is_named_with_both_values(
@@ -381,8 +393,11 @@ def test_a_field_that_differs_is_named_with_both_values(
     assert status == 1
     payload = json.loads(out)
     assert payload["headline"] == "reproduced 1 of 2 fields in every pair"
-    assert "differs: reading_list_size: original '4', compiled '5'" in err
-    assert "Not the same result" in err
+    assert "  reading_list_size: original '4', compiled '5'" in err
+    assert (
+        "Different answer: reading_list_size matched in 0 of 1 runs. sections matched in the "
+        "one run." in err
+    )
 
 
 def test_the_eval_is_capped_at_what_was_approved(
@@ -413,3 +428,63 @@ def test_a_long_difference_shows_where_the_two_part() -> None:
         "original '...1 Overview - 2 Setup', compiled '...1 Overview - 2 Getting Started'" in text
     )
     assert try_skill.difference(4, 5) == "original '4', compiled '5'"
+
+
+def test_yes_live_with_nobody_at_the_terminal_stops_at_the_install(
+    world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No terminal and no agent: --yes --live pays for the compile, but the
+    install relies on servers registered read-only, and only a person may
+    approve that."""
+    status, out, err = _cli(capsys, "docs-digest", "--yes", "--live", "--json")
+    payload = json.loads(out)
+    assert (status, payload["reason"]) == (2, "person_required")
+    assert "needs the user at a terminal" in err
+    assert len(world.compiles) == 1 and world.evals == []
+
+
+def test_small_token_counts_print_whole() -> None:
+    assert try_skill._num(640, "k") == "640"
+    assert try_skill._num(47400, "k") == "47.4k"
+
+
+def test_the_noise_floor_is_the_original_against_its_own_other_run(
+    world: World, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second original run's repo outline differs: that field drifts in one
+    pair and in the original against itself, and the rest hold."""
+    reference = demo.load_reference().skill_output
+    changed = dict(reference)
+    changed["digest"] = reference["digest"].replace("- 1 Overview", "- 1 Introduction")
+    paths = []
+    for index, output in enumerate((reference, changed)):
+        path = world.tmp / f"original-{index}.json"
+        path.write_text(json.dumps(output))
+        paths.append(str(path))
+    monkeypatch.setenv("FAKE_ORIGINAL_OUTPUTS", os.pathsep.join(paths))
+    monkeypatch.setenv("FAKE_COUNTER", str(world.tmp / "counter"))
+    status, _, err = _confirmed(capsys, monkeypatch, "docs-digest", "--trials", "2")
+    assert status == 0, err
+    lines = err.splitlines()
+    assert "For scale, the original skill matched its own other run(s) on 3 of 4 fields." in lines
+    why = {f.name: f.why for f in demo.load_reference().fields}
+    at = lines.index(f"  repo_outline: matched in 1 of 2 runs. {why['repo_outline']}")
+    assert lines[at + 1].strip().startswith("The original skill also differed from itself here")
+    assert f"  reading_list: matched in 2 of 2 runs. {why['reading_list']}" in lines
+    # One pair of original runs: the outline matched in neither.
+    result = json.loads((world.out / try_skill.RESULT_FILE).read_text())
+    noise = {f["name"]: (f["noise_matched"], f["noise_pairs"]) for f in result["fields"]}
+    assert noise == {
+        "sections": (1, 1),
+        "reading_list_size": (1, 1),
+        "reading_list": (1, 1),
+        "repo_outline": (0, 1),
+    }
+
+
+def test_a_run_that_failed_its_checks_is_not_a_same_answer() -> None:
+    fields = [{"name": "total", "expect": "equal", "matched": 1, "pairs": 1}]
+    assert try_skill.answer(fields, 1, ()).startswith("Same answer:")
+    assert try_skill.answer(fields, 1, ("compiled #1: bypassed the driver",)).startswith(
+        "Not confirmed: the compiled skill matched total in the one run, but a run failed"
+    )

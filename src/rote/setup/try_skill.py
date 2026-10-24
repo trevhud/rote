@@ -342,7 +342,8 @@ class CompileStep:
             f"compile ({_money(e.compile)}), then {s.trials} paired trial(s) of the original and "
             f"the compiled skill plus one control run per side ({_money(e.eval(s.trials))}, "
             "asked separately)",
-            f"estimates: {e.basis}; nothing runs past the high end you approve",
+            f"estimates: {e.basis}. No run starts that is estimated to cross the high end you "
+            "approve; one already running can go past it",
         ]
         if s.spent():
             notes.append(f"already spent by earlier rote try runs here: ${s.spent():.3f}")
@@ -593,6 +594,7 @@ def summarize(report: skill_ab.SubjectReport) -> dict[str, Any]:
         verdict = next(proof.verdict(c) for c in pairs if not c.same_result)
     return {
         "skill": report.subject.name,
+        "answer": answer(fields, len(pairs), problems),
         "headline": headline,
         "verdict": verdict,
         "ok": ok,
@@ -608,6 +610,43 @@ def summarize(report: skill_ab.SubjectReport) -> dict[str, Any]:
         },
         "problems": problems,
     }
+
+
+def _names(names: Sequence[str]) -> str:
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _runs(n: int) -> str:
+    return {1: "the one run", 2: "both runs"}.get(n, f"all {n} runs")
+
+
+def answer(fields: Sequence[Mapping[str, Any]], runs: int, problems: Sequence[str]) -> str:
+    """One sentence: did the compiled skill give the same answer? It names the
+    fields it rests on, the ones expected to match exactly, and never claims
+    a same answer from none of them."""
+    exact = [f for f in fields if f["expect"] == "equal"]
+    if not runs:
+        return "No answer to compare: no run of both skills finished."
+    if not exact:
+        return (
+            "No same-answer claim: none of the fields is expected to match exactly, so "
+            "there is nothing to compare."
+        )
+    missed = [f for f in exact if f["matched"] < f["pairs"]]
+    if missed:
+        held = [f["name"] for f in exact if f["matched"] == f["pairs"]]
+        each = _names(
+            [f"{f['name']} matched in {f['matched']} of {f['pairs']} runs" for f in missed]
+        )
+        return f"Different answer: {each}." + (
+            f" {_names(held)} matched in {_runs(runs)}." if held else ""
+        )
+    same = f"the compiled skill matched {_names([f['name'] for f in exact])} in {_runs(runs)}"
+    if problems:
+        return f"Not confirmed: {same}, but a run failed its checks (see Problems)."
+    return f"Same answer: {same}."
 
 
 def _flat(value: Any) -> str:
@@ -637,59 +676,71 @@ def _num(value: Any, unit: str = "") -> str:
     if unit == "$":
         return f"${float(value):.3f}"
     if unit == "k":
-        return f"{float(value) / 1000:.1f}k"
+        return f"{float(value):.0f}" if value < 1000 else f"{float(value) / 1000:.1f}k"
     if unit == "s":
         return f"{float(value):.1f} s"
     return f"{float(value):.0f}"
 
 
 def render(summary: Mapping[str, Any], *, name: str, next_steps: Sequence[str]) -> list[str]:
-    """The short result a person reads."""
-    lines = [f"rote try {name}: {summary['headline']}", ""]
-    width = max([len(f["name"]) for f in summary["fields"]] + [5])
-    header = f"  {'field'.ljust(width)}  {'expect':<8}{'compiled = original':<22}"
-    lines.append(header + "original = itself")
-    for f in summary["fields"]:
-        noise = (
-            f"{f['noise_matched']} of {f['noise_pairs']}"
-            if f["noise_pairs"]
-            else "not measured (1 trial)"
+    """The result a person reads: the answer first, in words, then what was not
+    expected to match and why, then what differed, then how each side ran."""
+    fields = summary["fields"]
+    runs = summary["pairs"]
+    lines = [f"rote try {name}: {summary['answer']}"]
+    if summary["noise_pairs"]:
+        steady = sum(1 for f in fields if f["noise_matched"] == f["noise_pairs"])
+        lines.append(
+            f"For scale, the original skill matched its own other run(s) on {steady} of "
+            f"{len(fields)} fields."
         )
-        matched = f"{f['matched']} of {f['pairs']} pairs"
-        lines.append(f"  {f['name'].ljust(width)}  {f['expect']:<8}{matched:<22}{noise}")
-    for f in summary["fields"]:
-        d = f["difference"]
-        if d is None:
-            continue
-        what = d["problem"] or difference(d["original"], d["compiled"])
-        lines.append(f"  {d['status']}: {f['name']}: {what}")
-        if f["noise_pairs"] and f["noise_matched"] < f["noise_pairs"]:
-            lines.append("    the original differs from itself here too: noise, not the compile")
+    else:
+        lines.append("Each skill ran once, so run-to-run variation was not measured.")
+    loose = [f for f in fields if f["expect"] != "equal"]
+    if loose:
+        lines += ["", "Not expected to match (live data or model wording):"]
+        for f in loose:
+            lines.append(
+                f"  {f['name']}: matched in {f['matched']} of {f['pairs']} runs. {f['why']}"
+            )
+            if f["noise_pairs"] and f["noise_matched"] < f["noise_pairs"]:
+                lines.append(
+                    "    The original skill also differed from itself here, so this is "
+                    "run-to-run variation, not the compile."
+                )
+    off = [f for f in fields if f["difference"] is not None]
+    if off:
+        lines += ["", "Where they differed (first run that did):"]
+        for f in off:
+            d = f["difference"]
+            lines.append(
+                f"  {f['name']}: " + (d["problem"] or difference(d["original"], d["compiled"]))
+            )
+    if summary["problems"]:
+        lines += ["", "Problems:"]
+        lines += [f"  {problem}" for problem in summary["problems"]]
     sides = summary["sides"]
     rows = (
-        ("wall time", "wall_seconds", "s"),
+        ("time", "wall_seconds", "s"),
         ("turns", "num_turns", ""),
         ("input tokens", "input_tokens", "k"),
         ("output tokens", "output_tokens", "k"),
         ("cost", "cost_usd", "$"),
     )
-    lines += ["", f"  {'':<16}{'original skill':<17}compiled skill"]
+    lines += [
+        "",
+        f"How each ran (median of {runs} run(s) each):",
+        f"  {'':<16}{'original skill':<17}compiled skill",
+    ]
     for label, key, unit in rows:
         lines.append(
             f"  {label:<16}{_num(sides['original'].get(key), unit):<17}"
             f"{_num(sides['compiled'].get(key), unit)}"
         )
-    lines.append(
-        f"  (medians of the trials that passed every check: original "
-        f"{summary['trials_ok']['original']}, compiled {summary['trials_ok']['compiled']})"
-    )
-    lines += ["", summary["verdict"]]
-    for problem in summary["problems"]:
-        lines.append(f"  problem: {problem}")
     if summary.get("spent_usd") is not None:
         lines.append(
             f"Spent ${summary['spent_usd']:.3f} in all: ${summary['eval_spent_usd']:.3f} on the "
-            f"trials (approved up to ${summary['eval_approved_usd']:.2f}), the rest on the compile."
+            f"runs (approved up to ${summary['eval_approved_usd']:.2f}), the rest on the compile."
         )
     if next_steps:
         lines += ["", "Next:"]
