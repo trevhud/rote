@@ -485,7 +485,8 @@ approve). Each `{name}` in `message_template` and each key of `input:`
 must be one of those bindings, or the IR is rejected: a `{vetted_count}`
 that no node computes reads to the person as literal braces. A gate that
 only collects data from the person (no upstream data to decide on)
-binds nothing.
+binds nothing. `notify.channel` and `notify.target` are optional: set
+them only when the skill names where the approval goes, never invent one.
 
 **The payload keys are the skill's nouns.** `output` names what the
 person provides, one key per item, and the keys come from the skill:

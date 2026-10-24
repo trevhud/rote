@@ -51,6 +51,7 @@ DECISION_FIELDS = (
     "tool_servers",
     "loop_body",
     "signal",
+    "notify",
     "timeout",
     "retry",
     "source",
@@ -250,7 +251,9 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
 #: skeleton leaves one unset, the skill gave nothing to decide from, and the
 #: text agent writes it from the skill's own wording (a loop's stop condition
 #: and bound). Restoring the skeleton's "unset" would ship a loop with no stop.
-_WHEN_STATED = ("termination",)
+#: A gate's ``notify`` is the structure pass's message when it wrote one; the
+#: rules path writes none, and the text agent's stays (the IR checks it).
+_WHEN_STATED = ("termination", "notify")
 
 
 def _decided_fields(skeleton_node: dict[str, Any]) -> tuple[str, ...]:

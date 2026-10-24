@@ -591,6 +591,30 @@ def _payload_keys(node: Node) -> set[str]:
     return set(node.output_keys)
 
 
+def _shown_tokens(node: Node) -> set[str]:
+    """The normalized name tokens of what a gate shows the person: each bound
+    input's field, or its source when it binds a whole result.
+
+    Pooled over every input, like the normalized payload score, so the gold's
+    ``vetted_contacts`` and a compile's ``contacts`` share a token. The
+    parameter names are left out: they are labels, the field is the data."""
+    out: set[str] = set()
+    for ref in (node.inputs or {}).values():
+        parsed = parse_input_ref(ref)
+        out |= _name_tokens(parsed.field or parsed.node_id or "input")
+    return out
+
+
+def _shown_score(expected: Node, compiled: Node | None) -> float:
+    """How closely a compiled gate shows what the gold one does, 0 to 1.
+
+    Both showing nothing (a gate that only asks for data) is agreement."""
+    if compiled is None:
+        return 0.0
+    e, c = _shown_tokens(expected), _shown_tokens(compiled)
+    return 1.0 if not e and not c else round(_jaccard(e, c), 4)
+
+
 def input_fields(pipeline: Pipeline) -> set[str]:
     """Every pipeline input field name the IR declares, any way it declares it."""
     schema = pipeline.input.input_schema or {}
@@ -741,6 +765,10 @@ def score_pipeline(expected: Pipeline, compiled: Pipeline) -> dict[str, Any]:
                 "payload_jaccard_normalized": (
                     round(_jaccard(e_norm, c_norm), 4) if is_gate else 0.0
                 ),
+                # What the person is shown: the gate's bound inputs.
+                "shown_expected": sorted(_shown_tokens(g)),
+                "shown_compiled": sorted(_shown_tokens(c)) if c is not None and is_gate else [],
+                "shown_jaccard": _shown_score(g, c if is_gate else None),
             }
         )
     gates = {
@@ -753,6 +781,7 @@ def score_pipeline(expected: Pipeline, compiled: Pipeline) -> dict[str, Any]:
         "payload_jaccard_normalized_mean": _mean(
             [r["payload_jaccard_normalized"] for r in gate_rows]
         ),
+        "shown_jaccard_mean": _mean([r["shown_jaccard"] for r in gate_rows]),
         "gates": gate_rows,
     }
 

@@ -314,6 +314,43 @@ run with the pass on; the compile says so and resolves no lane for it.
 compile-report.md names the pass, its model and lane, its rounds, the
 checker's disagreements and kept ones, and the cost.
 
+### What a gate shows the person
+
+The pass decides each gate's `shows` (a name and a source:
+`<node>.<key>`, `<node>` for a result with no decided keys such as a fanned
+list or an MCP result, or `pipeline.input.<field>`) and a one- or
+two-sentence `message`. Code checks only evidence (`_check_gate_shows`): the
+source is an earlier top-level node, the key is one that node's `output`
+will have (`result_keys`, the same rules `to_plan` renders by), a keyed
+result is shown by key and not whole, an input field exists, no name
+repeats, and every `{name}` in the message is shown (#266's IR rule, caught
+here so it goes back for repair). After the repair rounds `resolve` drops
+what still fails and drops a message with an unbound placeholder whole.
+The shows become the gate's `inputs:` and nothing else (no `request`), the
+message its `notify.message_template` with no channel or target, and the
+nodes the gate reads but does not show become `after` edges, still passed
+through the gate to the nodes that read it. `enforce` restores `notify` when
+the skeleton has one.
+
+Measured 2026-10-24, one structure pass per dev skill with a gate, against
+the gold:
+
+| skill | gate | before | after | gold |
+|---|---|---|---|---|
+| expense-audit | controller review | `request`, `summarize_batch` (whole) | `period`, `review_queue` | `period`, `review_queue` |
+| bdr-outreach | contact review | `request`, `build_review_table` (whole) | the table's `review_table`, `review_summary` | `vetted_contacts`, `discarded_summary`, brand, condition |
+| bdr-outreach | campaign brief (not in gold) | `request` | nothing | no such gate |
+| bdr-outreach | enrollment handoff | (gate missing that run) | `final_report` | `report_markdown`, campaign name |
+| ops-report | manual data | `request` | nothing (asks for data) | nothing |
+
+`rote bench` scores this as `gateShow` (`shown_jaccard_mean`: the normalized
+field-name tokens of a gate's bound inputs against the gold's, 1.0 when both
+show nothing). On the runs above, before to after: expense-audit 0.00 to
+1.00, bdr-outreach 0.00 to 0.15, ops-report 0.00 to 1.00.
+
+The compiled expense-audit skill's HUMAN block went from showing 3.9 KB of
+data (the whole input and summary) to 0.9 KB (the queue), 1.9 KB in all.
+
 Measured on 2026-10-21 (`skeletons.py haiku haiku+clef haiku+jev --trials 2`,
 then one fidelity compile each with Jev):
 

@@ -157,6 +157,16 @@ class InputRef:
     field: str | None
 
 
+def _closed_object_properties(schema: Any) -> dict[str, Any] | None:
+    """A JSON Schema's properties when it is an object that admits no other key
+    (``additionalProperties: false``), else None: an open schema lists only
+    some of its keys."""
+    if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
+        return None
+    props = schema.get("properties")
+    return props if isinstance(props, dict) else {}
+
+
 def parse_input_ref(ref: str) -> InputRef:
     """Parse an ``inputs:`` source reference string.
 
@@ -264,8 +274,13 @@ class NotifyConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    channel: str = Field(description="slack | email | webhook")
-    target: str = Field(description="Channel name, email address, or webhook URL")
+    # Both optional: a skill rarely names where its approval goes, the compile
+    # must not invent one, and no runtime sends to them (the compiled skill
+    # reaches the person through its agent, with the message alone).
+    channel: str | None = Field(default=None, description="slack | email | webhook")
+    target: str | None = Field(
+        default=None, description="Channel name, email address, or webhook URL"
+    )
     message_template: str | None = Field(
         default=None,
         description=(
@@ -1193,6 +1208,51 @@ class Pipeline(BaseModel):
                         f"{head}: it does not run before {node.id!r}. Add an edge from "
                         f"{source!r} to {node.id!r} (directly or through other nodes) "
                         f"so it finishes first."
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
+    @model_validator(mode="after")
+    def _validate_input_fields_declared(self) -> Self:
+        """An input reading ``<node>.output.<field>`` names a field that node declares.
+
+        Where a node lists its output keys (a non-empty ``output`` mapping),
+        a reference to any other key reads a field the result never has: the
+        run fails with a KeyError (Python) or carries ``undefined`` on (TS).
+        A System-1 review found a gate bound to ``render_digest.output.items``
+        of a node whose output had no ``items``, and the IR accepted it.
+        An empty mapping or a type name declares no keys, so it is not
+        checked, and neither is an MCP node's ``output`` (a guess at the
+        tool's result) unless its ``output_schema`` closes the object.
+        Loop-body sub-nodes' inputs describe rather than bind, the same
+        exemption as the reachability rule above."""
+        by_id = {n.id: n for n in self.nodes}
+        owned = {sub for n in self.nodes for sub in n.loop_body or ()}
+        errors: list[str] = []
+        for node in self.nodes:
+            if node.id in owned:
+                continue
+            for param, ref in (node.inputs or {}).items():
+                parsed = parse_input_ref(ref)
+                source = by_id.get(parsed.node_id) if parsed.node_id is not None else None
+                if source is None or parsed.field is None:
+                    continue
+                declared: dict[str, Any] | str = source.output
+                if source.mcp is not None:
+                    # An MCP result's keys are a guess (inferred from a recording,
+                    # an open outputSchema, the interface's reading of the skill),
+                    # so `output` is not a complete list: a read of another key
+                    # may be right. Only a schema that closes the object lists them.
+                    closed = _closed_object_properties(source.output_schema)
+                    if closed is None:
+                        continue
+                    declared = closed
+                if isinstance(declared, dict) and declared and parsed.field not in declared:
+                    errors.append(
+                        f"Node {node.id!r} input {param!r} references {ref!r}, but "
+                        f"{source.id!r} declares only output keys {sorted(declared)}. "
+                        f"Read one of those, or add {parsed.field!r} to its output."
                     )
         if errors:
             raise ValueError("\n".join(errors))

@@ -107,6 +107,16 @@ comes from keeping them clean.
   because every committed BDR pipeline ends in such a gate, and which step
   a gate guards is a reading of the skill. An audit of 15 default compiles
   found 3 of 16 gates blocking nothing.
+- **A gate binds what the person decides on, and only that**
+  (`structure._check_gate_shows`). The pass names each value a gate shows
+  (`<node>.<key>`, a keyless result whole, or `pipeline.input.<field>`) and
+  a short message; code checks each resolves to a real earlier output key
+  and that every `{name}` is shown, then renders them as the gate's
+  `inputs:` and `notify.message_template` (no channel or target: the skill
+  names none). Reads it does not show become ordering edges. Before this,
+  every gate bound `request` plus whole upstream results, so the compiled
+  skill's HUMAN block showed expense-audit's whole input (3.9 KB) and an
+  eval's agent spent 5-9 turns finding the review queue in it.
 - **The decider double-checks the structure pass, never overrides it**
   (`system1/checker.py`). Its confident disagreements go back to the pass as
   one more repair round; what the pass keeps is an Open question. Keep it a

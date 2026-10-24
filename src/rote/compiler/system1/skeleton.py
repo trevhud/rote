@@ -147,6 +147,10 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
+            if n.message:
+                # No channel or target: the skill names none, and the runtime
+                # that reaches the person (the compiled skill's agent) needs none.
+                node["notify"] = {"message_template": n.message}
         nodes.append(node)
         for ref in n.inputs.values():
             src = ref.split(".", 1)[0]
@@ -154,7 +158,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
                 edge: dict[str, Any] = {"from": src, "to": n.id}
                 if n.element_source == src:
                     edge["fan_out"] = True
-                edges.append(edge)
+                if edge not in edges:  # a gate may show two keys of one node
+                    edges.append(edge)
     # The run's result is what nothing reads: exit nodes come from the data
     # edges alone, so an ordering cannot hide a node's result.
     has_out = {e["from"] for e in edges}

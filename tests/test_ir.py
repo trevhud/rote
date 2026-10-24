@@ -1259,6 +1259,66 @@ def test_a_gate_that_binds_what_it_shows_is_valid() -> None:
     )
 
 
+def _reader_of(ref: str, output: object) -> dict[str, object]:
+    src: dict[str, object] = {
+        "id": "src",
+        "kind": "pure_function",
+        "description": "x",
+        "impl": "extracted/a.py:go",
+        "output": output,
+    }
+    reader = {
+        "id": "reader",
+        "kind": "pure_function",
+        "description": "x",
+        "impl": "extracted/b.py:go",
+        "inputs": {"value": ref},
+    }
+    return {
+        "name": "p",
+        "version": "0.1.0",
+        "input": {"type": "In"},
+        "nodes": [src, reader],
+        "edges": [{"from": "src", "to": "reader"}],
+        "entry_nodes": ["src"],
+        "exit_nodes": ["reader"],
+    }
+
+
+def test_an_input_names_only_a_field_its_source_declares() -> None:
+    """Valid IR is emittable IR: reading a key the source's output does not
+    declare is a KeyError (Python) or `undefined` (TS) at run time."""
+    with pytest.raises(ValidationError, match=re.escape("declares only output keys ['digest']")):
+        Pipeline.model_validate(_reader_of("src.output.items", {"digest": "str"}))
+    Pipeline.model_validate(_reader_of("src.output.digest", {"digest": "str"}))
+    Pipeline.model_validate(_reader_of("src.output", {"digest": "str"}))
+    # No declared keys (the empty default, or a type name): nothing to check against.
+    Pipeline.model_validate(_reader_of("src.output.items", {}))
+    Pipeline.model_validate(_reader_of("src.output.items", "dict"))
+
+
+def _mcp_reader_of(ref: str, output_schema: dict[str, object] | None) -> dict[str, object]:
+    doc = _reader_of(ref, {"items": "list"})
+    src = doc["nodes"][0]  # type: ignore[index]
+    src.update(kind="external_call", mcp={"server": "gmail", "tool": "search"})
+    if output_schema is not None:
+        src["output_schema"] = output_schema
+    return doc
+
+
+def test_an_mcp_results_guessed_keys_do_not_refuse_a_read_of_another() -> None:
+    """An MCP node's `output` is a guess at the tool's result, not its list of
+    keys: refusing a read of `next_page` would burn every repair round on a
+    false error. Only an outputSchema that closes the object lists its keys."""
+    Pipeline.model_validate(_mcp_reader_of("src.output.next_page", None))
+    open_ = {"type": "object", "properties": {"items": {"type": "array"}}}
+    Pipeline.model_validate(_mcp_reader_of("src.output.next_page", open_))
+    closed = {**open_, "additionalProperties": False}
+    with pytest.raises(ValidationError, match=re.escape("declares only output keys ['items']")):
+        Pipeline.model_validate(_mcp_reader_of("src.output.next_page", closed))
+    Pipeline.model_validate(_mcp_reader_of("src.output.items", closed))
+
+
 def test_only_a_gate_is_held_to_what_it_documents() -> None:
     # `input:` documents types on every kind; only a gate shows it to a person.
     Node.model_validate(
