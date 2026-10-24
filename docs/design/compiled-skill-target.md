@@ -800,6 +800,52 @@ number:
   cost $0.092 cold and $0.043 warm. The eval reports means over trials
   with the cache state recorded.
 
+### Measured again, through `rote skill run` (PR 7)
+
+`rote eval <compiled> --run --runtime skill`, 2026-10-24, with the same model
+and the same three pipelines as the prototype round. docs-digest's is its
+committed compile, and ops-report's is the prototype round's fresh compile.
+expense-audit's is not a compile at all: it is the hand-drafted
+`examples/expense-audit/expected/` IR, so its "compiled" row measures that
+IR run as a skill. The compiled side is now the real emitted skill,
+installed and run through `rote skill run`, and Bash is loaded on both sides.
+Medians of 3 trials a side. Fields: original trial i against compiled trial i
+(for the original row, the original against itself). K is `I - T*B`.
+
+| Skill | Shape | Side | Turns | Input | Output | K | Wall | Cost | Fields | Bench |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| expense-audit | compute-heavy | original | 7 | 111.3k | 13.6k | 58.7k | 153 s | $0.350 | 12/13 | 0.83 |
+| | | compiled | 11 | 196.0k | 7.0k | 80.1k | 96 s | $0.287 | 9/13 | 0.83 |
+| ops-report (busy_day) | tool-and-copy | original | 7 | 59.1k | 4.0k | 16.1k | 54 s | $0.120 | 13/13 | 0.97 |
+| | | compiled | 6 | 86.1k | 3.4k | 22.8k | 50 s | $0.126 | 11/13 | 0.92 |
+| docs-digest | tool-and-copy | original | 4 | 55.4k | 1.0k | 16.5k | 16 s | $0.093 | 2/2 | equal |
+| | | compiled | 4 | 47.3k | 1.5k | 5.7k | 21 s | $0.057 | 2/2 | equal |
+
+Every compiled trial ran through the driver, and every gate was answered by
+the person. The measurement cost $3.26 ($3.55 with a one-trial smoke run).
+
+- **expense-audit lost most of its lead,** going from 41 s and $0.135 in the
+  prototype to 96 s and $0.287. Its gate declares no `inputs:`, so the HUMAN
+  block shows the person nothing to decide on, and its `message_template`
+  still prints `{period}` and `{review_count}` unfilled (the driver fills
+  only `{{ }}` placeholders). The agent spent 5 to 9 extra turns looking for
+  the review queue, two of them denied (Bash, Glob). The prototype printed
+  every upstream result, which rule 1 removed. The fix belongs in the IR:
+  the gate should declare the queue as an input.
+- **ops-report** is now even on cost and 4 s faster. Its input is still 46%
+  higher, from two more turns (read the run's result.json, then write).
+- **docs-digest** costs 39% less and leaves 66% less in context, but is 5 s
+  slower: the driver call takes about 7 s.
+- **Field differences come from the IR, not the driver:** ops-report's
+  `outstanding_requests` and `open_ticket_alerts` (from its compile), and
+  expense-audit's `blocked_ids`, `review_queue`, `reimbursable_usd` and
+  `returned_usd` (from the hand-drafted IR). PR 7's review checked that the
+  driver's result matches the dbos runtime's on the same IR exactly.
+  expense-audit's original disagrees with itself on `review_queue` too, so
+  that field is noisy on both sides.
+- **The batch-size sweep** (PR 7's row) is left for later. It needs
+  deal-monitor's judges.
+
 bdr-outreach is not measured. Its two heaviest phases are agent loops, and
 a loop's tool results enter context in both versions, so it should save the
 least relative to its size. Its `expected/` external_calls are also stubs

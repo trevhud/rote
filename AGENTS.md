@@ -263,6 +263,9 @@ Pass `--json` to get structured output instead of prose:
 - `rote analyze <skill> --json` — node-kind breakdown, roteness, HITL gates,
   targetable runtimes (dry-run; no runtime code emitted).
 - `rote eval <compiled> --json` — the before/after scorecard as JSON.
+  With `--run --runtime skill --budget USD`, the paired eval's result instead:
+  per side `medians` and `trials` (tokens per bucket, cost, wall, `problems`),
+  `pairs` and `noise` (field compares), and `spent_usd`. It spends tokens.
 - `rote mcp list --json` — registered MCP servers + auth status.
 - `rote emit --json` — the final result object: pipeline name/version,
   `runtime`, `out_dir`, `written` (label → absolute path), `preserved_new_files`
