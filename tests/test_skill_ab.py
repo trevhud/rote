@@ -400,3 +400,25 @@ def test_the_compile_estimate_covers_a_measured_compile() -> None:
     # CLAUDE.md: Sonnet 4.6 compiles ran up to $5.14; an estimate below that
     # lets a first compile overshoot --budget by a multiple.
     assert skill_ab.DEFAULT_COMPILE_ESTIMATE_USD >= 5.14
+
+
+def test_an_interrupted_compile_is_recorded_at_its_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(*args: Any, **kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(skill_ab.subprocess, "run", interrupted)
+    ledger = skill_ab.Ledger(tmp_path / "ledger.json", 1.0)
+    with pytest.raises(KeyboardInterrupt):
+        skill_ab.compile_for_eval(
+            EXPENSE / "skill",
+            {},
+            tmp_path,
+            ledger,
+            model=None,
+            log=lambda _: None,
+            estimate_usd=0.3,
+        )
+    (run,) = skill_ab.Ledger(tmp_path / "ledger.json", 1.0).runs
+    assert (run["kind"], run["cost_usd"], run["estimated"]) == ("compile", 0.3, True)

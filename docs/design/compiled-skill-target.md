@@ -1069,7 +1069,7 @@ break-the-code check.
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |
 | 6 | Driver e2e suite against fixture MCP servers (the list in section 7), wired into the Python e2e CI job | 4, 5 | 180 |
 | 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records, and moving `rote.proof` from #250 to main. One measured eval on docs-digest, ops-report and expense-audit (about $3) and the batch-size sweep | 4 | 210 |
-| 8 | `rote try` rebuilt on 7, closing #250, with review6's three fixes | 7 | 150 |
+| 8 | `rote try` rebuilt on 7, closing #250, with review6's three fixes. Landed as the live path only (`rote.setup.try_skill`: compile, install, paired eval as three resumable `Step`s). The free path is not built | 7 | 150 |
 | 9 | Dependencies: `fastmcp-slim[client]` in the base, and dbos, serve and temporal as extras installed by a confirmed Action, with `reinstall_hint` brought over from #249. Supersedes #249 | 3 | 120 |
 | 10 | Make the skill target the first-run default (`rote init`, `rote setup`'s skill step, docs, CHANGELOG), once 7's numbers are in | 8, 9 | 60 |
 
