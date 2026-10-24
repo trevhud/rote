@@ -100,7 +100,9 @@ def test_a_code_only_run_ends_in_done_with_the_result_on_disk(code_skill: Path) 
     assert header(out)["kind"] == "DONE"
     # Constants merged last, one call per element, results in order.
     assert result_of(out) == {"summed": {"label": "x", "sum": 112, "values": [2, 4, 6]}}
-    assert 'summary: {"label": "x", "sum": 112, "values": <list, 3 items>}' in out
+    # A small result is printed whole, so the agent never spends a turn reading it.
+    assert 'result: {"summed":{"label":"x","sum":112,"values":[2,4,6]}}' in out
+    assert "summary:" not in out
     state = journal(out)
     assert state["state"] == "done" and state["pending"] is None
 
@@ -1019,9 +1021,10 @@ def test_the_driver_and_the_prefix_runner_agree_on_docs_digest(
         if "output" in replayed[node.id]:
             assert live == replayed[node.id]["output"], node.id
     assert result_of(out) == ref.pipeline_output
-    # DONE is a path and a bounded summary, never the 4 KB digest itself.
-    assert 'summary: {"digest": <text, ' in out
-    assert len(out.encode()) < 400 + len(str(run_dir(out))) + 100, len(out.encode())
+    # The 1.6 KB digest is under DONE_INLINE_BYTES: printed whole, once.
+    full = next(line for line in out.splitlines() if line.startswith("result: {"))
+    assert json.loads(full.removeprefix("result: ")) == ref.pipeline_output
+    assert out.count("## Reading list") == 1 and "summary:" not in out
     # The driver sent exactly the recorded arguments.
     assert [c["arguments"] for c in fx.calls("microsoft_docs_search")] == [
         c.arguments for c in ref.tool_calls if c.tool == "microsoft_docs_search"
@@ -1099,6 +1102,34 @@ def test_a_call_starts_fast_and_loads_no_heavy_module(code_skill: Path) -> None:
         timeout=30,
     )
     assert "HEAVY []" in done.stderr, done.stderr
+
+
+def test_done_prints_the_result_whole_up_to_the_threshold_and_a_summary_above(
+    tmp_path: Path,
+) -> None:
+    """The split sits exactly at DONE_INLINE_BYTES of compact JSON."""
+    from rote.skill_target._driver import DONE_INLINE_BYTES, DONE_SUMMARY_BYTES, done_lines
+
+    file = tmp_path / "result.json"
+    file.write_text("{}")
+    frame = len('{"r":{"text":""}}')
+
+    def result(size: int) -> dict[str, Any]:
+        return {"r": {"text": "x" * (size - frame)}}
+
+    at = done_lines(file, result(DONE_INLINE_BYTES))
+    assert at[0] == 'result: {"r":{"text":"' + "x" * (DONE_INLINE_BYTES - frame) + '"}}'
+    assert len(at[0]) == len("result: ") + DONE_INLINE_BYTES
+    assert at[1].startswith(f"saved: {file} (") and at[1].endswith("no need to read it.")
+
+    over = done_lines(file, result(DONE_INLINE_BYTES + 1))
+    assert over[0].endswith("Read it for the full result.")
+    assert over[1] == f'summary: {{"text": <text, {DONE_INLINE_BYTES + 1 - frame} chars>}}'
+    assert len(over[1].encode()) <= DONE_SUMMARY_BYTES + len("summary: ")
+    assert not any("x" * 100 in line for line in over)
+    # Bytes, not characters: a result over the cap only in bytes is summarized.
+    wide = {"r": {"text": "\u00e9" * ((DONE_INLINE_BYTES - frame) // 2 + 1)}}
+    assert done_lines(file, wide)[1].startswith("summary: ")
 
 
 def test_the_done_summary_is_bounded() -> None:

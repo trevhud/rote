@@ -18,7 +18,8 @@ lands in the agent's context, so each call prints one short block:
     ROTE/1 <KIND> <skill> run=<id> [step=<id>] [...]
 
 ``DECIDE``, ``LOOP`` and ``HUMAN`` exit 0 and say what to run next. ``DONE``
-exits 0, writes the result to ``result.json`` and prints a bounded summary.
+exits 0, writes the result to ``result.json`` and prints it in full when it is
+at most :data:`DONE_INLINE_BYTES`, else a bounded summary and the path.
 ``ERROR`` exits 1 (2 for a malformed command) with the cause and the fix.
 
 Commands (``argv`` after the script)::
@@ -108,7 +109,13 @@ CHARS_PER_TOKEN = 3.8
 LOCK_WAIT_SECONDS = 1.0
 #: The python runtime's default base delay between retry attempts.
 RETRY_BASE_DELAY_SECONDS = 1.0
-#: DONE's summary of the result, at most this many bytes.
+#: DONE prints the whole result (compact JSON) up to this many bytes. Agents
+#: read result.json after every DONE that printed only a summary (9 of 9
+#: measured runs, results of 444 to 3,485 compact bytes), and that read is a
+#: whole extra turn over the session's context, so a result this size costs
+#: less inline. Above it, DONE prints the summary and the path.
+DONE_INLINE_BYTES = 8192
+#: DONE's summary of a larger result, at most this many bytes.
 DONE_SUMMARY_BYTES = 400
 #: Concurrent steps in one wave, as the python runtime's thread pool.
 MAX_PARALLEL_STEPS = 8
@@ -1775,10 +1782,7 @@ class Driver:
         file = path / "result.json"
         result = json.loads(file.read_text(encoding="utf-8"))
         lines = [note] if note else []
-        lines += [
-            f"result: {file} ({file.stat().st_size} bytes). Read it for the full result.",
-            "summary: " + summarize(result),
-        ]
+        lines += done_lines(file, result)
         return Block("DONE", self._head(path.name), lines)
 
     # ── housekeeping ──
@@ -2056,6 +2060,19 @@ def _describe(value: Any) -> str:
     if isinstance(value, str) and len(value) > 60:
         return f"<text, {len(value)} chars>"
     return _compact(value)
+
+
+def done_lines(file: Path, result: dict[str, Any]) -> list[str]:
+    """DONE's body: the whole result when it fits :data:`DONE_INLINE_BYTES`,
+    else :func:`summarize` and the path to read.
+
+    A whole result comes first and the path last, as where it was saved, not
+    as something to read: led by the path, agents read the file anyway."""
+    full = _compact(result)
+    size = f"{file} ({file.stat().st_size} bytes)"
+    if len(full.encode("utf-8")) <= DONE_INLINE_BYTES:
+        return ["result: " + full, f"saved: {size}. This is all of it; no need to read it."]
+    return [f"result: {size}. Read it for the full result.", "summary: " + summarize(result)]
 
 
 def summarize(result: dict[str, Any]) -> str:

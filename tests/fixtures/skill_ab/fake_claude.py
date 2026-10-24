@@ -123,7 +123,7 @@ def main() -> None:
             if not block.startswith("ROTE/1 DONE"):
                 sys.stderr.write(block)
                 raise SystemExit(1)
-            path = re.search(r"^result: (\S+) \(", block, re.M).group(1)  # type: ignore[union-attr]
+            path = re.search(r"^(?:result|saved): (/\S+) \(", block, re.M).group(1)  # type: ignore[union-attr]
             result = json.loads(Path(path).read_text())
             merged: dict[str, object] = {}
             for node_result in result.values():
