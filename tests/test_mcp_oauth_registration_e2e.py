@@ -29,7 +29,6 @@ from collections.abc import Iterator
 import pytest
 
 pytestmark = pytest.mark.slow
-pytest.importorskip("trustme")
 
 from rote.mcp import (  # noqa: E402
     McpAuthError,

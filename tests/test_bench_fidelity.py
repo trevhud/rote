@@ -693,8 +693,6 @@ def test_the_committed_pipeline_runs_its_fidelity_cases(example: str, tmp_path: 
     every case the way the skill did: completed where the skill completed,
     stopped where it stopped. A pipeline that crashes on its own example's
     data fails here, not in a paid measurement round."""
-    pytest.importorskip("dbos")
-    pytest.importorskip("fastmcp")
     from rote.bench.fidelity import pipeline_fidelity
 
     from .conftest import EXAMPLES_DIR
@@ -717,8 +715,6 @@ def test_a_run_that_dies_building_a_payload_names_the_binding(tmp_path: Path) ->
     `["content"]` off the CSV text the Drive tool returns. No step recorded
     an error, so the failure is the binding: the node whose payload was
     being built, the reference, and what the source really returned."""
-    pytest.importorskip("dbos")
-    pytest.importorskip("fastmcp")
     from rote.bench.fidelity import pipeline_fidelity
 
     from .conftest import EXAMPLES_DIR

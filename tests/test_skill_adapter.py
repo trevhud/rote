@@ -42,8 +42,6 @@ from rote.skills.discovery import read_frontmatter
 from tests._messages_api import reject_like_the_api, send_json, structured_message
 from tests._skill_driver import FixtureServer, drive, fixture_server, header, result_of, run_dir
 
-pytest.importorskip("fastmcp")
-
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 FAST = {"RETRY_BASE_DELAY_SECONDS": 0.0}

@@ -32,8 +32,6 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-pytest.importorskip("trustme")
 
 from rote.cli import main as cli_main  # noqa: E402
 from rote.mcp import (  # noqa: E402

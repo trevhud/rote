@@ -20,8 +20,6 @@ import pytest
 from rote.eval import skill_ab
 from rote.eval.empirical import skill_run_isolation_args
 
-pytest.importorskip("fastmcp")
-
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "tests" / "fixtures" / "skill_ab"
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"

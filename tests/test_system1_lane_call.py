@@ -112,7 +112,6 @@ def test_the_drivers_client_does_not_retry_under_ours(
 ) -> None:
     """A gateway that keeps timing out gets 3 requests, not 3 x the SDK's 3,
     and each still goes to the driver's own endpoint."""
-    pytest.importorskip("openai")
     from rote.compiler.system1 import tiebreak
     from tests._helpers import GATEWAY_URL, openai_compile_driver, openai_gateway
 
@@ -194,7 +193,6 @@ def test_a_servers_retry_after_replaces_the_fixed_wait(
 ) -> None:
     """With the SDK's own retries off, its Retry-After handling is ours to keep:
     honored on a 429 or 503, capped, and the fixed backoff when there is none."""
-    pytest.importorskip("openai")
     from rote.compiler.system1 import tiebreak
     from tests._helpers import openai_compile_driver, openai_gateway
 

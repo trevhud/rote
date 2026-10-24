@@ -43,9 +43,6 @@ from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
 from tests._messages_api import reject_like_the_api, send_json, structured_message
 from tests._skill_driver import FixtureServer, fixture_server, header, result_of, run_dir
 
-pytest.importorskip("fastmcp")
-pytest.importorskip("dbos")
-
 pytestmark = pytest.mark.slow
 
 REPO = Path(__file__).resolve().parent.parent

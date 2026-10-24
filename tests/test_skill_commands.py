@@ -27,8 +27,6 @@ from rote.interact.prompter import DEFAULT, Answer, ScriptedPrompter
 from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
 from tests._skill_driver import FixtureServer, fixture_server, header, result_of
 
-pytest.importorskip("fastmcp")
-
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 DOCS_DIGEST = EXAMPLES / "docs-digest" / "compiled"

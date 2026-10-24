@@ -166,3 +166,22 @@ def test_an_installed_wheel_resolves_the_demo_inside_itself(tmp_path: Path) -> N
     assert Path(demo_dir) == site / "rote" / "examples" / "docs-digest"
     assert Path(pipeline).is_file() and Path(pipeline).is_relative_to(site)
     assert has_input is True and fields == 4
+
+
+def test_the_suite_refuses_to_run_without_the_dev_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session-start check reads pyproject's dev extra by distribution:
+    a missing one and one below its floor are both named, the rest are not."""
+    from importlib import metadata
+
+    from tests.conftest import missing_dev_requirements
+
+    assert missing_dev_requirements() == []
+    real = metadata.version
+
+    def version(name: str) -> str:
+        if name == "trustme":
+            raise metadata.PackageNotFoundError(name)
+        return "0.0.1" if name == "dbos" else real(name)
+
+    monkeypatch.setattr(metadata, "version", version)
+    assert missing_dev_requirements() == ["dbos>=3.3,<4 (found 0.0.1)", "trustme>=1.2.1"]
