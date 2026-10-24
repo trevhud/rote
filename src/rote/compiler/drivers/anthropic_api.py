@@ -40,6 +40,7 @@ roots via ``Path.relative_to``.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import time
 from collections.abc import Callable
@@ -95,15 +96,11 @@ __all__ = [
     "_handle_write_file",
 ]
 
-# Detect the optional dep at import time so is_available() can report
-# a specific install-hint message instead of a cryptic
-# ImportError.
-try:
-    import anthropic  # noqa: F401
-
-    _ANTHROPIC_AVAILABLE = True
-except ImportError:
-    _ANTHROPIC_AVAILABLE = False
+# Whether the optional dep is installed, so is_available() can report a
+# specific install hint instead of a cryptic ImportError. Found, not
+# imported: importing anthropic costs a few hundred ms, and every rote
+# command builds the parser that imports this module.
+_ANTHROPIC_AVAILABLE = importlib.util.find_spec("anthropic") is not None
 
 
 # ───────── Defaults ─────────
@@ -522,6 +519,8 @@ class AnthropicApiDriver(CompilerDriver):
         except RuntimeError as e:
             raise DriverError(f"cannot lock the answer for {request.label}: {e}") from e
         started = time.monotonic()
+        import anthropic
+
         client = anthropic.AsyncAnthropic(**self._client_kwargs())
         try:
             message = await _streamed_message(
@@ -660,6 +659,8 @@ class AnthropicApiDriver(CompilerDriver):
         write_root = work_dir
 
         system_prompt = build_system_prompt(skill_dir, compiler_skill_dir, work_dir, skill_md_text)
+
+        import anthropic
 
         client = anthropic.AsyncAnthropic(**self._client_kwargs())
         tool_schemas = anthropic_tool_schemas()

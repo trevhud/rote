@@ -7,6 +7,6 @@ the eval harness's ``headersHelper`` wiring depends on this.
 
 import sys
 
-from rote.cli import main
+from rote.entry import main
 
 sys.exit(main())

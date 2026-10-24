@@ -131,7 +131,7 @@ def fake_anthropic(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
         holder["client"] = client
         # Patch the symbol the driver actually calls
         monkeypatch.setattr(
-            "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
+            "anthropic.AsyncAnthropic",
             lambda *a, **k: client,
         )
         # Bypass the env-var check
@@ -768,7 +768,7 @@ async def test_run_constructs_client_with_plumbed_kwargs(
         captured.update(kwargs)
         return client
 
-    monkeypatch.setattr("rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic", _ctor)
+    monkeypatch.setattr("anthropic.AsyncAnthropic", _ctor)
 
     driver = AnthropicApiDriver(
         base_url="https://gw.example/anthropic",

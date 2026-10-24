@@ -454,7 +454,7 @@ async def test_anthropic_driver_exposes_and_dispatches_mcp_tools(
     ]
     client = _FakeAsyncAnthropic(responses)
     monkeypatch.setattr(
-        "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
+        "anthropic.AsyncAnthropic",
         lambda *a, **k: client,
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
@@ -518,7 +518,7 @@ async def test_anthropic_driver_reports_mcp_failure_as_tool_error(
     ]
     client = _FakeAsyncAnthropic(responses)
     monkeypatch.setattr(
-        "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
+        "anthropic.AsyncAnthropic",
         lambda *a, **k: client,
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
@@ -562,7 +562,7 @@ async def test_anthropic_driver_warns_and_continues_without_dead_server(
     ]
     client = _FakeAsyncAnthropic(responses)
     monkeypatch.setattr(
-        "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
+        "anthropic.AsyncAnthropic",
         lambda *a, **k: client,
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
@@ -629,7 +629,7 @@ async def test_anthropic_driver_stringifies_structured_content(
     ]
     client = _FakeAsyncAnthropic(responses)
     monkeypatch.setattr(
-        "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
+        "anthropic.AsyncAnthropic",
         lambda *a, **k: client,
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
