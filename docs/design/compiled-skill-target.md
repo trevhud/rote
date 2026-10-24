@@ -442,7 +442,13 @@ design added, so these rules are part of the protocol:
    the skill's exit node (`file_report`) does not return, and the third
    run took them from the gate block instead. DONE does not print files a
    result names: a path in a result can come from a tool result, so
-   printing it could put any readable file into the context.
+   printing it could put any readable file into the context. Inlined
+   results and LOOP's tool text are untrusted, so every block spells each
+   character in Unicode categories Cc, Cf, Zl, Zp and Cs as `\uXXXX`
+   (a stdlib copy of the adapters' `escape_invisible`, pinned to it by a
+   test), keeping newline and tab. It also indents any body line that
+   would start with `ROTE/1`, so no tool text can forge a block header
+   under `str.splitlines()`.
 3. **The agent never retypes input.** `start --file <path>` takes input
    that already lives in a file. Retyping expense-audit's input as an
    argument cost 1.4k output tokens and 12 s.

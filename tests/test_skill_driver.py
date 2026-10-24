@@ -1132,6 +1132,24 @@ def test_done_prints_the_result_whole_up_to_the_threshold_and_a_summary_above(
     assert done_lines(file, wide)[1].startswith("summary: ")
 
 
+def test_done_inlines_at_most_8_kb() -> None:
+    """The property, not the value: each inlined byte stays in the session for
+    every later turn, and the measured results were at most 3.5 KB."""
+    from rote.skill_target._driver import DONE_INLINE_BYTES
+
+    assert 1024 <= DONE_INLINE_BYTES <= 8192
+
+
+def test_the_driver_escapes_invisible_characters_exactly_as_the_adapters_do() -> None:
+    """The stdlib copy matches ``rote.adapters._common.escape_invisible`` on
+    every code point (every surrogate included)."""
+    from rote.adapters._common import escape_invisible as original
+    from rote.skill_target._driver import escape_invisible
+
+    every = "".join(chr(c) for c in range(0x110000))
+    assert escape_invisible(every) == original(every)
+
+
 def test_the_done_summary_is_bounded() -> None:
     from rote.skill_target._driver import DONE_SUMMARY_BYTES, summarize
 

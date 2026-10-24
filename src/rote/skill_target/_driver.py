@@ -156,7 +156,16 @@ class Block:
         self.status = status
 
     def text(self) -> str:
-        return "\n".join([f"{PROTOCOL} {self.kind} {self.header}".rstrip(), *self.lines]) + "\n"
+        """The block as printed. Body lines carry tool and model text, so every
+        invisible character is escaped (:func:`escape_invisible`), which leaves
+        the newline as the only line break ``str.splitlines`` can find, and a
+        body line that would start with the protocol word is indented: no body
+        text can pose as a block header."""
+        body: list[str] = []
+        for line in self.lines:
+            for part in escape_invisible(line).split("\n"):
+                body.append(" " + part if part.startswith(PROTOCOL) else part)
+        return "\n".join([f"{PROTOCOL} {self.kind} {self.header}".rstrip(), *body]) + "\n"
 
 
 class Stop(Exception):
@@ -165,6 +174,28 @@ class Stop(Exception):
     def __init__(self, block: Block) -> None:
         super().__init__(block.header)
         self.block = block
+
+
+#: Unicode categories :func:`escape_invisible` spells out: controls (Cc),
+#: format characters such as bidi overrides and zero-width spaces (Cf), line
+#: and paragraph separators (Zl, Zp), and lone surrogates (Cs).
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+
+
+def escape_invisible(text: str) -> str:
+    """``text`` with every invisible character spelled ``\\uXXXX``, newline and
+    tab kept. A copy of :func:`rote.adapters._common.escape_invisible` (this
+    file imports nothing from rote), pinned to it by a test."""
+    import unicodedata
+
+    out: list[str] = []
+    for ch in text:
+        if ch not in "\n\t" and unicodedata.category(ch) in _INVISIBLE_CATEGORIES:
+            code = ord(ch)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _compact(value: Any) -> str:
