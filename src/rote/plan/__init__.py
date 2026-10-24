@@ -28,7 +28,11 @@ Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
 - ``mcp``: ``server``, ``tool``, ``url``, ``args``, ``fan_param``,
   ``retry``; recorded plans add ``observed`` and ``probe_shapes``.
 - ``judge``: ``prompt``, ``references`` (the dotted paths the prompt
-  reads), ``input_schema``, ``output_schema``, ``fan_param``.
+  reads), ``input_schema``, ``output_schema``, ``fan_param``. A live plan
+  built with ``judges="helper"`` adds ``lane`` (``client``, ``model``,
+  ``base_url``, ``temperature``: what the emitted Python judge passes the
+  inference helper) and ``retry``; the driver then calls the helper itself
+  instead of asking the agent.
 - ``gate``: ``description``, ``message``, ``answer_schema``, ``timeout_s``,
   ``signal``; a recorded plan whose sample answered the gate adds
   ``payload``.
@@ -64,6 +68,12 @@ PLAN_FORMAT = "rote-plan/1"
 PLACEHOLDER = re.compile(PROMPT_PLACEHOLDER)
 
 McpMode = Literal["recorded", "live"]
+
+#: Who answers a live plan's judges: the agent running the skill
+#: (``session``: a DECIDE block) or the inference helper on the IR's model
+#: (``helper``). Chosen at emit, recorded in the plan, never chosen at run time.
+JudgeMode = Literal["session", "helper"]
+JUDGE_MODES: tuple[JudgeMode, ...] = ("session", "helper")
 
 
 class PlanError(ValueError):
@@ -135,6 +145,7 @@ def build_plan(
     tools: dict[tuple[str, str], Any] | None = None,
     gate_answers: dict[str, dict[str, Any]] | None = None,
     backend: Literal["mcp", "api"] = "mcp",
+    judges: JudgeMode = "session",
 ) -> dict[str, Any]:
     """The plan for ``pipeline``, as JSON-ready data.
 
@@ -146,12 +157,18 @@ def build_plan(
     ``mcp="live"`` is a compiled skill: every node runs, so a step the
     driver cannot run (a legacy ``signature:`` judge, a fan_out it cannot
     resolve, a node with no body on ``backend``) raises :class:`PlanError`.
+    ``judges`` says who answers a live plan's judges (:data:`JudgeMode`).
     """
     from rote.adapters._common import (
         DEFAULT_AGENT_MAX_ITERATIONS,
+        DEFAULT_ANTHROPIC_MODEL,
+        DEFAULT_OPENAI_MODEL,
         agent_loop_output,
         mcp_tool_arguments,
     )
+
+    if judges not in JUDGE_MODES:
+        raise ValueError(f"judges must be one of {', '.join(JUDGE_MODES)}, got {judges!r}")
 
     live = mcp == "live"
     recorded = _recordings(observations, tools) if not live else {}
@@ -200,13 +217,28 @@ def build_plan(
         if kind == "judge":
             spec = node.signature_spec
             assert spec is not None
-            return {
+            judge: dict[str, Any] = {
                 "prompt": spec.prompt,
                 "references": judge_references(spec.prompt),
                 "input_schema": spec.input_schema,
                 "output_schema": spec.output_schema,
                 "fan_param": fan,
             }
+            if live and judges == "helper":
+                # What the emitted Python judge passes call_judge: the IR's
+                # model or the adapters' default, its endpoint, its
+                # temperature (rote.adapters._py_common.emit_signature_module).
+                default = (
+                    DEFAULT_OPENAI_MODEL if spec.client == "openai" else DEFAULT_ANTHROPIC_MODEL
+                )
+                judge["lane"] = {
+                    "client": spec.client,
+                    "model": spec.model or default,
+                    "base_url": spec.base_url,
+                    "temperature": spec.temperature,
+                }
+                judge["retry"] = _retry(node)
+            return judge
         contract = agent_loop_output(node)
         return {
             "description": node.description.strip(),
@@ -266,7 +298,7 @@ def build_plan(
                     steps.append(step | {"kind": "skip", "reason": f"fan_out: {e}"})
                     continue
             steps.append(step | {"kind": kind} | fields(node, kind, fan))
-    return {
+    plan: dict[str, Any] = {
         "format": PLAN_FORMAT,
         "name": pipeline.name,
         "version": pipeline.version,
@@ -274,6 +306,9 @@ def build_plan(
         "exit_nodes": list(pipeline.exit_nodes),
         "steps": steps,
     }
+    if live:
+        plan["judges"] = judges
+    return plan
 
 
 #: What an MCP result may be when the tool declares no output schema: a bare

@@ -856,6 +856,27 @@ class PipelineInput(BaseModel):
                 )
         return v
 
+    @field_validator("input_schema")
+    @classmethod
+    def _validate_schema_required(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The schema's ``required`` joins ``required`` in
+        :attr:`Pipeline.required_input_fields`, which reaches emitted code
+        and a compiled skill's SKILL.md, so it gets the same identifier rule
+        (invariant #7): a name like ``"x\\n- DECIDE: ..."`` would otherwise
+        write an instruction into the skill an agent loads."""
+        required = (v or {}).get("required")
+        if required is None:
+            return v
+        if not isinstance(required, list):
+            raise ValueError("pipeline input_schema.required must be a list of field names")
+        for name in required:
+            if not isinstance(name, str) or not is_field_name(name):
+                raise ValueError(
+                    f"pipeline input_schema.required entry {name!r} must be an identifier "
+                    f"(letters, digits, underscores; not starting with a digit)"
+                )
+        return v
+
     @model_validator(mode="after")
     def _validate_required_and_optional_are_disjoint(self) -> Self:
         """A field cannot be both: emitted workflows would have to pick one."""

@@ -75,5 +75,29 @@ def read_wiki_structure(repoName: str) -> str:  # noqa: N803 (the real tool's ar
     return RECORDED["read_wiki_structure"]
 
 
+#: deal-monitor's intake channel: three deal posts, so a fan or a batch
+#: over them is never a no-op.
+DEAL_POSTS = [
+    {"user": "U01", "ts": "1760000001.0001", "text": "New deal: Acme Corp, 40 SKUs, NA, rep Dana"},
+    {"user": "U02", "ts": "1760000002.0001", "text": "New deal: Brightline, 12 SKUs, UK, rep Sam"},
+    {"user": "U03", "ts": "1760000003.0001", "text": "New deal: Corvid, 300 SKUs, EU, rep Lee"},
+]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def slack_read_channel(user_email: str) -> dict:
+    _hit("slack_read_channel", user_email=user_email)
+    return {"messages": DEAL_POSTS}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def search_threads(user_email: str, warehouse_domains: list[str] | None = None) -> list[dict]:
+    _hit("search_threads", user_email=user_email, warehouse_domains=warehouse_domains)
+    return [
+        {"thread_id": "t1", "subject": "Quote: Acme Corp", "snippet": "rates attached"},
+        {"thread_id": "t2", "subject": "Brightline onboarding", "snippet": "next steps"},
+    ]
+
+
 if __name__ == "__main__":
     mcp.run(transport="http", host="127.0.0.1", port=int(sys.argv[1]), show_banner=False)

@@ -310,7 +310,16 @@ def test_an_unexpressible_judge_schema_reaches_the_compile_repair_loop(
     says it succeeded rather than at `rote emit` afterwards."""
     data = _UNFILLED_JUDGE.model_dump(mode="json", by_alias=True, exclude_none=True)
     data["nodes"][0]["signature_spec"]["output_schema"] = output_schema
-    findings = emit_findings(Pipeline.model_validate(data), tmp_path, EmitTarget(runtime))
+    if runtime == "skill":
+        # The skill runtime's session judges are answered by the agent and
+        # checked by the driver; only the helper's request is schema-locked.
+        source = tmp_path / "source-skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text("---\nname: essays\ndescription: Grade.\n---\n")
+        target = EmitTarget(runtime, skill_dir=source, judges="helper")
+    else:
+        target = EmitTarget(runtime)
+    findings = emit_findings(Pipeline.model_validate(data), tmp_path, target)
     (finding,) = findings
     assert finding.kind == "emit_refused"
     assert finding.severity == "error"

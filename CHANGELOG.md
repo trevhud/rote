@@ -9,6 +9,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`--runtime skill` emits a compiled skill: a skill directory any agent
+  client loads.** `rote emit --runtime skill` and `rote compile --runtime
+  skill` write SKILL.md with the original skill's name and description and a
+  short body, a README, and `scripts/`: the run plan, the stdlib driver that
+  runs it, the MCP helper when a step calls MCP, and the compile's real
+  `extracted/` modules, every file hashed in `.rote-manifest.json`. The name
+  and description come from the source SKILL.md (`--skill <dir>`, or the
+  pipeline's `source_skill` when its `provenance.json` vouches for it), and
+  are refused rather than guessed. Stubs are refused at emit
+  (`--allow-stubs` lets them through), and so are agent loops, until the
+  driver's tool proxy lands. `--judges helper` has rote's inference helper
+  answer judges on the IR's model instead of the agent, and is recorded in
+  the manifest. `rote skill run`, the command SKILL.md names, comes next. Until
+  then `scripts/run.py` runs the driver directly.
+
 ### Changed
 
 - **The base install carries only the MCP client; the workflow runtimes are

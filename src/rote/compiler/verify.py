@@ -502,6 +502,10 @@ class EmitTarget:
 
     runtime: str
     external_backend: str | None = None
+    #: ``--runtime skill`` only: the skill being compiled (whose name and
+    #: description the emitted skill keeps) and who answers its judges.
+    skill_dir: Path | None = None
+    judges: str | None = None
 
     def __post_init__(self) -> None:
         from rote.adapters import ADAPTERS
@@ -510,6 +514,10 @@ class EmitTarget:
             raise ValueError(
                 f"Unknown runtime {self.runtime!r}. Available: {', '.join(sorted(ADAPTERS))}"
             )
+        if self.runtime == "skill" and self.skill_dir is None:
+            # A dry emit cannot vouch for a work dir's source_skill (no
+            # provenance yet), and the agent cannot fix that refusal.
+            raise ValueError("EmitTarget('skill') needs the skill_dir being compiled")
 
 
 def _impl_reads(
@@ -722,11 +730,20 @@ def emit_findings(
         target.runtime,
         external_backend=target.external_backend,
         extracted_source_dir=artifact_dir,
+        skill_dir=target.skill_dir,
+        judges=target.judges,
+        # A stub is the compile's documented path for vendor code it cannot
+        # write; the compile-only rules report it, and `rote emit` refuses it.
+        # Sent back here, it would ask the agent to write vendor calls from
+        # memory.
+        allow_stubs=True,
     )
+    # A compiled skill keeps its code under scripts/.
+    code_dir = "scripts" if target.runtime == "skill" else ""
     with tempfile.TemporaryDirectory(prefix="rote-dry-emit-") as out:
         try:
             adapter.emit(pipeline, Path(out) / "runtime")
-            unshipped = unshipped_imports(Path(out) / "runtime")
+            unshipped = unshipped_imports(Path(out) / "runtime" / code_dir)
         except Exception as e:  # noqa: BLE001 (every refusal is the agent's to fix)
             return [
                 ContractFinding(

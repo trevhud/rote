@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -139,6 +140,17 @@ def detect_target(path: str | Path, runtime: str | None = None) -> RunTarget:
     p = Path(path).resolve()
     if not p.is_dir():
         raise TargetError(f"{p} is not a directory")
+    from rote.adapters.skill import emitted_skill
+
+    if emitted_skill(p) is not None:
+        # Not a source skill: running it as one would pay an agent to run
+        # a skill whose steps are code. Its own driver runs it.
+        raise TargetError(
+            f"{p} is a compiled skill (--runtime skill): an agent client runs it through "
+            f"its driver, not `rote run`. To run the driver yourself: "
+            f"{shlex.quote(sys.executable)} -I {shlex.quote(str(p / 'scripts' / 'run.py'))} "
+            "start '<input json>'"
+        )
     if (p / "SKILL.md").is_file():
         return RunTarget(kind="skill", path=p)
 

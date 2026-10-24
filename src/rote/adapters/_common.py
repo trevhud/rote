@@ -12,6 +12,7 @@ once the second adapter proved the helpers were genuinely shared.
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import re
@@ -317,6 +318,51 @@ class EmitWriter:
         self.preserved: dict[str, Path] = {}
         #: relative path → functions there that run via MCP (MCP_BACKED_KEY)
         self._mcp_backed: dict[str, list[str]] = {}
+        #: Top-level manifest entries an adapter records (:meth:`record`).
+        self._records: dict[str, Any] = {}
+
+    def scoped(self, *prefix: str) -> EmitWriter:
+        """A writer for ``output_dir/<prefix...>`` that records into this one's manifest.
+
+        For a runtime whose code sits below its root (a compiled skill's
+        ``scripts/``): the shared helpers that write ``extracted/`` then
+        land there, and every path is still recorded relative to the root,
+        so one manifest covers the whole tree. Call :meth:`finalize` on the
+        root writer only.
+        """
+        view = copy.copy(self)  # shares _previous, _current, preserved, _mcp_backed
+        view.output_dir = resolve_within(self.output_dir, *prefix)
+        return view
+
+    def retire(self, *parts: str) -> bool:
+        """Remove a file an earlier emit wrote that this one no longer produces.
+
+        Deleted only while it is exactly what rote wrote (its manifest hash),
+        and its entry leaves the manifest either way, so the manifest never
+        attests to a file this emit did not write. A file the user edited is
+        kept on disk. True when a file was deleted.
+        """
+        target = resolve_within(self.output_dir, *parts)
+        rel = target.relative_to(self._root).as_posix()
+        recorded = self._previous.pop(rel, None)
+        self._current.pop(rel, None)
+        if recorded is None or not target.is_file():
+            return False
+        if self._hash(target.read_bytes()) != recorded:
+            return False
+        target.unlink()
+        return True
+
+    def record(self, key: str, value: Any) -> None:
+        """Record ``key: value`` at the manifest's top level (written by :meth:`finalize`).
+
+        For what an emit decided that a later reader of the directory must
+        know (a compiled skill's name and judge mode). Not carried forward:
+        each emit records it afresh.
+        """
+        if key in ("version", "files", MCP_BACKED_KEY):
+            raise ValueError(f"{key!r} is the manifest's own key")
+        self._records[key] = value
 
     def _load_previous(self) -> dict[str, str]:
         if not self._manifest_path.is_file():
@@ -414,6 +460,7 @@ class EmitWriter:
         if self._mcp_backed:
             # Not carried forward: each emit decides it afresh from the IR.
             payload[MCP_BACKED_KEY] = dict(sorted(self._mcp_backed.items()))
+        payload.update(sorted(self._records.items()))
         self._manifest_path.write_text(
             json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
