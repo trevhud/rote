@@ -57,7 +57,53 @@ def fingerprint_changes(before: dict[str, str], after: dict[str, str]) -> list[s
     return lines
 
 
+# ───────── The suite needs the dev extra ─────────
+#
+# Tests used to guard optional dependencies one by one with importorskip.
+# The guards kept missing cases, and where they held they skipped
+# silently: a reviewer's run passed while skipping every core test of the
+# skill runtime. The suite now runs only where CI runs it, with the dev
+# extra installed, and says so before collecting anything.
+
+#: What CI runs, and so the one fix for a missing dev requirement.
+DEV_INSTALL = "uv sync --extra dev"
+
+
+def missing_dev_requirements() -> list[str]:
+    """Each requirement of pyproject's dev extra this environment does not meet.
+
+    Checked by distribution, not by import: fastmcp's server half and the
+    slim client every base install has are both ``import fastmcp``, and
+    types-pyyaml has no module at all."""
+    import tomllib
+    from importlib import metadata
+
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    missing = []
+    for spec in project["project"]["optional-dependencies"]["dev"]:
+        requirement = Requirement(spec)
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        try:
+            version = metadata.version(requirement.name)
+        except metadata.PackageNotFoundError:
+            missing.append(spec)
+            continue
+        if not requirement.specifier.contains(version, prereleases=True):
+            missing.append(f"{spec} (found {version})")
+    return missing
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
+    missing = missing_dev_requirements()
+    if missing:
+        pytest.exit(
+            "the test suite needs the dev extra; missing: "
+            f"{', '.join(missing)}. Install it with: {DEV_INSTALL}",
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
     session.config.stash[_EXAMPLES_BEFORE] = examples_fingerprint(EXAMPLES_DIR)
 
 

@@ -28,7 +28,6 @@ from rote.bench.fidelity_score import (
     score_case,
     stable_reference,
 )
-from tests._helpers import require_extra
 
 
 def test_normalize_folds_amount_text_case_and_space() -> None:
@@ -348,7 +347,6 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Started as the bench starts it, called through rote's own MCP client."""
-    require_extra("serve")
     from rote.bench.fidelity import Case, CaseFile, fixture_servers, read_calls
     from rote.mcp._runtime_helper import call_mcp_tool
 
@@ -429,7 +427,6 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
 
 
 def test_fixture_argument_checks_match_a_real_servers() -> None:
-    require_extra("serve")
     from rote.bench.fixture_mcp import _schema_error
 
     schema = {
@@ -451,7 +448,6 @@ def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
     """The references were recorded before the fixtures checked arguments;
     a reference call the check would now refuse would make the reference
     itself unreachable."""
-    require_extra("serve")
     from rote.bench.fidelity import load_cases
     from rote.bench.fixture_mcp import _schema_error
     from rote.eval.gate_server import GATE_SERVER
@@ -513,8 +509,6 @@ def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
     tool that takes `query`. The fixture refuses it, the case lists the
     refused call with the reason, and the failure is the mcp binding's,
     not a replay of the node's impl (here a stub that never runs)."""
-    require_extra("dbos")
-    require_extra("serve")
     import yaml
 
     from rote.bench.fidelity import pipeline_fidelity
@@ -629,7 +623,6 @@ def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> Non
     """DBOS re-raises a step's error without its traceback; the replay
     rebuilds the failing node's inputs from what DBOS recorded and finds
     the line. Breaks the gold expense-audit at a known line to check it."""
-    require_extra("dbos")
     import shutil
 
     from rote.adapters import get_adapter
@@ -700,8 +693,6 @@ def test_the_committed_pipeline_runs_its_fidelity_cases(example: str, tmp_path: 
     every case the way the skill did: completed where the skill completed,
     stopped where it stopped. A pipeline that crashes on its own example's
     data fails here, not in a paid measurement round."""
-    require_extra("dbos")
-    require_extra("serve")
     from rote.bench.fidelity import pipeline_fidelity
 
     from .conftest import EXAMPLES_DIR
@@ -724,8 +715,6 @@ def test_a_run_that_dies_building_a_payload_names_the_binding(tmp_path: Path) ->
     `["content"]` off the CSV text the Drive tool returns. No step recorded
     an error, so the failure is the binding: the node whose payload was
     being built, the reference, and what the source really returned."""
-    require_extra("dbos")
-    require_extra("serve")
     from rote.bench.fidelity import pipeline_fidelity
 
     from .conftest import EXAMPLES_DIR

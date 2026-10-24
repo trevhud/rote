@@ -27,7 +27,6 @@ from typing import Any
 from rote.ir import Pipeline
 from rote.plan import build_plan
 from rote.skill_target import write_scripts
-from tests._helpers import require_extra
 
 _FRESH = ("_rote_skill", "_rote_mcp", "_rote_inference")
 SERVER_SCRIPT = Path(__file__).resolve().parent / "_skill_mcp_server.py"
@@ -118,13 +117,11 @@ def result_of(text: str) -> Any:
 class FixtureServer:
     """``tests/_skill_mcp_server.py`` on a free localhost port, with its hit log.
 
-    With ``bearer``, the server answers 401 to any request without that token.
-    It is a FastMCP server, so it needs fastmcp's server half (the serve extra)."""
+    With ``bearer``, the server answers 401 to any request without that token."""
 
     def __init__(
         self, hits: Path, only: list[str] | None = None, bearer: str | None = None
     ) -> None:
-        require_extra("serve")
         self.hits = hits
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))

@@ -40,7 +40,6 @@ from rote.adapters import get_adapter
 from rote.cli import main
 from rote.ir import load_pipeline
 from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
-from tests._helpers import require_extra
 from tests._messages_api import reject_like_the_api, send_json, structured_message
 from tests._skill_driver import FixtureServer, fixture_server, header, result_of, run_dir
 
@@ -204,7 +203,6 @@ def pipeline_result(
     judges: JudgeStub | None = None,
 ) -> Any:
     """``compiled`` emitted for DBOS and run once: its exit nodes' results."""
-    require_extra("dbos")
     from rote.eval.empirical import run_pipeline_trial
 
     pipeline = load_pipeline(compiled / "pipeline.yaml")
@@ -345,7 +343,6 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
 def test_ops_report_with_a_duty_managers_answer_matches_its_pipeline(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    require_extra("serve")
     from rote.bench.fidelity import fixture_servers, load_cases, map_servers, read_calls
 
     compiled = EXAMPLES / "ops-report" / "runs" / "2026-10-23-system1"

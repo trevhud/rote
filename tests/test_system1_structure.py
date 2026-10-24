@@ -21,7 +21,6 @@ from rote.compiler.system1.skeleton import pipeline_doc
 from rote.compiler.system1.tiebreak import Lane
 from rote.compiler.tool_grounding import ToolSchema
 from rote.ir import Pipeline
-from tests._helpers import require_extra
 
 SKILL = """\
 ---
@@ -1022,7 +1021,6 @@ def test_no_lane_for_the_structure_pass_names_its_opt_out(monkeypatch: pytest.Mo
 
 
 def test_an_openai_api_compile_keeps_its_own_model_for_the_structure_pass() -> None:
-    require_extra("openai-api")
     from tests._helpers import GATEWAY_URL, openai_compile_driver
 
     for choice in structure.MODELS:
@@ -1037,7 +1035,6 @@ def test_an_openai_api_structure_pass_goes_only_to_the_compiles_gateway(
     """The real client to the wire: the skeleton request reaches the gateway,
     schema-locked, with the timeout the pass needs, and nothing touches an
     Anthropic key, client or claude."""
-    require_extra("openai-api")
     from rote.compiler import system1
     from tests._helpers import (
         assert_sent_through_the_gateway,
@@ -1067,7 +1064,6 @@ def test_an_openai_api_compile_gives_both_passes_its_own_client(
 ) -> None:
     """Through Compiler: the structure pass and the tie-break each get the
     driver's gateway client, with an Anthropic key and claude in reach."""
-    require_extra("openai-api")
     import asyncio
     import shutil
 

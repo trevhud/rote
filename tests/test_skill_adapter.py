@@ -39,7 +39,6 @@ from rote.ir import Pipeline, load_pipeline
 from rote.plan import PlanError, plan_hash
 from rote.skill_target import HELPER_FILES
 from rote.skills.discovery import read_frontmatter
-from tests._helpers import require_extra
 from tests._messages_api import reject_like_the_api, send_json, structured_message
 from tests._skill_driver import FixtureServer, drive, fixture_server, header, result_of, run_dir
 
@@ -700,7 +699,6 @@ def test_expense_audit_shows_the_controller_the_review_queue(
 def test_ops_report_calls_its_tools_only_once_the_user_declares_them_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    require_extra("serve")
     from rote.bench.fidelity import fixture_servers, load_cases, map_servers, read_calls
 
     casefile = load_cases(EXAMPLES / "ops-report")
@@ -881,7 +879,6 @@ COUNT = "def count(labels):\n    return {'kept': sum(x['label'] == 'keep' for x 
 def test_helper_judges_run_in_code_one_call_per_element_on_the_irs_model(
     tmp_path: Path, messages: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    require_extra("api")  # the helper calls the Messages API through the SDK
     monkeypatch.setenv("ROTE_BASE_URL_LABELLED", messages)
     skill = _source_skill(tmp_path, "sorter", "Sort notes.")
     compiled = _compiled(tmp_path, FANNED, {"count.py": COUNT})
@@ -912,7 +909,6 @@ def test_a_helper_answer_outside_the_schema_stops_the_run(
 ) -> None:
     """The helper's answer is held to the output schema like an agent's: an
     enum value the judge does not allow never reaches the next step."""
-    require_extra("api")
     monkeypatch.setenv("ROTE_BASE_URL_LABELLED", messages)
     skill = _source_skill(tmp_path, "sorter", "Sort notes.")
     out = tmp_path / "sorter"
