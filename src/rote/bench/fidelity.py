@@ -302,8 +302,12 @@ def read_calls(log: Path) -> list[dict[str, Any]]:
 # ───────── the skill side: reference traces ─────────
 
 
-def agent_instructions(casefile: CaseFile, case: Case) -> str:
-    """The output contract, and how the run reaches the person at each gate."""
+def agent_instructions(casefile: CaseFile, case: Case, *, tools_clause: bool = True) -> str:
+    """The output contract, and how the run reaches the person at each gate.
+
+    ``tools_clause=False`` leaves out the line that sends the agent to the
+    connected MCP tools: a compiled skill's agent has none, its driver calls
+    them (``rote eval --run --runtime skill``)."""
     fields = "\n".join(f"- `{k}`: {v}" for k, v in casefile.output_fields.items())
     parts = [
         "This run is recorded as a reference. Your result.json must use exactly "
@@ -317,7 +321,7 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
     ]
     if case.gates:
         parts.append(GATE_INSTRUCTIONS)
-    if casefile.servers:
+    if casefile.servers and tools_clause:
         parts.append(
             "Use the connected MCP tools for every external system the skill "
             "names; there is no other way to reach them."

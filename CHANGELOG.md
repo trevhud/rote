@@ -11,6 +11,28 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`rote eval <compiled> --run --runtime skill`: the paired eval of a
+  skill and its compiled skill.** Each side runs as a `claude -p` subagent
+  under the same isolation flags, on the same input, with Bash loaded on
+  both (the original's is denied, and the compiled side may run only `rote skill
+  run <name>`). The compiled skill is emitted, installed into a throwaway
+  state and driven through `rote skill run`. A gate on either side is
+  answered by the same simulated person (`rote_gates`). Per side it reports
+  wall time, all four token buckets, cost, turns, and the context the skill
+  left (`K = I - T*B`, with `B` from one control run per side). Each pair gets a
+  field-by-field compare (`rote.proof`), with the original against itself as
+  the noise floor. A compiled trial fails when it has no finished run folder
+  ("bypassed the driver"), when a gate in its journal was not answered by
+  the person after an `ask_person` call, or when the agent reports a value
+  the driver's result contradicts. `--case <id>` runs a bench case (its
+  fixtures, gate answers and reference score). `--budget USD` is required,
+  and a shared `--ledger` stops the eval before a run that would cross it.
+  Results append to the eval corpus as `kind: skill_ab`. A source skill as
+  the target is compiled first with a pinned argv (`--local`, `--agent
+  claude`, `--decider rules`, `--structure haiku`, `--tiebreak none`).
+- **`rote.proof`**, the field compare moved from the paused `rote try` draft
+  (#250): `equal` / `drifts` / `wording` fields, and no same-result claim
+  from zero exact fields ("no fields to compare exactly").
 - **`--runtime skill` emits a compiled skill: a skill directory any agent
   client loads.** `rote emit --runtime skill` and `rote compile --runtime
   skill` write SKILL.md with the original skill's name and description and a
