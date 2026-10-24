@@ -1241,6 +1241,42 @@ def test_skill_run_forms_the_fast_path_does_not_take_reach_the_cli(
     assert "the following arguments are required: name" in capsys.readouterr().err
 
 
+SKILL_RUN_FORMS = [
+    ["skill", "run", "d"],
+    ["skill", "run", "d", "start", '{"a": 1}'],
+    ["skill", "run", "d", "start", "--file", "in.json"],
+    ["skill", "run", "d", "answer", "r1", "s1", "{}", "--said", "yes"],
+    ["skill", "run", "d", "--", "start"],
+    ["skill", "run", "d", "--"],
+    ["skill", "run", "d", "--", "--", "x"],
+    ["skill", "run", "d", "start", "--", "x"],
+    ["skill", "run", "d", "-x"],
+    ["skill", "run", "d", "--help"],
+    ["skill", "run", "d", "-h"],
+    ["skill", "run", "--", "d", "start"],
+    ["skill", "run", "-h"],
+    ["skill", "run"],
+    ["skill", "list"],
+    ["run", "d", "start"],
+]
+
+
+@pytest.mark.parametrize("argv", SKILL_RUN_FORMS, ids=" ".join)
+def test_the_fast_path_reads_skill_run_exactly_as_the_cli_parser(argv: list[str]) -> None:
+    """Every form the fast path takes, it must read as argparse does; the rest it
+    leaves to the CLI. A new option on `skill run` that argparse reads
+    differently fails here instead of drifting."""
+    from rote.cli import _build_parser
+    from rote.entry import skill_run_args
+
+    fast = skill_run_args(argv)
+    if fast is None:
+        return
+    args = _build_parser().parse_args(argv)
+    assert (args.command, args.skill_command) == ("skill", "run")
+    assert (args.name, list(args.driver_args)) == fast
+
+
 def test_the_cli_parser_does_not_import_the_anthropic_sdk() -> None:
     """``--help`` text reads the api driver's default model, which once imported
     the anthropic SDK (~490 ms) on every rote command."""
