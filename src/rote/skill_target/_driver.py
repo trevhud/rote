@@ -160,12 +160,15 @@ class Block:
         invisible character is escaped (:func:`escape_invisible`), which leaves
         the newline as the only line break ``str.splitlines`` can find, and a
         body line that would start with the protocol word is indented: no body
-        text can pose as a block header."""
+        text can pose as a block header. The header line itself carries
+        agent-typed words (a tool name, a run id), so it is escaped the same
+        way, its newlines spelled ``\\n``: one header line, always."""
+        header = escape_invisible(self.header).replace("\n", "\\n")
         body: list[str] = []
         for line in self.lines:
             for part in escape_invisible(line).split("\n"):
                 body.append(" " + part if part.startswith(PROTOCOL) else part)
-        return "\n".join([f"{PROTOCOL} {self.kind} {self.header}".rstrip(), *body]) + "\n"
+        return "\n".join([f"{PROTOCOL} {self.kind} {header}".rstrip(), *body]) + "\n"
 
 
 class Stop(Exception):
@@ -185,14 +188,21 @@ _INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 def escape_invisible(text: str) -> str:
     """``text`` with every invisible character spelled ``\\uXXXX``, newline and
     tab kept. A copy of :func:`rote.adapters._common.escape_invisible` (this
-    file imports nothing from rote), pinned to it by a test."""
+    file imports nothing from rote), pinned to it by a test on the BMP. Above
+    U+FFFF it writes the UTF-16 surrogate pair (``\\udb40\\udc41``), not
+    ``\\U000e0041``: blocks print JSON, and only the pair is a JSON escape, so
+    a value copied back from a block parses to the original character."""
     import unicodedata
 
     out: list[str] = []
     for ch in text:
         if ch not in "\n\t" and unicodedata.category(ch) in _INVISIBLE_CATEGORIES:
             code = ord(ch)
-            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+            if code > 0xFFFF:
+                code -= 0x10000
+                out.append(f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}")
+            else:
+                out.append(f"\\u{code:04x}")
         else:
             out.append(ch)
     return "".join(out)

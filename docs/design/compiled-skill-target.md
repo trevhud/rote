@@ -446,9 +446,13 @@ design added, so these rules are part of the protocol:
    results and LOOP's tool text are untrusted, so every block spells each
    character in Unicode categories Cc, Cf, Zl, Zp and Cs as `\uXXXX`
    (a stdlib copy of the adapters' `escape_invisible`, pinned to it by a
-   test), keeping newline and tab. It also indents any body line that
-   would start with `ROTE/1`, so no tool text can forge a block header
-   under `str.splitlines()`.
+   test on the BMP), keeping newline and tab. Above U+FFFF it writes the
+   UTF-16 surrogate pair, the only form that is a JSON escape, so a value
+   copied back from a block parses to the original. It also indents any
+   body line that would start with `ROTE/1`. The header line carries
+   agent-typed words (a tool name, a run id), so it is escaped the same
+   way with its newlines spelled `\n`. No tool text or typed argument can
+   forge a block header under `str.splitlines()`.
 3. **The agent never retypes input.** `start --file <path>` takes input
    that already lives in a file. Retyping expense-audit's input as an
    argument cost 1.4k output tokens and 12 s.
