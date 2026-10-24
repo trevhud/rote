@@ -4,7 +4,9 @@ No inference and no network beyond localhost. Emission is checked by value;
 each committed example is emitted and then driven, with the driver the
 emitted skill ships, against fixture MCP servers (real fastmcp, real HTTP)
 and scripted answers, far enough to show its files work together. A judge
-answered by the inference helper calls a local Messages stub.
+answered by the inference helper calls a local Messages stub. Each example's
+run to DONE, through ``rote skill install`` and ``rote skill run``, and its
+parity with the pipeline's own run, is ``tests/test_skill_e2e.py``'s.
 """
 
 from __future__ import annotations
@@ -638,27 +640,6 @@ def test_rote_run_refuses_a_compiled_skill_instead_of_paying_an_agent(tmp_path: 
 # ───────── each example, emitted and driven ─────────
 
 
-def test_docs_digest_runs_to_done_with_the_recorded_digest(
-    tmp_path: Path, fx: FixtureServer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from rote import demo
-
-    ref = demo.load_reference()
-    monkeypatch.setenv("ROTE_MCP_MSLEARN_URL", fx.url)
-    monkeypatch.setenv("ROTE_MCP_DEEPWIKI_URL", fx.url)
-    out = tmp_path / "docs-digest"
-    emit(DOCS_DIGEST, out)
-    status, done = drive(out / "scripts", "start", json.dumps(ref.input), skill="docs-digest")
-    assert status == 0, done
-    assert header(done) == {"kind": "DONE", "skill": "docs-digest", "run": header(done)["run"]}
-    assert result_of(done) == ref.pipeline_output
-    assert run_dir(done).parent.name == "docs-digest"
-    assert [c["tool"] for c in fx.calls()] and set(c["tool"] for c in fx.calls()) == {
-        "microsoft_docs_search",
-        "read_wiki_structure",
-    }
-
-
 def test_run_py_is_the_entry_point_and_names_the_skill(tmp_path: Path, fx: FixtureServer) -> None:
     """The emitted run.py, as rote skill run will start it: a subprocess,
     -I, rote's interpreter. Its blocks name the skill, not the pipeline."""
@@ -690,48 +671,7 @@ def test_run_py_is_the_entry_point_and_names_the_skill(tmp_path: Path, fx: Fixtu
     assert result_of(proc.stdout) == demo.load_reference().pipeline_output
 
 
-def test_expense_audit_asks_the_person_and_files_their_answer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from rote.bench.fidelity import load_cases
-
-    monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(tmp_path / "reports"))
-    out = tmp_path / "expense-audit"
-    emit(EXPENSE_AUDIT, out)
-    scripts = out / "scripts"
-    status, human = drive(
-        scripts,
-        "start",
-        "--file",
-        str(EXAMPLES / "expense-audit" / "input.json"),
-        skill="expense-audit",
-    )
-    assert status == 0, human
-    fields = header(human)
-    assert (fields["kind"], fields["step"], fields["of"]) == ("HUMAN", "controller_review", "gate")
-    (case,) = [c for c in load_cases(EXAMPLES / "expense-audit").cases if c.id == "september"] or [
-        load_cases(EXAMPLES / "expense-audit").cases[0]
-    ]
-    answer = json.dumps(case.gates[0])
-    status, done = drive(
-        scripts,
-        "answer",
-        fields["run"],
-        "controller_review",
-        answer,
-        "--said",
-        "Approve 2403, 2413 and 2420; reject 2410. Priya",
-        skill="expense-audit",
-    )
-    assert status == 0, done
-    filed = result_of(done)["file_report"]
-    assert filed["reviewer"] == "Priya Shah"
-    assert Path(filed["report_path"]).parent == tmp_path / "reports"
-    gate = json.loads((run_dir(done) / "nodes" / "controller_review.json").read_text())
-    assert gate["answered_by"] == "human" and gate["said"].startswith("Approve 2403")
-
-
-def test_ops_report_reads_its_fixtures_asks_the_duty_manager_and_reports(
+def test_ops_report_calls_its_tools_only_once_the_user_declares_them_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from rote.bench.fidelity import fixture_servers, load_cases, map_servers, read_calls
@@ -780,20 +720,9 @@ def test_ops_report_reads_its_fixtures_asks_the_duty_manager_and_reports(
             "gate",
         )
         reads = read_calls(log)
-    # Four reads, one per mcp-bound node, each with the IR's constant arguments.
+    # Four reads, one per mcp-bound node. The run to DONE, and its parity with
+    # the pipeline's own run, is tests/test_skill_e2e.py's.
     assert sorted(c["tool"] for c in reads) == ["read_file_content"] * 3 + ["search_threads"]
-    status, done = drive(
-        out / "scripts",
-        "answer",
-        fields["run"],
-        "manual_data_gate",
-        json.dumps(case.gates[0]),
-        "--said",
-        "18 green, 2 red, 1 grey, 1 other; sorters as in the sheet",
-        skill="ops-report",
-    )
-    assert status == 0, done
-    assert set(result_of(done)) == {"executive_report"}
 
 
 def test_deal_monitor_runs_its_tools_then_hands_the_agent_its_first_judge(
