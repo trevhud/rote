@@ -31,6 +31,8 @@ from tests._messages_api import CURRENT_SONNET
 from tests.test_agent_loop_output_parity import (
     EXPECTED,
     PIPELINE,
+    REFUSAL,
+    REFUSALS,
     SUBMITTED,
     MessagesStub,
     assert_the_model_was_offered_the_declared_output,
@@ -247,9 +249,27 @@ def test_ts_submission_is_validated_with_the_shared_message(
     MessagesStub.mode = "bad"
     result = _drive(loop_app, loop_env(messages_stub, mcp_server, tmp_path))
     assert result == {
+        # Refused by the submit tool, then again as the forced turn's answer:
+        # the same words as the Python helper.
         "error": "agent loop research (api) did not hand back its declared output: "
+        "every answer it gave (2) broke the step's schema; the last: "
         "output.score: expected integer, got string"
     }
+
+
+def test_ts_submit_tool_refuses_a_bad_answer_back_to_the_model(
+    loop_app: Path,
+    messages_stub: str,  # noqa: F811
+    mcp_server: str,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """Fixed inside the loop, with the Python submit tool's words: the node
+    does not fail, so no durable retry reruns the loop's writes."""
+    MessagesStub.mode = "resubmit"
+    result = _drive(loop_app, loop_env(messages_stub, mcp_server, tmp_path))
+    assert result == {"output": SUBMITTED}
+    assert REFUSALS == [REFUSAL]
+    assert len(MessagesStub.requests) == 3
 
 
 def test_ts_submit_tool_is_strict_when_the_schema_allows(

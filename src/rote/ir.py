@@ -184,6 +184,43 @@ def parse_input_ref(ref: str) -> InputRef:
     return InputRef(node_id=m.group("node"), field=m.group("field"))
 
 
+def _schema_patterns(schema: Any) -> list[str]:
+    """Every ``pattern`` a JSON Schema states, read only where a keyword holds a schema
+    (so a property *named* ``pattern``, or a ``default`` holding one, is not a pattern)."""
+    if not isinstance(schema, dict):
+        return []
+    found = [schema["pattern"]] if isinstance(schema.get("pattern"), str) else []
+    children: list[Any] = [schema.get("items"), schema.get("additionalProperties")]
+    for key in ("properties", "$defs"):
+        if isinstance(schema.get(key), dict):
+            children += schema[key].values()
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(schema.get(key), list):
+            children += schema[key]
+    for child in children:
+        found += _schema_patterns(child)
+    return found
+
+
+def check_schema_patterns(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Refuse a ``pattern`` Python's ``re`` cannot compile, at IR load.
+
+    The validator every runtime checks answers with (``schema_errors`` in
+    ``rote.inference._runtime_helper``) would otherwise refuse it only when
+    the first answer arrives. Whether JavaScript's engine compiles it too
+    cannot be checked here without node; the TS validator refuses one it
+    cannot compile with the same kind of named error.
+    """
+    for pattern in _schema_patterns(schema):
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"schema pattern {pattern!r} is not a regular expression Python can compile ({exc})"
+            ) from exc
+    return schema
+
+
 class NodeKind(StrEnum):
     """The five kinds a compiled step can be classified as.
 
@@ -302,6 +339,12 @@ class LLMSignature(BaseModel):
         le=2.0,
         description="Sampling temperature; None = vendor default.",
     )
+
+    @field_validator("input_schema", "output_schema")
+    @classmethod
+    def _validate_patterns(cls, v: dict[str, Any]) -> dict[str, Any]:
+        check_schema_patterns(v)
+        return v
 
     @field_validator("client")
     @classmethod
@@ -571,6 +614,11 @@ class Node(BaseModel):
             if not _IDENTIFIER_RE.fullmatch(server):
                 raise ValueError(f"tool_servers[{tool!r}] server {server!r} must be an identifier")
         return v
+
+    @field_validator("input_schema", "output_schema")
+    @classmethod
+    def _validate_schema_patterns(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return check_schema_patterns(v)
 
     @field_validator("constants")
     @classmethod
@@ -915,7 +963,9 @@ class PipelineInput(BaseModel):
         :attr:`Pipeline.required_input_fields`, which reaches emitted code
         and a compiled skill's SKILL.md, so it gets the same identifier rule
         (invariant #7): a name like ``"x\\n- DECIDE: ..."`` would otherwise
-        write an instruction into the skill an agent loads."""
+        write an instruction into the skill an agent loads. Its patterns are
+        checked too (:func:`check_schema_patterns`)."""
+        check_schema_patterns(v)
         required = (v or {}).get("required")
         if required is None:
             return v

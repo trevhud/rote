@@ -134,6 +134,7 @@ class BdrCampaignWorkflow:
                     "brief": pipeline_input,
                 },
                 start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+                retry_policy=RetryPolicy(maximum_attempts=1),
             ),
         )
 
@@ -147,6 +148,7 @@ class BdrCampaignWorkflow:
                 **_input_field(pipeline_input, "target_quota", "target_quota"),
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("15m")),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         # ─── Wave 3 ───
@@ -187,6 +189,7 @@ class BdrCampaignWorkflow:
                 "contacts": hubspot_upsert_result["upserted"],
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         # ─── Wave 7 ───
@@ -196,6 +199,7 @@ class BdrCampaignWorkflow:
                 "contacts": exclusion_check_dnc_result["passed"],
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         # ─── Wave 8 ───
@@ -205,6 +209,7 @@ class BdrCampaignWorkflow:
                 "contacts": exclusion_check_recent_result["passed"],
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         # ─── Wave 9 ───
@@ -217,6 +222,7 @@ class BdrCampaignWorkflow:
                         "personalize_email",
                         {"contact": _item, **_input_field(pipeline_input, "campaign_type", "campaign_type"), "intel": target_research_result},
                         start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+                        retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                     for _item in _fan_out_list(
                         exclusion_check_sequence_result["passed"],
@@ -248,6 +254,7 @@ class BdrCampaignWorkflow:
                 "template_ids": create_sales_template_result["template_ids"],
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         # ─── Wave 12 ───

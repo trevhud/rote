@@ -58,7 +58,9 @@ the detail in its message is reconstructable everywhere.
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -1109,9 +1111,12 @@ def call_judge(
 ) -> dict[str, Any]:
     """Run one schema-locked judge call and return its raw output dict.
 
-    The caller owns validation (it holds the generated Pydantic model);
-    this returns the decoded payload so the same helper serves every
-    judge regardless of its schema.
+    The answer is held to the whole output schema here, on every lane: the
+    constraints structured outputs move into the description (bounds,
+    ``pattern``, lengths, item counts) are what the caller's Pydantic model
+    drops too. A violation fails the call naming each path, and the step's
+    own retry asks again. The caller still validates with its model, which
+    types the value.
     """
     provider = select_provider(node_id, client, base_url=base_url)
     payload, rows = structured_call(
@@ -1127,6 +1132,11 @@ def call_judge(
     )
     for row_model, row_usage in rows:
         _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+    errors = schema_errors(output_schema, payload, "output")
+    if errors:
+        raise RuntimeError(
+            f"judge {node_id} answered outside its output schema: " + "; ".join(errors)
+        )
     return payload
 
 
@@ -1424,77 +1434,444 @@ def _agent_task_prompt(
     return "\n".join(parts)
 
 
-def _schema_errors(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
-    """Where ``value`` breaks ``schema``: types, required keys, extra keys.
+# ───────── JSON Schema answers ─────────
+#
+# One validator for every answer rote checks against a schema: every judge's
+# answer (:func:`call_judge`) and an agent loop's submissions and declared
+# output (:func:`_declared_output`) on every Python runtime,
+# and a compiled skill's judge, gate, tool-argument and input checks
+# (``rote.skill_target._driver``, which loads this module as
+# ``_rote_inference``). The TS runtimes run the same rules from
+# ``rote.adapters._ts_common.SCHEMA_ERRORS_TS``;
+# ``tests/test_schema_validator_parity.py`` holds both, and the emitted
+# Pydantic models, to one corpus.
+#
+# The rule is the emitted judge's own: what its Pydantic model accepts
+# (``rote.adapters._py_common._SchemaToPydantic``), read strictly, plus the
+# JSON Schema constraints that model does not carry.
+#
+# - **The Pydantic model's rules.** Types, ``required`` (a property with a
+#   ``default`` is not required, and an optional property may be ``null``,
+#   as the model's ``X | None = None`` field allows), ``additionalProperties:
+#   false`` (``extra="forbid"``; otherwise undeclared keys are dropped),
+#   ``enum`` (``Literal``), ``anyOf`` / ``oneOf`` (a union: one matching
+#   branch is enough), ``items``, local ``$ref`` into ``$defs``.
+# - **Read strictly.** No coercion: ``"3"`` is not an integer, ``1`` is not
+#   a boolean. An integral float (``3.0``) is an integer, as JSON says.
+# - **Plus the constraints the model drops.** ``const``, ``minimum`` /
+#   ``maximum`` / exclusive bounds, ``multipleOf``, ``minLength`` /
+#   ``maxLength`` (in code points), ``pattern``, ``minItems`` / ``maxItems``,
+#   ``uniqueItems``, ``allOf``, and a map's typed values
+#   (``additionalProperties: <schema>`` on an object that declares no
+#   properties, which the model reads as ``dict[str, Any]``). Structured
+#   outputs move these into the description, so no decoder enforces them;
+#   here they are checked.
+#
+# A ``pattern`` is read by each language's own engine (``re.search`` here, a
+# ``u``-flag ``RegExp`` in TS). They agree on the syntax schemas use, but not
+# on ``\d`` / ``\w`` over non-ASCII text, which Python reads as Unicode.
 
-    The subset rote's agent-loop schemas use (``rote.adapters._common
-    .ir_type``): ``type``, ``properties`` / ``required`` /
-    ``additionalProperties: false``, ``items``, ``anyOf`` and ``enum``. A
-    description-only schema (a named type the IR never defines) accepts
-    anything. Stdlib only: this module ships verbatim in emitted apps.
-    """
-    if "anyOf" in schema:
-        options = [_schema_errors(option, value, path) for option in schema["anyOf"]]
-        if any(not errors for errors in options):
-            return []
-        return [f"{path}: matches none of its allowed types"]
-    if "enum" in schema and value not in schema["enum"]:
-        return [f"{path}: {value!r} is not one of {schema['enum']!r}"]
-    kind = schema.get("type")
-    checks = {
-        "string": lambda v: isinstance(v, str),
-        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-        "boolean": lambda v: isinstance(v, bool),
-        "null": lambda v: v is None,
-        "object": lambda v: isinstance(v, dict),
-        "array": lambda v: isinstance(v, list),
-    }
-    if kind is None:
-        return []
-    if kind in checks and not checks[kind](value):
-        return [f"{path}: expected {kind}, got {type(value).__name__}"]
-    errors: list[str] = []
+
+def json_type(value: Any) -> str:
+    """The JSON name of ``value``'s type, for messages an agent reads."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _is_type(kind: str, value: Any) -> bool:
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "integer":
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and math.isfinite(value) and value.is_integer()
+    if kind == "number":
+        if isinstance(value, bool):
+            return False
+        return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+    if kind == "boolean":
+        return isinstance(value, bool)
+    if kind == "null":
+        return value is None
     if kind == "object":
-        properties = schema.get("properties", {})
-        for key in schema.get("required", []):
-            if key not in value:
-                errors.append(f"{path}: missing key {key!r}")
-        for key, item in value.items():
-            if key in properties:
-                errors.extend(_schema_errors(properties[key], item, f"{path}.{key}"))
-            elif schema.get("additionalProperties") is False:
-                errors.append(f"{path}: unexpected key {key!r}")
-    if kind == "array" and isinstance(schema.get("items"), dict):
-        for index, item in enumerate(value):
-            errors.extend(_schema_errors(schema["items"], item, f"{path}[{index}]"))
+        return isinstance(value, dict)
+    if kind == "array":
+        return isinstance(value, list)
+    raise ValueError(f"unknown JSON Schema type {kind!r}")
+
+
+def _resolve(schema: Mapping[str, Any], root: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Follow ``$ref`` chains into the root's ``$defs`` (the only form rote emits)."""
+    seen: set[str] = set()
+    while "$ref" in schema:
+        ref = schema["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+            raise ValueError(f"unsupported $ref {ref!r}: only #/$defs/<name> is followed")
+        if ref in seen:
+            raise ValueError(f"cyclic $ref {ref!r}")
+        seen.add(ref)
+        name = ref[len("#/$defs/") :]
+        defs = root.get("$defs") or {}
+        if name not in defs:
+            raise ValueError(f"unknown $ref target {ref!r}")
+        schema = defs[name]
+    return schema
+
+
+def _short(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _defaulted(prop: Any) -> bool:
+    return isinstance(prop, Mapping) and "default" in prop
+
+
+def _optional_props(schema: Mapping[str, Any]) -> set[str]:
+    """Properties the Pydantic model makes optional: not required, or defaulted."""
+    required = set(schema.get("required") or ())
+    return {
+        key
+        for key, prop in (schema.get("properties") or {}).items()
+        if key not in required or _defaulted(prop)
+    }
+
+
+def _nullable_props(schema: Mapping[str, Any]) -> set[str]:
+    """Properties the model types ``X | None = None``: optional with no default."""
+    required = set(schema.get("required") or ())
+    return {
+        key
+        for key, prop in (schema.get("properties") or {}).items()
+        if key not in required and not _defaulted(prop)
+    }
+
+
+def schema_errors(
+    schema: Any, value: Any, path: str = "answer", root: Mapping[str, Any] | None = None
+) -> list[str]:
+    """Every place ``value`` breaks ``schema``, as ``path: what`` lines. Empty when valid."""
+    if schema is True or schema == {}:
+        return []
+    if schema is False:
+        return [f"{path}: no value is allowed here"]
+    if not isinstance(schema, Mapping):
+        raise ValueError(f"{path}: a schema must be an object or a boolean")
+    root = schema if root is None else root
+    schema = _resolve(schema, root)
+    errors: list[str] = []
+    for sub in schema.get("allOf") or ():
+        errors.extend(schema_errors(sub, value, path, root))
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            options = [schema_errors(option, value, path, root) for option in schema[key]]
+            if not any(not found for found in options):
+                # A branch of the value's own type is the closer miss.
+                closest = min(options, key=lambda found: (_wrong_type_at(found, path), len(found)))
+                errors.append(
+                    f"{path}: matches none of the allowed shapes (closest: "
+                    + "; ".join(closest[:3])
+                    + ")"
+                )
+                return errors
+    if "const" in schema and not _equal(value, schema["const"]):
+        errors.append(f"{path}: must be {_short(schema['const'])}, got {_short(value)}")
+        return errors
+    if "enum" in schema and not any(_equal(value, option) for option in schema["enum"]):
+        errors.append(f"{path}: {_short(value)} is not one of {_short(schema['enum'])}")
+        return errors
+    kinds = schema.get("type")
+    if kinds is not None:
+        allowed = [kinds] if isinstance(kinds, str) else list(kinds)
+        if not any(_is_type(kind, value) for kind in allowed):
+            expected = " or ".join(allowed)
+            return [*errors, f"{path}: expected {expected}, got {json_type(value)}"]
+    # Each keyword applies to the values of its own type, declared or not
+    # (``{"minimum": 3}`` inside an ``allOf`` constrains a number).
+    if isinstance(value, dict):
+        errors.extend(_object_errors(schema, value, path, root))
+    elif isinstance(value, list):
+        errors.extend(_array_errors(schema, value, path, root))
+    elif isinstance(value, str):
+        errors.extend(_string_errors(schema, value, path))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        errors.extend(_number_errors(schema, value, path))
     return errors
 
 
+def _wrong_type_at(errors: list[str], path: str) -> bool:
+    return any(e.startswith(f"{path}: expected ") for e in errors)
+
+
+def _equal(a: Any, b: Any) -> bool:
+    """JSON equality, at every depth: ``True`` is not ``1``, ``1`` is ``1.0``."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, dict) or isinstance(b, dict):
+        return (
+            isinstance(a, dict)
+            and isinstance(b, dict)
+            and a.keys() == b.keys()
+            and all(_equal(a[key], b[key]) for key in a)
+        )
+    if isinstance(a, list) or isinstance(b, list):
+        return (
+            isinstance(a, list)
+            and isinstance(b, list)
+            and len(a) == len(b)
+            and all(_equal(x, y) for x, y in zip(a, b, strict=True))
+        )
+    return bool(a == b)
+
+
+def _object_errors(
+    schema: Mapping[str, Any], value: dict[str, Any], path: str, root: Mapping[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    properties: Mapping[str, Any] = schema.get("properties") or {}
+    optional = _optional_props(schema)
+    nullable = _nullable_props(schema)
+    for key in schema.get("required") or ():
+        if key not in value and key not in optional:
+            errors.append(f"{path}: missing key {key!r}")
+    extra = schema.get("additionalProperties")
+    for key, item in value.items():
+        where = f"{path}.{key}"
+        if key in properties:
+            if item is None and key in nullable:
+                continue  # the model's optional field is `X | None = None`
+            errors.extend(schema_errors(properties[key], item, where, root))
+        elif extra is False:
+            errors.append(f"{path}: unexpected key {key!r}")
+        elif isinstance(extra, Mapping) and not properties:
+            errors.extend(schema_errors(extra, item, where, root))
+    return errors
+
+
+def _array_errors(
+    schema: Mapping[str, Any], value: list[Any], path: str, root: Mapping[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    if "minItems" in schema and len(value) < schema["minItems"]:
+        errors.append(f"{path}: needs at least {schema['minItems']} items, got {len(value)}")
+    if "maxItems" in schema and len(value) > schema["maxItems"]:
+        errors.append(f"{path}: allows at most {schema['maxItems']} items, got {len(value)}")
+    if schema.get("uniqueItems"):
+        for i, item in enumerate(value):
+            if any(_equal(item, other) for other in value[:i]):
+                errors.append(f"{path}[{i}]: repeats an earlier item")
+                break
+    items = schema.get("items")
+    if isinstance(items, (Mapping, bool)):
+        for i, item in enumerate(value):
+            errors.extend(schema_errors(items, item, f"{path}[{i}]", root))
+    return errors
+
+
+def _string_errors(schema: Mapping[str, Any], value: str, path: str) -> list[str]:
+    errors: list[str] = []
+    if "minLength" in schema and len(value) < schema["minLength"]:
+        errors.append(f"{path}: needs at least {schema['minLength']} characters")
+    if "maxLength" in schema and len(value) > schema["maxLength"]:
+        errors.append(f"{path}: allows at most {schema['maxLength']} characters")
+    if "pattern" in schema and _pattern(schema["pattern"], path).search(value) is None:
+        errors.append(f"{path}: {_short(value)} does not match {schema['pattern']!r}")
+    return errors
+
+
+def _pattern(pattern: str, path: str) -> re.Pattern[str]:
+    """``pattern`` compiled, or a refusal naming it: a schema rote cannot read."""
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(
+            f"{path}: the schema's pattern {pattern!r} is not a regular expression "
+            f"Python can compile ({exc})"
+        ) from exc
+
+
+def _number_errors(schema: Mapping[str, Any], value: float, path: str) -> list[str]:
+    errors: list[str] = []
+    if "minimum" in schema and value < schema["minimum"]:
+        errors.append(f"{path}: {value} is below the minimum {schema['minimum']}")
+    if "maximum" in schema and value > schema["maximum"]:
+        errors.append(f"{path}: {value} is above the maximum {schema['maximum']}")
+    if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+        errors.append(f"{path}: {value} must be above {schema['exclusiveMinimum']}")
+    if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+        errors.append(f"{path}: {value} must be below {schema['exclusiveMaximum']}")
+    step = schema.get("multipleOf")
+    if step and not math.isclose(value / step, round(value / step), abs_tol=1e-9):
+        errors.append(f"{path}: {value} is not a multiple of {step}")
+    return errors
+
+
+def _exactness(schema: Any, value: Any, root: Mapping[str, Any]) -> int:
+    """How closely ``value`` matches a branch it validates against, as Pydantic
+    scores it: 2 exact (an int for ``integer``), 1 strict (an int for
+    ``number``; any value for an untyped branch), 0 lax (an integral float for
+    ``integer``, which strict mode refuses)."""
+    if not isinstance(schema, Mapping) or not schema:
+        return 1
+    schema = _resolve(schema, root)
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            return max(
+                _exactness(option, value, root)
+                for option in schema[key]
+                if not schema_errors(option, value, "value", root)
+            )
+    if "enum" in schema or "const" in schema:
+        return 2
+    kinds = schema.get("type")
+    if kinds is None:
+        return 1
+    allowed = [kinds] if isinstance(kinds, str) else list(kinds)
+    if isinstance(value, float) and "number" not in allowed:
+        return 0
+    if isinstance(value, int) and not isinstance(value, bool) and "integer" not in allowed:
+        return 1
+    return 2
+
+
+def _fields_set(schema: Any, value: Any, root: Mapping[str, Any]) -> int:
+    """The keys of ``value`` a model branch declares: Pydantic's ``fields_set``."""
+    if not isinstance(value, dict) or not isinstance(schema, Mapping):
+        return 0
+    properties = _resolve(schema, root).get("properties") or {}
+    return sum(1 for key in value if key in properties)
+
+
+def _union_branch(options: list[Any], value: Any, root: Mapping[str, Any]) -> Any:
+    """The branch Pydantic's smart-mode union validates ``value`` with.
+
+    Of the branches the value is valid against, the one with the most model
+    fields set, then the most exact type match, then the leftmost. Checked
+    against the real models in ``tests/test_schema_validator_parity.py``.
+    """
+    best: tuple[tuple[int, int], Any] | None = None
+    for option in options:
+        if schema_errors(option, value, "value", root):
+            continue
+        score = (_fields_set(option, value, root), _exactness(option, value, root))
+        if best is None or score > best[0]:
+            best = (score, option)
+    if best is None:
+        raise ValueError("project() needs a value that matches the schema")
+    return best[1]
+
+
+def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> Any:
+    """``value`` as the emitted judge's model dumps it. Call only on a valid value.
+
+    What ``model_dump(by_alias=True)`` returns for an accepted value, so a
+    compiled skill's downstream step reads the same keys as on every other
+    runtime: declared properties only (undeclared keys dropped), an omitted optional
+    property as its ``default`` or ``None``, a union through the branch
+    Pydantic's smart mode picks (:func:`_union_branch`), an integral float
+    under ``integer`` as an int and an int under ``number`` as a float.
+    """
+    if not isinstance(schema, Mapping) or not schema:
+        return copy.deepcopy(value)
+    root = schema if root is None else root
+    schema = _resolve(schema, root)
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            return project(_union_branch(schema[key], value, root), value, root)
+    kinds = schema.get("type")
+    allowed = [kinds] if isinstance(kinds, str) else list(kinds or ())
+    if isinstance(value, float) and "number" not in allowed and "integer" in allowed:
+        return int(value)  # schema_errors let it through only if it is integral
+    is_int = isinstance(value, int) and not isinstance(value, bool)
+    if is_int and "number" in allowed and "integer" not in allowed:
+        return float(value)
+    if isinstance(value, dict) and ("object" in allowed or not allowed):
+        properties: Mapping[str, Any] = schema.get("properties") or {}
+        if not properties:
+            return copy.deepcopy(value)
+        out: dict[str, Any] = {}
+        for key, prop in properties.items():
+            if key in value:
+                item = value[key]
+                out[key] = None if item is None else project(prop, item, root)
+            elif isinstance(prop, Mapping) and "default" in prop:
+                out[key] = copy.deepcopy(prop["default"])
+            else:
+                out[key] = None
+        return out
+    if isinstance(value, list) and isinstance(schema.get("items"), Mapping):
+        return [project(schema["items"], item, root) for item in value]
+    return copy.deepcopy(value)
+
+
+def _every_answer_refused(refused: Sequence[list[str]]) -> str:
+    """Why a loop whose every answer broke the schema has no output (as in TS)."""
+    return f"every answer it gave ({len(refused)}) broke the step's schema; the last: " + "; ".join(
+        refused[-1]
+    )
+
+
+def _rejected_submission(errors: list[str]) -> str:
+    """The tool result for a submission that breaks the declared output's schema.
+
+    The model reads it and resubmits in the same loop. The TS twin's
+    ``submitTool`` returns the same text.
+    """
+    return (
+        "Not recorded: this output breaks the step's schema: "
+        + "; ".join(errors)
+        + f". Fix those fields and call {_SUBMIT_TOOL} again."
+    )
+
+
 def _declared_output(
-    node_id: str, provider: str, schema: Mapping[str, Any], answer: Any
+    node_id: str,
+    provider: str,
+    schema: Mapping[str, Any],
+    answer: Any,
+    refused: Sequence[list[str]] = (),
 ) -> dict[str, Any]:
     """The loop's final answer, validated against its declared output.
 
-    Downstream nodes index these keys, so a missing key, a wrong type or an
-    undeclared key fails here, naming the node, rather than as a KeyError
-    or a bad value in a later step. Every lane ends here, with the same
-    message as the TS twin.
+    Downstream nodes index these keys, so any break of the schema (a
+    missing or undeclared key, a wrong type, a bound, pattern or length)
+    fails here, naming the node, rather than as a KeyError or a bad value
+    in a later step. Every lane ends here, with the same rules and wording
+    as the TS twin. The SDK lane's submit tool already refused a bad answer
+    back to the model, so this is the backstop for the lanes that cannot
+    (the CLI's structured output, the one forced turn). The value comes back
+    as :func:`project` reads it, so ``3.0`` under ``integer`` is ``3``, as
+    on TS. ``refused`` holds the errors of each submission the submit tool
+    turned down, so a loop whose every submission broke the schema says so.
     """
+    prefix = f"agent loop {node_id} ({provider}) did not hand back its declared output: "
+    errors = [] if answer is None else schema_errors(schema, answer, "output")
+    answers = [*refused, *([errors] if errors else [])]
+    if refused and (answer is None or errors):
+        raise RuntimeError(prefix + _every_answer_refused(answers))
     if answer is None:
         reason = f"it never called {_SUBMIT_TOOL}, even when asked once more"
         if provider == "claude-cli":
             reason = "the CLI returned no structured output"
-        raise RuntimeError(
-            f"agent loop {node_id} ({provider}) did not hand back its declared output: {reason}"
-        )
-    errors = _schema_errors(schema, answer, "output")
+        raise RuntimeError(prefix + reason)
     if errors:
-        raise RuntimeError(
-            f"agent loop {node_id} ({provider}) did not hand back its declared output: "
-            + "; ".join(errors)
-        )
-    return dict(answer)
+        raise RuntimeError(prefix + "; ".join(errors))
+    return dict(project(schema, answer))
 
 
 def _run_agent_via_cli(
@@ -1628,8 +2005,12 @@ def _run_agent_via_sdk(
     timeout: float,
     output_schema: Mapping[str, Any] | None = None,
     output_strict: bool = False,
+    refused: list[list[str]] | None = None,
 ) -> tuple[Any, dict[str, Any], int]:
     """A bounded agent loop on the vendor SDK's own tool runner.
+
+    ``refused`` collects the errors of each submission the submit tool
+    turned down, for :func:`_declared_output`'s message.
 
     ``anthropic.lib.tools`` ships a tool loop, so this needs no agent
     framework and no dependency the emitted app does not already have for
@@ -1656,6 +2037,14 @@ def _run_agent_via_sdk(
     if output_schema is not None:
 
         def submit(**answer: Any) -> str:
+            # Checked here, so the model can fix a bad answer in this loop
+            # instead of failing the node and rerunning the whole loop
+            # (its writes included) on a durable retry.
+            errors = schema_errors(output_schema, answer, "output")
+            if errors:
+                if refused is not None:
+                    refused.append(errors)
+                return _rejected_submission(errors)
             submitted.append(answer)
             return "Recorded. The step is complete; end your turn."
 
@@ -1905,18 +2294,9 @@ def run_agent_loop(
         ),
     )
 
-    if provider == "claude-cli":
-        answer, rows, turns = _run_agent_via_cli(
-            node_id=node_id,
-            model=model,
-            prompt=prompt,
-            tools=tools,
-            tool_servers=tool_servers,
-            max_iterations=max_iterations,
-            timeout=timeout,
-            output_schema=output_schema,
-        )
-    else:
+    refused: list[list[str]] = []
+    turns: int | None
+    if provider != "claude-cli":
         answer, usage, turns = _run_agent_via_sdk(
             node_id=node_id,
             provider=provider,
@@ -1930,8 +2310,20 @@ def run_agent_loop(
             timeout=timeout,
             output_schema=output_schema,
             output_strict=output_strict,
+            refused=refused,
         )
         rows = [(model, usage)]
+    else:
+        answer, rows, turns = _run_agent_via_cli(
+            node_id=node_id,
+            model=model,
+            prompt=prompt,
+            tools=tools,
+            tool_servers=tool_servers,
+            max_iterations=max_iterations,
+            timeout=timeout,
+            output_schema=output_schema,
+        )
 
     for index, (row_model, row_usage) in enumerate(rows):
         _log_usage(
@@ -1943,5 +2335,5 @@ def run_agent_loop(
         )
     if output_schema is None:
         return {"result": answer}
-    declared = _declared_output(node_id, provider, output_schema, answer)
+    declared = _declared_output(node_id, provider, output_schema, answer, refused)
     return declared[unwrap_key] if unwrap_key is not None else declared

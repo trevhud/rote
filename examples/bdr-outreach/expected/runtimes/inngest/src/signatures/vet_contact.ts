@@ -11,6 +11,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 
+import { schemaErrors } from "./_roteSchema";
+
 export const VetContactInput = z.object({
   "contact": z.object({
     "zoominfo_id": z.string(),
@@ -140,6 +142,84 @@ const OUTPUT_JSON_SCHEMA = {
   "additionalProperties": false
 };
 
+// The whole output schema, which the answer is held to (bounds, pattern
+// and lengths included: structured outputs and Zod drop them).
+const ANSWER_SCHEMA = {
+  "$defs": {
+    "ContactTier": {
+      "enum": [
+        "ideal",
+        "strong",
+        "good"
+      ],
+      "title": "ContactTier",
+      "type": "string"
+    },
+    "DiscardReason": {
+      "enum": [
+        "indication_mismatch",
+        "msl_role",
+        "biomarker_discovery",
+        "translational",
+        "sales_commercial",
+        "ops_strategy",
+        "program_management",
+        "low_accuracy",
+        "no_valid_email",
+        "other"
+      ],
+      "title": "DiscardReason",
+      "type": "string"
+    },
+    "VetDecision": {
+      "enum": [
+        "keep",
+        "discard"
+      ],
+      "title": "VetDecision",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/VetDecision"
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContactTier"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "discard_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DiscardReason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "relevance_evidence": {
+      "title": "Relevance Evidence",
+      "type": "string"
+    }
+  },
+  "required": [
+    "decision",
+    "relevance_evidence"
+  ],
+  "title": "VetContactOutput",
+  "type": "object"
+};
+
 function interpolate(template: string, vars: Record<string, unknown>): string {
     return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_match, key: string) => {
         const value = key.split(".").reduce<unknown>(
@@ -208,6 +288,13 @@ export async function vetContact(
     } catch {
         throw new Error(
             `structured output for vet_contact is not JSON: ${text.slice(0, 200)}`,
+        );
+    }
+    const broken = schemaErrors(ANSWER_SCHEMA, answer, "output");
+    if (broken.length > 0) {
+        throw new Error(
+            `judge vet_contact answered outside its output schema: ` +
+                broken.join("; "),
         );
     }
     return VetContactOutput.parse(answer);

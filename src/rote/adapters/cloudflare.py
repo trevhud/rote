@@ -64,6 +64,7 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_BINDING_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
+    SCHEMA_ERRORS_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
     constants_doc_ts,
@@ -76,6 +77,7 @@ from rote.adapters._ts_common import (
     impl_input_type_block,
     llm_clients,
     module_imports,
+    needs_schema_helper,
     payload_ts_literal,
     required_inputs_ts_guard,
 )
@@ -1456,6 +1458,10 @@ class CloudflareAdapter:
         if agent_loops:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
+            )
+        if needs_schema_helper(pipeline):
+            written["signatures/_roteSchema"] = writer.write(
+                "src", "signatures", "_roteSchema.ts", content=SCHEMA_ERRORS_TS
             )
         # The IR's undefined named types, as aliases the user narrows once.
         types_module = emit_types_module(pipeline)

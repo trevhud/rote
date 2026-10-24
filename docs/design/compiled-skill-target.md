@@ -62,9 +62,10 @@ and the journal records who answered (section 2).
     ├── run.py                      # entry point: argv -> _rote_skill.main
     ├── plan.json                   # the run plan (see below); data, no code
     ├── _rote_skill.py              # verbatim rote.skill_target._driver (stdlib)
-    ├── _rote_schema.py             # verbatim rote.plan._schema (stdlib)
+    ├── _rote_inference.py          # verbatim rote.inference._runtime_helper (stdlib at
+    │                               # module level): the schema validator, and the
+    │                               # judges with --judges helper
     ├── _rote_mcp.py                # verbatim rote.mcp._runtime_helper, when a step calls MCP
-    ├── _rote_inference.py          # only with --judges helper
     └── extracted/<module>.py       # the compile's real implementations
 ```
 
@@ -526,16 +527,16 @@ sequenceDiagram
 ### Malformed answers
 
 The driver parses the argument as JSON, then validates it against the
-answer schema with `_schema_errors`. That validator ships today in the
-inference helper and covers types, required keys, extra keys, `enum`,
-`anyOf` and `items`. The judge's own Pydantic model carries types,
-`required`, `additionalProperties: false`, `enum`, `anyOf`/`oneOf` (as a
-union) and local `$ref`, and drops `const`, bounds, `pattern`,
-`minItems`/`maxItems` and the other constraints, which structured outputs
-move into the description. So PR 1's validator (`rote.plan._schema`) reads
-the model's rules strictly and also checks the constraints the model
-drops. A parity test runs the corpus of every example IR's output schemas
-through both validators.
+answer schema with `schema_errors`, the one validator rote has
+(`rote.inference._runtime_helper`, which also checks agent-loop output on
+every Python runtime; its TS twin is `SCHEMA_ERRORS_TS`). The judge's own
+Pydantic model carries types, `required`, `additionalProperties: false`,
+`enum`, `anyOf`/`oneOf` (as a union) and local `$ref`, and drops `const`,
+bounds, `pattern`, `minItems`/`maxItems` and the other constraints, which
+structured outputs move into the description. So the validator reads the
+model's rules strictly and also checks the constraints the model drops.
+`tests/test_schema_validator_parity.py` runs the corpus of every example
+IR's schemas through it, the TS twin and the emitted models.
 
 - If the answer fails, the driver re-asks with only the error paths
   (`answers[3].step: 7 is not one of [1, 2, 3, 4, 5, 6]`) and the ids still

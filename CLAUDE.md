@@ -1197,11 +1197,51 @@ derivation, all six runtimes):
   schema fits that subset: every leaf typed, every object closed, and at
   most 16 `anyOf` / type-array parameters (each nullable field is one;
   past that the request is a 400). A named type is description-only, so
-  its loop stays non-strict. Either way,
-  `_schema_errors` / `schemaErrors` check types, required keys and extra
-  keys on every lane, and every failure reads `agent loop <id>
-  (<provider>) did not hand back its declared output: <reason>`. Workers
-  AI cannot force a final call, and says so.
+  its loop stays non-strict. Either way, every lane checks the answer
+  with rote's one schema validator, and every failure reads `agent loop
+  <id> (<provider>) did not hand back its declared output: <reason>`.
+  Workers AI cannot force a final call, and says so.
+- **One validator, one Python source, one TS source, on every lane.**
+  Judges and agent loops alike enforce the full schema through it.
+  `schema_errors` in `rote.inference._runtime_helper` checks every answer
+  rote does not get from a decoder that enforces the whole schema: every
+  judge on every Python runtime (in `call_judge`, after the lane returns
+  and before the caller's Pydantic model, which drops bounds too), agent
+  loops (the submit tool and the final `_declared_output` check), and a
+  compiled skill's judge, gate, input and tool-argument checks (the driver
+  loads it as `_rote_inference.py`, shipped in every compiled skill).
+  `project` beside it mirrors the Pydantic `model_dump`: the driver hands
+  it downstream, and `_declared_output` returns it, so `3.0` under
+  `integer` comes back `3` as on TS. The rules are the judge's Pydantic
+  model read strictly (no coercion, `3.0` is an integer, an optional key
+  may be null) plus what that model drops: bounds, `multipleOf`, lengths
+  in code points, `pattern`, item counts, `uniqueItems`, `const`, `allOf`,
+  typed map values. Its TS twin is `SCHEMA_ERRORS_TS` in `_ts_common.py`,
+  emitted once per app as `signatures/_roteSchema.ts` beside any judge or
+  loop (`needs_schema_helper`). Every TS judge checks its raw answer with it
+  before Zod, and `_roteInference.ts` imports it. Where the answer goes:
+  - A judge that breaks the schema fails the call naming each path (`judge
+    <id> answered outside its output schema: output.grade: 11 is above the
+    maximum 10`), and the step's own retry asks again. A judge has no
+    writes, so a rerun is safe.
+  - An agent loop's submit tool refuses a bad submission back to the model
+    as the tool result (`Not recorded: ...`, the same text in both
+    languages), so the model fixes it inside the loop. Failing the node
+    instead would make a durable retry rerun the whole loop, writes
+    included. The final check stays as the backstop for the CLI lane and
+    the forced turn.
+  - A `pattern` an engine cannot compile is refused by name in both
+    languages. `rote.ir.check_schema_patterns` refuses one Python cannot
+    compile at IR load, on every judge, node and input schema. JavaScript's
+    compilability cannot be checked there without node, so a pattern only
+    Python accepts (`(?P<name>...)`, inline `(?i)`) fails on TS at the
+    first answer. The engines also disagree on `\d` / `\w` over non-ASCII
+    text.
+  Change a rule in both languages, then run
+  `tests/test_schema_validator_parity.py -m "slow or not slow"`. It runs
+  every example IR's judge, loop and gate schemas, plus a positive and a
+  negative case per rule, through Python, the TS source under real node,
+  and (for judges) the emitted Pydantic models.
 - **Types:** scalars, lists and `X | null` map exactly, and
   `output_schema` (evidence) beats the type names. A named type the IR
   does not define (`InvoiceResult`) accepts any JSON value and, on TS, is

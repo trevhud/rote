@@ -257,6 +257,19 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 """.replace("__PROMPT_PLACEHOLDER__", PROMPT_PLACEHOLDER)
 
 
+def _answer_check_lines(node_id: str, var: str) -> list[str]:
+    """Hold a judge's raw answer to its whole output schema, before Zod types it."""
+    return [
+        f'    const broken = schemaErrors(ANSWER_SCHEMA, {var}, "output");',
+        "    if (broken.length > 0) {",
+        "        throw new Error(",
+        f"            `judge {node_id} answered outside its output schema: ` +",
+        '                broken.join("; "),',
+        "        );",
+        "    }",
+    ]
+
+
 def emit_signature_anthropic(
     *,
     node_id: str,
@@ -266,6 +279,7 @@ def emit_signature_anthropic(
     input_zod: str,
     output_zod: str,
     output_schema_json: str,
+    answer_schema_json: str,
     prompt_template: str,
     model: str,
     base_url: str | None,
@@ -301,6 +315,8 @@ def emit_signature_anthropic(
         "",
         'import Anthropic from "@anthropic-ai/sdk";',
         'import { z } from "zod";',
+        "",
+        'import { schemaErrors } from "./_roteSchema";',
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -312,6 +328,10 @@ def emit_signature_anthropic(
         f"const PROMPT = {quoted_prompt};",
         "",
         f"const OUTPUT_JSON_SCHEMA = {output_schema_json};",
+        "",
+        "// The whole output schema, which the answer is held to (bounds, pattern",
+        "// and lengths included: structured outputs and Zod drop them).",
+        f"const ANSWER_SCHEMA = {answer_schema_json};",
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -375,6 +395,7 @@ def emit_signature_anthropic(
             f"            `structured output for {node_id} is not JSON: ${{text.slice(0, 200)}}`,",
             "        );",
             "    }",
+            *_answer_check_lines(node_id, "answer"),
             f"    return {pascal}Output.parse(answer);",
             "}",
             "",
@@ -392,6 +413,7 @@ def emit_signature_openai(
     input_zod: str,
     output_zod: str,
     output_schema_json: str,
+    answer_schema_json: str,
     prompt_template: str,
     model: str,
     base_url: str | None,
@@ -418,6 +440,8 @@ def emit_signature_openai(
         "",
         'import OpenAI from "openai";',
         'import { z } from "zod";',
+        "",
+        'import { schemaErrors } from "./_roteSchema";',
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -428,6 +452,10 @@ def emit_signature_openai(
         "",
         f"const PROMPT = {quoted_prompt};",
         f"const OUTPUT_JSON_SCHEMA = {output_schema_json};",
+        "",
+        "// The whole output schema, which the answer is held to (bounds, pattern",
+        "// and lengths included: structured outputs and Zod drop them).",
+        f"const ANSWER_SCHEMA = {answer_schema_json};",
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -475,7 +503,9 @@ def emit_signature_openai(
             "    if (!content) {",
             f'        throw new Error("OpenAI returned no content for {node_id}");',
             "    }",
-            f"    return {pascal}Output.parse(JSON.parse(content));",
+            "    const answer: unknown = JSON.parse(content);",
+            *_answer_check_lines(node_id, "answer"),
+            f"    return {pascal}Output.parse(answer);",
             "}",
             "",
         ]
@@ -492,6 +522,7 @@ def emit_signature_workers_ai(
     input_zod: str,
     output_zod: str,
     output_schema_json: str,
+    answer_schema_json: str,
     prompt_template: str,
     model: str,
     base_url: str | None,  # unused: Workers AI routes via the AI binding, not a base URL
@@ -529,6 +560,8 @@ def emit_signature_workers_ai(
         " */",
         "",
         'import { z } from "zod";',
+        "",
+        'import { schemaErrors } from "./_roteSchema";',
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -539,6 +572,10 @@ def emit_signature_workers_ai(
         "",
         f"const PROMPT = {quoted_prompt};",
         f"const OUTPUT_JSON_SCHEMA = {output_schema_json};",
+        "",
+        "// The whole output schema, which the answer is held to (bounds, pattern",
+        "// and lengths included: structured outputs and Zod drop them).",
+        f"const ANSWER_SCHEMA = {answer_schema_json};",
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -593,6 +630,7 @@ def emit_signature_workers_ai(
         f'        throw new Error("Workers AI returned no response for {node_id}");',
         "    }",
         '    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;',
+        *_answer_check_lines(node_id, "parsed"),
         f"    return {pascal}Output.parse(parsed);",
         "}",
         "",
@@ -961,6 +999,7 @@ def emit_ts_signature_module(
         input_zod=json_schema_to_zod(spec.input_schema, indent=0),
         output_zod=json_schema_to_zod(spec.output_schema, indent=0),
         output_schema_json=json.dumps(request_schema, indent=2),
+        answer_schema_json=json.dumps(spec.output_schema, indent=2),
         prompt_template=spec.prompt,
         model=model,
         base_url=spec.base_url,
@@ -2919,6 +2958,303 @@ ANTHROPIC_SDK_NPM_VERSION = "^0.136.0"
 #: Cloudflare's embedded function-calling toolkit — the workers-ai lane.
 AI_UTILS_NPM_VERSION = "^1.0.1"
 
+#: Source of ``src/signatures/_roteSchema.ts``: the TS twin of the Python
+#: helper's ``schema_errors`` (``rote.inference._runtime_helper``), with the
+#: same rules, the same order and the same error paths. Emitted verbatim
+#: beside any judge or agent loop (:func:`needs_schema_helper`); every
+#: judge module and ``_roteInference.ts`` import it, so a TS app has one
+#: copy. ``tests/test_schema_validator_parity.py`` runs this source in node
+#: and the Python one on one corpus and requires the same verdicts.
+SCHEMA_ERRORS_TS = r"""/**
+ * JSON Schema validator (generated by rote — do not edit; the source of
+ * truth is rote.adapters._ts_common.SCHEMA_ERRORS_TS).
+ *
+ * Where `value` breaks `schema`, as `path: what` lines; empty when valid.
+ * The rules of the Python helper's schema_errors (rote.inference.
+ * _runtime_helper), which states them in full: the emitted judge's
+ * Pydantic rules read strictly (types, required, a nullable optional key,
+ * additionalProperties, enum, anyOf / oneOf, items, local $ref into
+ * $defs) plus const, bounds, multipleOf, lengths in code points, pattern,
+ * item counts, uniqueItems, allOf and a map's typed values. A
+ * description-only schema (a named type the IR never defines) accepts
+ * anything.
+ */
+type JsonSchema = Record<string, unknown>;
+
+function jsonType(value: unknown): string {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+    return typeof value;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isType(kind: string, value: unknown): boolean {
+    switch (kind) {
+        case "string":
+            return typeof value === "string";
+        case "integer":
+            return typeof value === "number" && Number.isInteger(value);
+        case "number":
+            return typeof value === "number" && Number.isFinite(value);
+        case "boolean":
+            return typeof value === "boolean";
+        case "null":
+            return value === null;
+        case "object":
+            return isJsonObject(value);
+        case "array":
+            return Array.isArray(value);
+        default:
+            throw new Error(`unknown JSON Schema type '${kind}'`);
+    }
+}
+
+function resolveRef(schema: JsonSchema, root: JsonSchema): JsonSchema {
+    const seen = new Set<string>();
+    while ("$ref" in schema) {
+        const ref = schema.$ref;
+        if (typeof ref !== "string" || !ref.startsWith("#/$defs/")) {
+            throw new Error(
+                `unsupported $ref ${JSON.stringify(ref)}: only #/$defs/<name> is followed`,
+            );
+        }
+        if (seen.has(ref)) throw new Error(`cyclic $ref '${ref}'`);
+        seen.add(ref);
+        const defs = (root.$defs ?? {}) as Record<string, JsonSchema>;
+        const name = ref.slice("#/$defs/".length);
+        if (!Object.prototype.hasOwnProperty.call(defs, name)) {
+            throw new Error(`unknown $ref target '${ref}'`);
+        }
+        schema = defs[name];
+    }
+    return schema;
+}
+
+function short(value: unknown): string {
+    const text = JSON.stringify(value) ?? String(value);
+    return text.length <= 60 ? text : text.slice(0, 57) + "...";
+}
+
+/** JSON equality at every depth: true is not 1, and key order does not matter. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return (
+            Array.isArray(a) &&
+            Array.isArray(b) &&
+            a.length === b.length &&
+            a.every((item, i) => jsonEqual(item, b[i]))
+        );
+    }
+    if (isJsonObject(a) || isJsonObject(b)) {
+        if (!isJsonObject(a) || !isJsonObject(b)) return false;
+        const keys = Object.keys(a);
+        return (
+            keys.length === Object.keys(b).length &&
+            keys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && jsonEqual(a[k], b[k]))
+        );
+    }
+    return a === b;
+}
+
+function hasKey(record: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** Properties the Pydantic model makes optional (not required, or defaulted) and,
+ *  of those, the ones it types `X | None = None` (no default). */
+function optionalProps(schema: JsonSchema): { optional: Set<string>; nullable: Set<string> } {
+    const required = new Set((schema.required as string[] | undefined) ?? []);
+    const properties = (schema.properties ?? {}) as Record<string, unknown>;
+    const optional = new Set<string>();
+    const nullable = new Set<string>();
+    for (const [key, prop] of Object.entries(properties)) {
+        const defaulted = isJsonObject(prop) && hasKey(prop, "default");
+        if (!required.has(key) || defaulted) optional.add(key);
+        if (!required.has(key) && !defaulted) nullable.add(key);
+    }
+    return { optional, nullable };
+}
+
+export function schemaErrors(
+    schema: unknown,
+    value: unknown,
+    path = "answer",
+    root?: JsonSchema,
+): string[] {
+    if (schema === true || (isJsonObject(schema) && Object.keys(schema).length === 0)) return [];
+    if (schema === false) return [`${path}: no value is allowed here`];
+    if (!isJsonObject(schema)) throw new Error(`${path}: a schema must be an object or a boolean`);
+    const top: JsonSchema = root ?? schema;
+    const s = resolveRef(schema, top);
+    const errors: string[] = [];
+    for (const sub of (s.allOf as unknown[] | undefined) ?? []) {
+        errors.push(...schemaErrors(sub, value, path, top));
+    }
+    for (const key of ["anyOf", "oneOf"]) {
+        const options = s[key] as unknown[] | undefined;
+        if (options === undefined) continue;
+        const found = options.map((option) => schemaErrors(option, value, path, top));
+        if (!found.some((f) => f.length === 0)) {
+            // A branch of the value's own type is the closer miss.
+            const wrongType = (f: string[]) =>
+                f.some((e) => e.startsWith(`${path}: expected `)) ? 1 : 0;
+            let closest = found[0] ?? [];
+            for (const f of found.slice(1)) {
+                const [a, b] = [wrongType(f), wrongType(closest)];
+                if (a < b || (a === b && f.length < closest.length)) closest = f;
+            }
+            const closer = closest.slice(0, 3).join("; ");
+            errors.push(`${path}: matches none of the allowed shapes (closest: ${closer})`);
+            return errors;
+        }
+    }
+    if ("const" in s && !jsonEqual(value, s.const)) {
+        errors.push(`${path}: must be ${short(s.const)}, got ${short(value)}`);
+        return errors;
+    }
+    const allowedValues = s.enum as unknown[] | undefined;
+    if (allowedValues !== undefined && !allowedValues.some((option) => jsonEqual(value, option))) {
+        errors.push(`${path}: ${short(value)} is not one of ${short(allowedValues)}`);
+        return errors;
+    }
+    if (s.type !== undefined) {
+        const kinds = typeof s.type === "string" ? [s.type] : (s.type as string[]);
+        if (!kinds.some((kind) => isType(kind, value))) {
+            return [...errors, `${path}: expected ${kinds.join(" or ")}, got ${jsonType(value)}`];
+        }
+    }
+    // Each keyword applies to the values of its own type, declared or not.
+    if (isJsonObject(value)) errors.push(...objectErrors(s, value, path, top));
+    else if (Array.isArray(value)) errors.push(...arrayErrors(s, value, path, top));
+    else if (typeof value === "string") errors.push(...stringErrors(s, value, path));
+    else if (typeof value === "number") errors.push(...numberErrors(s, value, path));
+    return errors;
+}
+
+function objectErrors(
+    s: JsonSchema,
+    value: Record<string, unknown>,
+    path: string,
+    root: JsonSchema,
+): string[] {
+    const errors: string[] = [];
+    const properties = (s.properties ?? {}) as Record<string, unknown>;
+    const { optional, nullable } = optionalProps(s);
+    for (const key of (s.required as string[] | undefined) ?? []) {
+        if (!hasKey(value, key) && !optional.has(key)) errors.push(`${path}: missing key '${key}'`);
+    }
+    const extra = s.additionalProperties;
+    const declaresProperties = Object.keys(properties).length > 0;
+    for (const [key, item] of Object.entries(value)) {
+        const where = `${path}.${key}`;
+        if (hasKey(properties, key)) {
+            if (item === null && nullable.has(key)) continue; // the model's `X | None = None`
+            errors.push(...schemaErrors(properties[key], item, where, root));
+        } else if (extra === false) {
+            errors.push(`${path}: unexpected key '${key}'`);
+        } else if (isJsonObject(extra) && !declaresProperties) {
+            errors.push(...schemaErrors(extra, item, where, root));
+        }
+    }
+    return errors;
+}
+
+function arrayErrors(s: JsonSchema, value: unknown[], path: string, root: JsonSchema): string[] {
+    const errors: string[] = [];
+    const minItems = s.minItems as number | undefined;
+    const maxItems = s.maxItems as number | undefined;
+    if (minItems !== undefined && value.length < minItems) {
+        errors.push(`${path}: needs at least ${minItems} items, got ${value.length}`);
+    }
+    if (maxItems !== undefined && value.length > maxItems) {
+        errors.push(`${path}: allows at most ${maxItems} items, got ${value.length}`);
+    }
+    if (s.uniqueItems) {
+        const repeat = value.findIndex((item, i) =>
+            value.slice(0, i).some((other) => jsonEqual(item, other)),
+        );
+        if (repeat >= 0) errors.push(`${path}[${repeat}]: repeats an earlier item`);
+    }
+    const items = s.items;
+    if (isJsonObject(items) || typeof items === "boolean") {
+        value.forEach((item, i) => {
+            errors.push(...schemaErrors(items, item, `${path}[${i}]`, root));
+        });
+    }
+    return errors;
+}
+
+function stringErrors(s: JsonSchema, value: string, path: string): string[] {
+    const errors: string[] = [];
+    const length = [...value].length; // code points, as Python's len()
+    const minLength = s.minLength as number | undefined;
+    const maxLength = s.maxLength as number | undefined;
+    if (minLength !== undefined && length < minLength) {
+        errors.push(`${path}: needs at least ${minLength} characters`);
+    }
+    if (maxLength !== undefined && length > maxLength) {
+        errors.push(`${path}: allows at most ${maxLength} characters`);
+    }
+    const pattern = s.pattern as string | undefined;
+    if (pattern !== undefined && !compilePattern(pattern, path).test(value)) {
+        errors.push(`${path}: ${short(value)} does not match ${JSON.stringify(pattern)}`);
+    }
+    return errors;
+}
+
+/** `pattern` compiled, or a refusal naming it: a schema rote cannot read. */
+function compilePattern(pattern: string, path: string): RegExp {
+    try {
+        return new RegExp(pattern, "u");
+    } catch (err) {
+        throw new Error(
+            `${path}: the schema's pattern ${JSON.stringify(pattern)} is not a regular ` +
+                `expression JavaScript can compile (${(err as Error).message})`,
+        );
+    }
+}
+
+function numberErrors(s: JsonSchema, value: number, path: string): string[] {
+    const errors: string[] = [];
+    const min = s.minimum as number | undefined;
+    const max = s.maximum as number | undefined;
+    const exMin = s.exclusiveMinimum as number | undefined;
+    const exMax = s.exclusiveMaximum as number | undefined;
+    const step = s.multipleOf as number | undefined;
+    if (min !== undefined && value < min) {
+        errors.push(`${path}: ${value} is below the minimum ${min}`);
+    }
+    if (max !== undefined && value > max) {
+        errors.push(`${path}: ${value} is above the maximum ${max}`);
+    }
+    if (exMin !== undefined && value <= exMin) {
+        errors.push(`${path}: ${value} must be above ${exMin}`);
+    }
+    if (exMax !== undefined && value >= exMax) {
+        errors.push(`${path}: ${value} must be below ${exMax}`);
+    }
+    if (step) {
+        // Python's math.isclose(q, round(q), abs_tol=1e-9), with its default rel_tol.
+        const q = value / step;
+        const r = Math.round(q);
+        if (Math.abs(q - r) > Math.max(1e-9 * Math.max(Math.abs(q), Math.abs(r)), 1e-9)) {
+            errors.push(`${path}: ${value} is not a multiple of ${step}`);
+        }
+    }
+    return errors;
+}
+"""
+
+
+def needs_schema_helper(pipeline: Pipeline) -> bool:
+    """Whether a TS app ships ``signatures/_roteSchema.ts``: any judge or agent loop."""
+    return any(n.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP) for n in pipeline.nodes)
+
+
 #: Source of ``src/signatures/_roteInference.ts`` — the TypeScript twin
 #: of :mod:`rote.inference._runtime_helper`. Emitted verbatim, same
 #: contract as ``_roteMcp.ts``: never hand-edit the emitted copy, fix
@@ -2956,6 +3292,8 @@ ROTE_INFERENCE_HELPER_TS = """/**
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+
+import { schemaErrors } from "./_roteSchema";
 
 /** A tool the agent may call, in the one currency all lanes accept. */
 export interface BoundTool {
@@ -3027,10 +3365,12 @@ interface LaneAnswer {
     iterations: number | null;
 }
 
-/** The submit tool for a declared output, recording what the agent sends. */
+/** The submit tool for a declared output, recording what the agent sends
+ *  (and, in `refused`, the errors of each submission it turned down). */
 function submitTool(
     outputSchema: Record<string, unknown>,
     submitted: Record<string, unknown>[],
+    refused: string[][],
     strict: boolean,
 ): BoundTool {
     return {
@@ -3041,69 +3381,23 @@ function submitTool(
             "task is done; the next pipeline steps read these fields.",
         parameters: outputSchema,
         run: async (args: Record<string, unknown>) => {
+            // Checked here, so the model can fix a bad answer in this loop
+            // instead of failing the node and rerunning the whole loop (its
+            // writes included) on a durable retry. Same text as the Python
+            // helper's _rejected_submission.
+            const errors = schemaErrors(outputSchema, args, "output");
+            if (errors.length > 0) {
+                refused.push(errors);
+                return (
+                    "Not recorded: this output breaks the step's schema: " +
+                    errors.join("; ") +
+                    `. Fix those fields and call ${SUBMIT_TOOL} again.`
+                );
+            }
             submitted.push(args);
             return "Recorded. The step is complete; end your turn.";
         },
     };
-}
-
-/**
- * Where `value` breaks `schema`: types, required keys, extra keys. The
- * subset rote's agent-loop schemas use, the same as the Python twin's
- * `_schema_errors`; a description-only schema (a named type the IR never
- * defines) accepts anything.
- */
-function schemaErrors(schema: Record<string, unknown>, value: unknown, path: string): string[] {
-    const anyOf = schema.anyOf as Record<string, unknown>[] | undefined;
-    if (anyOf) {
-        return anyOf.some((option) => schemaErrors(option, value, path).length === 0)
-            ? []
-            : [`${path}: matches none of its allowed types`];
-    }
-    const allowed = schema.enum as unknown[] | undefined;
-    if (allowed && !allowed.includes(value)) {
-        return [`${path}: ${JSON.stringify(value)} is not one of ${JSON.stringify(allowed)}`];
-    }
-    const kind = schema.type as string | undefined;
-    if (kind === undefined) return [];
-    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
-    const ok: Record<string, boolean> = {
-        string: typeof value === "string",
-        integer: typeof value === "number" && Number.isInteger(value),
-        number: typeof value === "number",
-        boolean: typeof value === "boolean",
-        null: value === null,
-        object: isObject,
-        array: Array.isArray(value),
-    };
-    if (kind in ok && !ok[kind]) {
-        const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-        return [`${path}: expected ${kind}, got ${got}`];
-    }
-    const errors: string[] = [];
-    if (kind === "object") {
-        const record = value as Record<string, unknown>;
-        const properties = (schema.properties as Record<string, Record<string, unknown>>) ?? {};
-        for (const key of (schema.required as string[] | undefined) ?? []) {
-            if (!Object.prototype.hasOwnProperty.call(record, key)) {
-                errors.push(`${path}: missing key '${key}'`);
-            }
-        }
-        for (const [key, item] of Object.entries(record)) {
-            if (key in properties) {
-                errors.push(...schemaErrors(properties[key], item, `${path}.${key}`));
-            } else if (schema.additionalProperties === false) {
-                errors.push(`${path}: unexpected key '${key}'`);
-            }
-        }
-    }
-    const items = schema.items as Record<string, unknown> | undefined;
-    if (kind === "array" && items) {
-        (value as unknown[]).forEach((item, index) => {
-            errors.push(...schemaErrors(items, item, `${path}[${index}]`));
-        });
-    }
-    return errors;
 }
 
 /** The final answer, validated against the declared output on every lane. */
@@ -3112,9 +3406,22 @@ function declaredOutput(
     provider: Provider,
     outputSchema: Record<string, unknown>,
     answer: unknown,
+    refused: string[][],
 ): Record<string, unknown> {
     const prefix = `agent loop ${nodeId} (${provider}) did not hand back its declared output: `;
-    if (answer === null || answer === undefined) {
+    const missing = answer === null || answer === undefined;
+    const errors = missing ? [] : schemaErrors(outputSchema, answer, "output");
+    const answers = errors.length > 0 ? [...refused, errors] : refused;
+    const last = answers.at(-1);
+    if (refused.length > 0 && (missing || errors.length > 0) && last !== undefined) {
+        // Every answer broke the schema (same text as the Python helper).
+        throw new Error(
+            prefix +
+                `every answer it gave (${answers.length}) broke the step's schema; ` +
+                `the last: ${last.join("; ")}`,
+        );
+    }
+    if (missing) {
         throw new Error(
             prefix +
                 (provider === "workers-ai"
@@ -3122,7 +3429,6 @@ function declaredOutput(
                     : `it never called ${SUBMIT_TOOL}, even when asked once more`),
         );
     }
-    const errors = schemaErrors(outputSchema, answer, "output");
     if (errors.length > 0) throw new Error(prefix + errors.join("; "));
     return answer as Record<string, unknown>;
 }
@@ -3493,12 +3799,14 @@ export async function runAgentLoop(opts: {
         opts.withheld ?? {},
     );
     const submitted: Record<string, unknown>[] | null = outputSchema ? [] : null;
+    const refused: string[][] = [];
     const tools = submitted
         ? [
               ...opts.tools,
               submitTool(
                   outputSchema as Record<string, unknown>,
                   submitted,
+                  refused,
                   opts.outputStrict ?? false,
               ),
           ]
@@ -3533,7 +3841,7 @@ export async function runAgentLoop(opts: {
             `turn(s) on the ${ran.provider} lane`,
     );
     if (outputSchema === null) return { result: ran.answer as string };
-    const declared = declaredOutput(opts.nodeId, ran.provider, outputSchema, ran.answer);
+    const declared = declaredOutput(opts.nodeId, ran.provider, outputSchema, ran.answer, refused);
     return opts.unwrapKey ? declared[opts.unwrapKey] : declared;
 }
 """

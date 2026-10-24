@@ -18,12 +18,12 @@ _HERE = Path(__file__).resolve().parent
 DRIVER_PATH = _HERE / "_driver.py"
 
 #: ``{name in scripts/: the module whose source it is}``. The driver imports
-#: ``_rote_schema`` always, ``_rote_mcp`` only when a step calls MCP, and
-#: ``_rote_inference`` only for a plan whose judges the helper answers, by
-#: these names, from the scripts dir it puts first on ``sys.path``.
+#: ``_rote_inference`` always (its schema validator checks every answer, and
+#: it answers the judges of a ``--judges helper`` plan) and ``_rote_mcp`` only
+#: when a step calls MCP, by these names, from the scripts dir it puts first
+#: on ``sys.path``.
 HELPER_FILES: dict[str, Path] = {
     "_rote_skill.py": DRIVER_PATH,
-    "_rote_schema.py": _HERE.parent / "plan" / "_schema.py",
     "_rote_mcp.py": _HERE.parent / "mcp" / "_runtime_helper.py",
     "_rote_inference.py": _HERE.parent / "inference" / "_runtime_helper.py",
 }
@@ -75,9 +75,8 @@ def script_files(plan: dict[str, Any]) -> dict[str, str]:
 
     needed = {
         "_rote_skill.py": True,
-        "_rote_schema.py": True,
         "_rote_mcp.py": calls_mcp(plan),
-        "_rote_inference.py": helper_judges(plan),
+        "_rote_inference.py": True,
     }
     files = {
         name: source.read_text(encoding="utf-8")
