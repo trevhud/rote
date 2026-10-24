@@ -662,7 +662,7 @@ table and both helpers against one real server.
 | 4 | `rote mcp login --no-wait` / `--complete` (Stripe's pending-file shape, atomic) | `Plan`, `report` | 2, 3, 5, 6 |
 | 5 | Skill discovery and ranking (`rote.skills`, landed; see above) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
 | 6 | Bundle docs-digest into examples/ and the wheel, with a recorded reference run | none | 2, 3, 4, 5 |
-| 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report) | 6, `Plan` | 2, 3, 4, 5 |
+| 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report). The live path landed on the compiled-skill target as `rote.setup.try_skill` (compiled-skill-target.md §9, PR 8) | 6, `Plan` | 2, 3, 4, 5 |
 | 8 | `rote setup` (steps from 3, 5, 7 plus init's defaults; first-run banner on bare `rote`) | 3, 4, 5, 7 | 9 once its JSON is fixed |
 | 9 | `/rote:setup` plugin skill + AGENTS.md section | 8's `--json` shape | 10 |
 | 10 | Fresh-install test: a real TTY (pty), inside Claude Code, and CI | 8 | 9 |

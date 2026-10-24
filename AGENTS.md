@@ -49,6 +49,33 @@ servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.
 
+## Showing a user what rote does: `rote try`
+
+```sh
+uvx --from rote-cli rote try <skill> --json
+```
+
+It compiles the skill to a compiled skill, installs it, and runs the original
+and the compiled skill as `claude -p` agents on the same input, then compares
+them field by field. That costs money, so every step stops first with exit 2
+and an `action_required` object:
+
+- `reason: missing_answer`, `missing: ["--skill"]` (with `choices`) when no
+  skill was named, or `["--input"]` when the skill has no `input.json`.
+- `reason: confirmation_required` with the plan. Its `spend` effects carry
+  the estimate. Show the user that estimate and ask before re-running with
+  the `missing` flags (`--yes --live`). `--yes` alone never spends.
+- `reason: person_required` at the install when the skill relies on servers
+  registered read-only. Only the user can approve that, in their own
+  terminal, with the command in `next`. Then run `rote try` again.
+
+Re-running the same command resumes: steps already done are skipped and cost
+nothing. The final object has `ok`, `headline`, `same_result`, `compared`,
+`fields[]` (each with `matched` of `pairs`, `noise_matched` of `noise_pairs`
+and the first `difference`), `sides` (medians per side) and `next`. Exit 0
+only when every field expected to match exactly did, in every pair. A run
+with zero such fields exits 1 and claims nothing.
+
 ## Optional but recommended: `rote baseline` before compiling
 
 ```sh

@@ -451,7 +451,12 @@ def subject_for(
             raise SkillAbError("--input must hold a JSON object (or pass a bench --case)")
         answers = gate_answers_from_signals(pipeline, signals)
         shared = GATE_INSTRUCTIONS if answers else None
-        if pipeline_yaml.resolve() == demo.pipeline_path().resolve():
+        # The demo's reference knows which of its fields are live data
+        # (drifts), whether its pipeline is the recorded one or a new compile.
+        if (
+            pipeline_yaml.resolve() == demo.pipeline_path().resolve()
+            or skill_dir.resolve() == demo.skill_dir().resolve()
+        ):
             reference = demo.load_reference()
             fields = tuple(
                 proof.FieldSpec.from_reference(f, same_shape=True) for f in reference.fields
@@ -836,6 +841,12 @@ class Harness:
     timeout_seconds: float = TRIAL_TIMEOUT_SECONDS
     runner: ClaudeRunner = run_claude
     log: Callable[[str], None] = lambda line: print(line, file=sys.stderr)
+    #: What a trial and a control run are assumed to cost before one of
+    #: their kind has run: the ledger checks these against its cap.
+    trial_estimate_usd: float = DEFAULT_TRIAL_ESTIMATE_USD
+    control_estimate_usd: float = DEFAULT_CONTROL_ESTIMATE_USD
+    #: The command the log lines are prefixed with.
+    caller: str = "rote eval"
 
 
 @contextlib.contextmanager
@@ -877,7 +888,7 @@ def run_trial(
 ) -> Trial:
     """One side, once (or its control run). The ledger is checked first."""
     kind = f"{subject.name}:{side}:{'control' if control else 'trial'}"
-    default = DEFAULT_CONTROL_ESTIMATE_USD if control else DEFAULT_TRIAL_ESTIMATE_USD
+    default = harness.control_estimate_usd if control else harness.trial_estimate_usd
     harness.ledger.check(kind, default)
     label = f"{subject.label} {side} {'control' if control else f'#{index}'}"
     work = Path(tempfile.mkdtemp(prefix=f"{subject.name}-{side}-", dir=harness.work))
@@ -937,7 +948,9 @@ def run_trial(
             str(1 if control else harness.max_turns),
         ]
         (work / "argv.json").write_text(json.dumps(argv[3:], indent=1), encoding="utf-8")
-        harness.log(f"rote eval: {label}: running (spent ${harness.ledger.spent:.3f} so far)")
+        harness.log(
+            f"{harness.caller}: {label}: running (spent ${harness.ledger.spent:.3f} so far)"
+        )
         proc = harness.runner(argv, cwd, env, harness.timeout_seconds)
         calls = _read_calls(log)
     (work / "stream.jsonl").write_text("\n".join(proc.lines) + "\n", encoding="utf-8")
@@ -994,8 +1007,8 @@ def run_trial(
     cost = "n/a" if usage.cost_usd is None else f"${usage.cost_usd:.3f}"
     status = "ok" if trial.ok else "; ".join(trial.problems)[:160]
     harness.log(
-        f"rote eval: {label}: {status}, {proc.wall_seconds:.1f} s, {usage.requests} request(s), "
-        f"{cost} (spent ${harness.ledger.spent:.3f})"
+        f"{harness.caller}: {label}: {status}, {proc.wall_seconds:.1f} s, "
+        f"{usage.requests} request(s), {cost} (spent ${harness.ledger.spent:.3f})"
     )
     return trial
 
@@ -1147,7 +1160,7 @@ def run_subject(harness: Harness, subject: Subject, trials: int) -> SubjectRepor
                 )
     except BudgetExhausted as e:
         stopped = str(e)
-        harness.log(f"rote eval: {subject.label}: stopped: {e}")
+        harness.log(f"{harness.caller}: {subject.label}: stopped: {e}")
     sides = {
         side: SideSummary(
             side, tuple(done[side]), base[side], tuple(bench_score(subject, t) for t in done[side])
@@ -1267,6 +1280,15 @@ def append_corpus(records: Sequence[dict[str, Any]], path: Path | None = None) -
     return corpus
 
 
+def compile_argv(skill_dir: Path, work: Path, *, model: str | None) -> list[str]:
+    """The ``rote compile`` argv (without ``rote``) :func:`compile_for_eval`
+    runs in ``work``: :func:`rote.proof.compile_command`, pinned, into
+    ``work/compile``, with the sample input at ``work/compile-input.json``."""
+    return proof.compile_command(
+        skill_dir, work / "compile-input.json", work / "compile", runtime="skill", model=model
+    )
+
+
 def compile_for_eval(
     skill_dir: Path,
     input_payload: dict[str, Any],
@@ -1275,20 +1297,23 @@ def compile_for_eval(
     *,
     model: str | None,
     log: Callable[[str], None],
+    estimate_usd: float = DEFAULT_COMPILE_ESTIMATE_USD,
+    caller: str = "rote eval",
 ) -> tuple[Path, dict[str, Any]]:
-    """Compile ``skill_dir`` with :func:`rote.proof.compile_command`'s pinned
-    argv, in its own isolated state. Returns the pipeline.yaml and what to
-    record about the compile (the argv, the pinned settings, its cost)."""
+    """Compile ``skill_dir`` with :func:`compile_argv`, in its own isolated
+    state. Returns the pipeline.yaml and what to record about the compile
+    (the argv, the pinned settings, its cost). ``estimate_usd`` is what the
+    ledger assumes it costs before any compile has run."""
     from rote.bench.collect import decisions_cost_usd, read_compile_metrics
 
-    ledger.check("compile", DEFAULT_COMPILE_ESTIMATE_USD)
+    ledger.check("compile", estimate_usd)
     input_path = work / "compile-input.json"
     input_path.write_text(json.dumps(input_payload, indent=2), encoding="utf-8")
     out_dir = work / "compile"
-    argv = proof.compile_command(skill_dir, input_path, out_dir, runtime="skill", model=model)
-    log("rote eval: compiling: rote " + " ".join(argv))
+    argv = compile_argv(skill_dir, work, model=model)
+    log(f"{caller}: compiling: rote " + " ".join(argv))
     for setting in proof.pinned_settings():
-        log(f"  {setting.flag[2:]}: {setting.value}, pinned by rote eval ({setting.why})")
+        log(f"  {setting.flag[2:]}: {setting.value}, pinned by {caller} ({setting.why})")
     env = isolated_env(work / "compile-state")
     started = time.monotonic()
     proc = subprocess.run(
@@ -1304,7 +1329,7 @@ def compile_for_eval(
         if not isinstance(agent_cost, (int, float)) or decisions is None
         else float(agent_cost) + decisions
     )
-    ledger.record("compile", f"compile {skill_dir.name}", cost, DEFAULT_COMPILE_ESTIMATE_USD)
+    ledger.record("compile", f"compile {_skill_name(skill_dir)}", cost, estimate_usd)
     if proc.returncode != 0 or not (compiled / "pipeline.yaml").is_file():
         raise SkillAbError(
             f"rote compile exited {proc.returncode}: {failure_excerpt(proc.stderr, proc.stdout)}"
