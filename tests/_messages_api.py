@@ -89,6 +89,14 @@ def format_schema_problem(schema: Any, path: str = "#") -> str | None:
 #: message text is its own, not the API's.
 SAMPLING_PARAMETERS = ("temperature", "top_p", "top_k")
 
+#: Current-generation models that refuse a non-default ``temperature`` on
+#: any API version, with the live API's message for each. Measured; models
+#: older than 4.7 (claude-haiku-4-5, claude-sonnet-4-6) still accept one.
+TEMPERATURE_REJECTIONS = {
+    CURRENT_SONNET: "`temperature` is not supported on this model",
+    "claude-haiku-5-5": "`temperature` is deprecated for this model.",
+}
+
 #: The API version anthropic 2.x and @anthropic-ai/sdk 1.x send.
 SAMPLING_FREE_API_VERSION = "2026-10-21"
 
@@ -101,8 +109,9 @@ def api_rejection(payload: dict[str, Any], api_version: str | None = None) -> st
     sent = [name for name in SAMPLING_PARAMETERS if name in payload]
     if sent and api_version == SAMPLING_FREE_API_VERSION:
         return f"`{sent[0]}` is not supported in API version {api_version}"
-    if payload.get("model") == CURRENT_SONNET and payload.get("temperature", 1.0) != 1.0:
-        return "`temperature` is not supported on this model"
+    rejected = TEMPERATURE_REJECTIONS.get(payload.get("model", ""))
+    if rejected is not None and payload.get("temperature", 1.0) != 1.0:
+        return rejected
     choice = payload.get("tool_choice") or {}
     if payload.get("model") == CURRENT_SONNET and choice.get("type") in ("tool", "any"):
         return FORCED_TOOL_CHOICE_ERROR

@@ -881,7 +881,13 @@ IR set a temperature (the floor, 1.15, included). anthropic 2.0 moved to
 API version 2026-10-21, which 400s on any of the three even in the body.
 So sampling rides in `extra_body` with `anthropic-version: 2023-06-01`
 pinned on that request only, the route Anthropic's migration guide gives.
-A judge with no sampling sends the SDK's request untouched. The TS
+A judge with no sampling sends the SDK's request untouched. Measured
+live: the 2023-06-01 pin works with `output_config`, and a non-default
+temperature applies only to models older than 4.7 (claude-haiku-4-5 and
+claude-sonnet-4-6 accept it). claude-sonnet-5-5 answers "`temperature` is
+not supported on this model" and claude-haiku-5-5 "`temperature` is
+deprecated for this model." (`TEMPERATURE_REJECTIONS` in
+`tests/_messages_api.py`). The TS
 emitter still spreads `temperature` into the body: that holds only while
 `ANTHROPIC_SDK_NPM_VERSION` stays below `@anthropic-ai/sdk` 1.0 (same
 change, same API version). Regression, the floor and the newest release

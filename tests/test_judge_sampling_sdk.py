@@ -88,6 +88,40 @@ def test_a_judge_temperature_reaches_the_wire_on_the_installed_sdk(stub: str) ->
     assert version == helper._SAMPLING_API_VERSION == "2023-06-01"
 
 
+@pytest.mark.parametrize(
+    ("model", "refusal"),
+    [
+        ("claude-sonnet-5-5", "`temperature` is not supported on this model"),
+        ("claude-haiku-5-5", "`temperature` is deprecated for this model."),
+        ("claude-sonnet-4-6", None),
+        ("claude-haiku-4-5", None),
+    ],
+)
+def test_temperature_applies_only_to_models_older_than_4_7(
+    stub: str, model: str, refusal: str | None
+) -> None:
+    """The measured split: current models refuse a non-default temperature
+    (the knob's empty value is the way out), older ones honour it."""
+
+    def judge() -> dict[str, Any]:
+        return helper.call_judge(
+            node_id="grade_essay",
+            client="anthropic",
+            model=model,
+            base_url=stub,
+            prompt="Grade it.",
+            output_schema=_GRADE,
+            sampling={"temperature": 0.2},
+        )
+
+    if refusal is None:
+        assert judge() == {"grade": 9}
+    else:
+        with pytest.raises(RuntimeError, match="HTTP 400") as excinfo:
+            judge()
+        assert refusal in str(excinfo.value)
+
+
 def test_a_judge_without_sampling_sends_none_and_keeps_the_sdks_version(stub: str) -> None:
     import anthropic
 
