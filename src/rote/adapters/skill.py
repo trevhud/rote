@@ -364,7 +364,8 @@ def skill_md(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) 
         "---",
     ]
     blocks = [
-        "- DONE: give the user the summary. Read the result.json it names only if they need more.",
+        "- DONE: give the user the result it prints. When it prints only a summary, "
+        "read the result.json it names if they need more.",
         "- ERROR: tell the user what it says. Do not work around it.",
     ]
     if kinds.decide:

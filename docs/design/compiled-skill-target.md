@@ -169,9 +169,9 @@ Start with one shell command, the input as a single-quoted argument:
 
 If the input is already in a file, pass `--file <path>` instead.
 
-It prints one block. DONE: give the user the summary, and read the
-result.json it names only if they need more. ERROR: tell the user what it
-says, and do not work around it.
+It prints one block. DONE: give the user the result it prints. When it
+prints only a summary, read the result.json it names if they need more.
+ERROR: tell the user what it says, and do not work around it.
 ```
 
 A pipeline with judges, gates or loops adds one line per kind, and every
@@ -399,10 +399,12 @@ rote skill run ops-report answer 91c0d2b7aa43 approve_report '<JSON from their r
   lanes use), the inputs, the tools as `tool` commands with each tool's
   input schema, the turn cap, and the declared output schema for `answer`.
 - **DONE.** The driver writes the exit nodes' results (the object
-  `run_pipeline` returns) to `result.json` in the run folder. The block
-  prints a summary plus `run=<id>` and that path, never the whole result.
-  The summary lists the top-level keys, with scalar values inline and only
-  the size of a list or object, bounded to about 400 bytes. This is not
+  `run_pipeline` returns) to `result.json` in the run folder. When the
+  result is at most `DONE_INLINE_BYTES` (8 KB) of compact JSON, the block
+  prints it whole, then that path as where it was saved, with "no need to
+  read it". A larger result gets the path to read and a summary
+  instead: the top-level keys, with scalar values inline and only the size
+  of a list or object, bounded to about 400 bytes. Writing the file is not
   opt-in: in the measured runs, agents ignored an `--out` flag.
 - **ERROR.** One cause sentence and the fix command, matching rote's
   first-run error style. The run folder is kept.
@@ -416,8 +418,41 @@ design added, so these rules are part of the protocol:
 1. **A block carries only declared fields.** The measured gate blocks
    showed every upstream result: 3.2 KB on ops-report and 5.8 KB on
    expense-audit, re-read on every later turn.
-2. **DONE prints a bounded summary.** ops-report's full DONE was 3.5 KB,
-   more than the raw tool data it replaced.
+2. **DONE prints a small result whole, and a large one as a summary.**
+   The first cut always printed a 400-byte summary plus the path, because
+   ops-report's full DONE was 3.5 KB. The paired eval of 2026-10-24 (ab8,
+   Sonnet 4.6, 3 trials a skill) showed that saved nothing: in 9 of 9
+   compiled runs the agent read `result.json` right after DONE, at 444,
+   1,572 and 3,485 compact bytes (expense-audit, docs-digest, ops-report).
+   The content reached the context anyway, now pretty-printed (4.9 KB on
+   ops-report), and the read was one more request over the whole session
+   context (11k to 17k cached tokens, plus the tool call's output). So DONE
+   prints the result whole up to `DONE_INLINE_BYTES` (8 KB, a bit over
+   twice the largest measured result), and keeps the summary and path
+   above it, where a result may be too large for the agent to need all of
+   it. Order matters. With the whole result printed under a
+   `result: <path>` line (ab9), docs-digest stopped reading (4 to 3 turns
+   in 3 of 3 runs, $0.056 to $0.049, 18.1 to 16.4 s median), but
+   expense-audit still read the file in 2 of 3 runs (7 to 6 turns median,
+   $0.153 to $0.150). With the result first and the path last as `saved:`,
+   expense-audit read nothing: 5 turns, $0.123, 37.6 s (one trial, the
+   same fields as ab8). In 2 of the 3 ab8 expense-audit runs the agent
+   also read the report file the pipeline wrote. That read is not a DONE gap: the eval's output
+   contract asks for the review queue and the duplicate and late ids, which
+   the skill's exit node (`file_report`) does not return, and the third
+   run took them from the gate block instead. DONE does not print files a
+   result names: a path in a result can come from a tool result, so
+   printing it could put any readable file into the context. Inlined
+   results and LOOP's tool text are untrusted, so every block spells each
+   character in Unicode categories Cc, Cf, Zl, Zp and Cs as `\uXXXX`
+   (a stdlib copy of the adapters' `escape_invisible`, pinned to it by a
+   test on the BMP), keeping newline and tab. Above U+FFFF it writes the
+   UTF-16 surrogate pair, the only form that is a JSON escape, so a value
+   copied back from a block parses to the original. It also indents any
+   body line that would start with `ROTE/1`. The header line carries
+   agent-typed words (a tool name, a run id), so it is escaped the same
+   way with its newlines spelled `\n`. No tool text or typed argument can
+   forge a block header under `str.splitlines()`.
 3. **The agent never retypes input.** `start --file <path>` takes input
    that already lives in a file. Retyping expense-audit's input as an
    argument cost 1.4k output tokens and 12 s.
@@ -893,8 +928,9 @@ bound to MCP.
     journals `answered_by: "human"` with the `said` text.
   - A DECIDE block holds only the fields its template references, and a
     gate with no declared inputs shows no upstream results.
-  - DONE prints at most about 400 bytes, and `result.json` holds the full
-    result.
+  - DONE prints the whole result up to `DONE_INLINE_BYTES` and a summary
+    of at most about 400 bytes above it, and `result.json` holds the full
+    result either way.
   - The driver starts within its time budget, and importing it loads no
     fastmcp module.
   - Killing the driver after the first wave and calling `resume` does not
@@ -912,7 +948,8 @@ bound to MCP.
   node results.
 - **Mutations to try** (CLAUDE.md's discipline): drop the per-item re-ask,
   send fields the template does not reference, accept a gate answer
-  without `--said`, print the whole result at DONE, skip the manifest
+  without `--said`, print a result over `DONE_INLINE_BYTES` whole (or a
+  small one only as a summary), skip the manifest
   check, accept an unlisted file in the skill dir, let re-entry accept a
   hand-written gate result without `answered_by`, reset the loop count on
   `resume`, make `answer` non-idempotent, retry a config error. Each one
@@ -1026,7 +1063,7 @@ break-the-code check.
 | # | PR | Builds on | Minutes |
 | --- | --- | --- | --- |
 | 1 | `rote.plan`: move `build_plan` out of prefix, add judge, gate and loop steps and a live-MCP mode. Extend `_schema_errors` to the Pydantic subset, with the parity test | none | 150 |
-| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The wave claim with its process id, and re-entry's refusal of a gate result without `answered_by` and `said`. The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus bounded summary, lazy fastmcp import and the start-up budget test | 1 | 360 |
+| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The wave claim with its process id, and re-entry's refusal of a gate result without `answered_by` and `said`. The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus the inline-or-summary split, lazy fastmcp import and the start-up budget test | 1 | 360 |
 | 3 | `--runtime skill` adapter: SKILL.md stub, README, `plan.json`, verbatim helpers, manifest, apps-registry entry, stub refusal, `--judges session\|helper` | 1, 2 | 150 |
 | 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, the manifest hash in the apps registry, the manifest check (unlisted files refused), `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |

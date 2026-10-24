@@ -18,7 +18,8 @@ lands in the agent's context, so each call prints one short block:
     ROTE/1 <KIND> <skill> run=<id> [step=<id>] [...]
 
 ``DECIDE``, ``LOOP`` and ``HUMAN`` exit 0 and say what to run next. ``DONE``
-exits 0, writes the result to ``result.json`` and prints a bounded summary.
+exits 0, writes the result to ``result.json`` and prints it in full when it is
+at most :data:`DONE_INLINE_BYTES`, else a bounded summary and the path.
 ``ERROR`` exits 1 (2 for a malformed command) with the cause and the fix.
 
 Commands (``argv`` after the script)::
@@ -108,7 +109,13 @@ CHARS_PER_TOKEN = 3.8
 LOCK_WAIT_SECONDS = 1.0
 #: The python runtime's default base delay between retry attempts.
 RETRY_BASE_DELAY_SECONDS = 1.0
-#: DONE's summary of the result, at most this many bytes.
+#: DONE prints the whole result (compact JSON) up to this many bytes. Agents
+#: read result.json after every DONE that printed only a summary (9 of 9
+#: measured runs, results of 444 to 3,485 compact bytes), and that read is a
+#: whole extra turn over the session's context, so a result this size costs
+#: less inline. Above it, DONE prints the summary and the path.
+DONE_INLINE_BYTES = 8192
+#: DONE's summary of a larger result, at most this many bytes.
 DONE_SUMMARY_BYTES = 400
 #: Concurrent steps in one wave, as the python runtime's thread pool.
 MAX_PARALLEL_STEPS = 8
@@ -149,7 +156,19 @@ class Block:
         self.status = status
 
     def text(self) -> str:
-        return "\n".join([f"{PROTOCOL} {self.kind} {self.header}".rstrip(), *self.lines]) + "\n"
+        """The block as printed. Body lines carry tool and model text, so every
+        invisible character is escaped (:func:`escape_invisible`), which leaves
+        the newline as the only line break ``str.splitlines`` can find, and a
+        body line that would start with the protocol word is indented: no body
+        text can pose as a block header. The header line itself carries
+        agent-typed words (a tool name, a run id), so it is escaped the same
+        way, its newlines spelled ``\\n``: one header line, always."""
+        header = escape_invisible(self.header).replace("\n", "\\n")
+        body: list[str] = []
+        for line in self.lines:
+            for part in escape_invisible(line).split("\n"):
+                body.append(" " + part if part.startswith(PROTOCOL) else part)
+        return "\n".join([f"{PROTOCOL} {self.kind} {header}".rstrip(), *body]) + "\n"
 
 
 class Stop(Exception):
@@ -158,6 +177,35 @@ class Stop(Exception):
     def __init__(self, block: Block) -> None:
         super().__init__(block.header)
         self.block = block
+
+
+#: Unicode categories :func:`escape_invisible` spells out: controls (Cc),
+#: format characters such as bidi overrides and zero-width spaces (Cf), line
+#: and paragraph separators (Zl, Zp), and lone surrogates (Cs).
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+
+
+def escape_invisible(text: str) -> str:
+    """``text`` with every invisible character spelled ``\\uXXXX``, newline and
+    tab kept. A copy of :func:`rote.adapters._common.escape_invisible` (this
+    file imports nothing from rote), pinned to it by a test on the BMP. Above
+    U+FFFF it writes the UTF-16 surrogate pair (``\\udb40\\udc41``), not
+    ``\\U000e0041``: blocks print JSON, and only the pair is a JSON escape, so
+    a value copied back from a block parses to the original character."""
+    import unicodedata
+
+    out: list[str] = []
+    for ch in text:
+        if ch not in "\n\t" and unicodedata.category(ch) in _INVISIBLE_CATEGORIES:
+            code = ord(ch)
+            if code > 0xFFFF:
+                code -= 0x10000
+                out.append(f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}")
+            else:
+                out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _compact(value: Any) -> str:
@@ -1775,10 +1823,7 @@ class Driver:
         file = path / "result.json"
         result = json.loads(file.read_text(encoding="utf-8"))
         lines = [note] if note else []
-        lines += [
-            f"result: {file} ({file.stat().st_size} bytes). Read it for the full result.",
-            "summary: " + summarize(result),
-        ]
+        lines += done_lines(file, result)
         return Block("DONE", self._head(path.name), lines)
 
     # ── housekeeping ──
@@ -2056,6 +2101,19 @@ def _describe(value: Any) -> str:
     if isinstance(value, str) and len(value) > 60:
         return f"<text, {len(value)} chars>"
     return _compact(value)
+
+
+def done_lines(file: Path, result: dict[str, Any]) -> list[str]:
+    """DONE's body: the whole result when it fits :data:`DONE_INLINE_BYTES`,
+    else :func:`summarize` and the path to read.
+
+    A whole result comes first and the path last, as where it was saved, not
+    as something to read: led by the path, agents read the file anyway."""
+    full = _compact(result)
+    size = f"{file} ({file.stat().st_size} bytes)"
+    if len(full.encode("utf-8")) <= DONE_INLINE_BYTES:
+        return ["result: " + full, f"saved: {size}. This is all of it; no need to read it."]
+    return [f"result: {size}. Read it for the full result.", "summary: " + summarize(result)]
 
 
 def summarize(result: dict[str, Any]) -> str:

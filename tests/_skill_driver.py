@@ -109,7 +109,7 @@ def journal(text: str) -> dict[str, Any]:
 
 
 def result_of(text: str) -> Any:
-    match = re.search(r"^result: (\S+) \(", text, re.M)
+    match = re.search(r"^(?:result|saved): (/\S+) \(", text, re.M)
     assert match, text
     return json.loads(Path(match.group(1)).read_text(encoding="utf-8"))
 

@@ -133,7 +133,7 @@ def test_docs_digest_from_install_through_start_to_done(
     record = _trust_record(digest)
     assert record is not None
     assert (
-        Path(record["bindings"]["run_dir"]) in Path(out.split("result: ")[1].split(" ")[0]).parents
+        Path(record["bindings"]["run_dir"]) in Path(out.split("saved: ")[1].split(" ")[0]).parents
     )
 
 

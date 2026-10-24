@@ -86,6 +86,13 @@ async def hold(key: str) -> dict:
     return {"key": key, "held": True}
 
 
+@_tool(annotations=READ_ONLY)
+def echo(text: str) -> str:
+    """Return ``text`` as given: a tool result whose text the caller chose."""
+    _hit("echo", text=text)
+    return text
+
+
 @_tool()
 def write_note(text: str) -> dict:
     _hit("write_note", text=text)
