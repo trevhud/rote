@@ -34,8 +34,8 @@ Refused at emit, before any file is written:
 
 - a skill identity rote cannot vouch for (:func:`identity_for`);
 - a plan the driver cannot run: a :class:`rote.plan.PlanError` (a legacy
-  ``signature:`` judge, a node with nothing to run on the backend) or a
-  step kind the driver does not run yet (an agent loop), naming the node;
+  ``signature:`` judge, in a loop body as anywhere, or a node with nothing
+  to run on the backend), naming the node;
 - an ``extracted/`` module that is still a stub, unless ``allow_stubs``
   (the preflight ``rote run`` applies, moved to emit because a compiled
   skill is run by an agent that cannot fix one);
@@ -486,6 +486,12 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         "- A tool call that finished is never repeated; one interrupted mid-call runs again "
         "on `resume` (at least once).",
     ]
+    if any(s["kind"] == "loop" for s in plan["steps"]):
+        lines.append(
+            "- An agent loop's tools are reached only through the driver (`tool`): the "
+            "loop's declared tools, each on its own server, arguments checked first, and "
+            "at most the loop's `max_iterations` calls, counted across resumes."
+        )
     if helper:
         lines.append(
             "- Judges run in code through `scripts/_rote_inference.py` on the IR's model, "

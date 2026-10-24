@@ -1,6 +1,6 @@
 """The MCP server the compiled-skill driver tests call. Run as a script.
 
-``python tests/_skill_mcp_server.py <port> <hits.jsonl>``
+``python tests/_skill_mcp_server.py <port> <hits.jsonl> [<tool>,<tool>...]``
 
 Every tool call appends ``{"tool": ..., "arguments": ...}`` to the hit log
 first, so a test counts what reached the server. ``search``, ``lookup``
@@ -28,6 +28,18 @@ RECORDED = {
 }
 
 mcp = FastMCP("skill-fixtures")
+#: ``argv[3]``, when given: the only tools this server offers (comma-separated),
+#: so a test can stand up a second server that lacks some of them.
+ONLY = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else None
+
+
+def _tool(**kwargs: object) -> object:
+    def register(fn: object) -> object:
+        if ONLY is None or getattr(fn, "__name__", None) in ONLY:
+            mcp.tool(**kwargs)(fn)  # type: ignore[call-overload]
+        return fn
+
+    return register
 
 
 def _hit(tool: str, **arguments: object) -> None:
@@ -35,19 +47,19 @@ def _hit(tool: str, **arguments: object) -> None:
         f.write(json.dumps({"tool": tool, "arguments": arguments}) + "\n")
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def search(query: str) -> list[dict]:
     _hit("search", query=query)
     return [{"title": f"{query} {i}", "rank": i} for i in range(3)]
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def lookup(id: str) -> dict:
     _hit("lookup", id=id)
     return {"id": id, "score": len(id)}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def flaky(key: str) -> dict:
     """Fails on the first call for each key, then answers."""
     seen = [json.loads(line) for line in HITS.read_text().splitlines()] if HITS.exists() else []
@@ -57,19 +69,19 @@ def flaky(key: str) -> dict:
     return {"key": key, "ok": True}
 
 
-@mcp.tool
+@_tool()
 def write_note(text: str) -> dict:
     _hit("write_note", text=text)
     return {"written": text}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def microsoft_docs_search(query: str) -> dict:
     _hit("microsoft_docs_search", query=query)
     return RECORDED["microsoft_docs_search"]
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def read_wiki_structure(repoName: str) -> str:  # noqa: N803 (the real tool's argument name)
     _hit("read_wiki_structure", repoName=repoName)
     return RECORDED["read_wiki_structure"]
@@ -84,13 +96,13 @@ DEAL_POSTS = [
 ]
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def slack_read_channel(user_email: str) -> dict:
     _hit("slack_read_channel", user_email=user_email)
     return {"messages": DEAL_POSTS}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@_tool(annotations=READ_ONLY)
 def search_threads(user_email: str, warehouse_domains: list[str] | None = None) -> list[dict]:
     _hit("search_threads", user_email=user_email, warehouse_domains=warehouse_domains)
     return [

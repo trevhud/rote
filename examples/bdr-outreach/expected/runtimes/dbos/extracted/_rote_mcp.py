@@ -926,18 +926,28 @@ async def agent_tool_refusals(
     """
     if os.environ.get(READ_ONLY_ENV) != "1" or not tools:
         return {}
+    url, listed = await list_server_tools(server, pipeline_url)
+    refusals = {tool: write_refusal(server, url, tool, listed) for tool in tools}
+    return {tool: why for tool, why in refusals.items() if why is not None}
+
+
+async def list_server_tools(server: str, pipeline_url: str | None) -> tuple[str, list[Any]]:
+    """``(the endpoint, its tools/list entries)``, failures translated as a call's are.
+
+    For a caller that must know a server's tools before calling one: the
+    read-only filter above, and a compiled skill's agent loop, which shows
+    the agent each tool's input schema and checks its arguments first.
+    """
     url = resolve_url(server, pipeline_url)
     http_status = _HttpStatusWatch()
     try:
         async with mcp_client(server, pipeline_url, http_status=http_status) as client:
-            listed = await client.list_tools()
+            return url, list(await client.list_tools())
     except Exception as exc:
         translated = _mcp_failure(exc, server, "tools/list", http_status)
         if translated is None:
             raise
         raise translated from exc
-    refusals = {tool: write_refusal(server, url, tool, listed) for tool in tools}
-    return {tool: why for tool, why in refusals.items() if why is not None}
 
 
 def main(argv: Sequence[str]) -> int:

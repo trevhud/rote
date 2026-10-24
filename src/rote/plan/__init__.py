@@ -37,7 +37,10 @@ Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
   ``signal``; a recorded plan whose sample answered the gate adds
   ``payload``.
 - ``loop``: ``description``, ``termination``, ``max_iterations``,
-  ``tools``, ``tool_servers``, ``body`` (each sub-node as a full step), ``output_schema``,
+  ``tools``, ``tool_servers``, ``body`` (each sub-node as a full step, plus
+  its ``tool_schema``: the arguments the agent passes when it calls it),
+  ``task`` (``[head, tail]``: the task prompt every loop lane builds, split
+  where the loop's inputs go, :func:`loop_task`), ``output_schema``,
   ``unwrap_key``.
 - ``skip`` (recorded plans only): ``reason``. The prefix does not run it.
 """
@@ -240,6 +243,18 @@ def build_plan(
                 judge["retry"] = _retry(node)
             return judge
         contract = agent_loop_output(node)
+        unpinned = [t for t in node.tools or () if t not in (node.tool_servers or {})]
+        if live and unpinned:
+            # A compiled skill calls a loop's tool only on the server the IR
+            # pins it to. Looking for it across every registered server would
+            # contact the user's other servers with their credentials, which
+            # rote does only for servers a skill names.
+            raise PlanError(
+                f"{node.id}: agent loop tool(s) {', '.join(unpinned)} name no server. A "
+                "compiled skill calls a loop's tool only on the server its tool_servers pins, "
+                "so tool_servers must pin each one (tool_servers: {<tool>: <server>})"
+            )
+        body = [body_step(pipeline.node_by_id(i)) for i in node.loop_body or ()]
         return {
             "description": node.description.strip(),
             "termination": node.termination.condition if node.termination else None,
@@ -250,7 +265,8 @@ def build_plan(
             ),
             "tools": list(node.tools or ()),
             "tool_servers": dict(node.tool_servers or {}),
-            "body": [body_step(pipeline.node_by_id(i)) for i in node.loop_body or ()],
+            "body": body,
+            "task": loop_task(node),
             "output_schema": contract.schema,
             "unwrap_key": contract.unwrap_key,
         }
@@ -270,6 +286,7 @@ def build_plan(
             "kind": kind,
             "description": node.description.strip(),
             "input_schema": node.input_schema,
+            "tool_schema": body_tool_schema(node),
             **fields(node, kind, None),
         }
 
@@ -309,6 +326,66 @@ def build_plan(
     if live:
         plan["judges"] = judges
     return plan
+
+
+#: Where a loop's inputs go in its task prompt; :func:`loop_task` splits on it.
+_LOOP_INPUTS = "\x00rote-loop-inputs\x00"
+
+
+def loop_task(node: Node) -> list[str]:
+    """``[head, tail]``: an agent loop's task prompt, split where its inputs go.
+
+    The prompt every loop lane sends
+    (``rote.inference._runtime_helper._agent_task_prompt``): the
+    description, then the inputs where the emitted loop puts its payload's
+    JSON, then the stop condition. Two parts of it the LOOP block already
+    says, so they are left out: the list of body sub-nodes (the block lists
+    every tool), and the closing answer paragraph (the block's own first
+    line, its answer schema and its ``answer`` command). The driver joins the
+    halves around the inputs at run time.
+    """
+    from rote.inference._runtime_helper import _agent_task_prompt
+
+    prompt = _agent_task_prompt(
+        description=node.description,
+        task=_LOOP_INPUTS,
+        termination=node.termination.condition if node.termination else None,
+        local_tool_names=[],
+        submit="schema",
+    )
+    kept, closing = prompt.rsplit("\n\n", 1)
+    assert closing.startswith("When you are done"), closing
+    head, tail = kept.split(_LOOP_INPUTS)
+    return [head, tail]
+
+
+def body_tool_schema(node: Node) -> dict[str, Any]:
+    """The arguments a loop passes when it calls ``node`` as a tool.
+
+    The model builds the sub-node's payload, so this is the payload's
+    shape: a judge's ``signature_spec.input_schema``, else the node's
+    ``input_schema`` (evidence), else its ``input:`` types and ``inputs:``
+    names, each required. Constants never appear in it: they are merged
+    last, so the model cannot override a pinned value (the emitted step
+    bodies' rule, ``rote.adapters._py_common.impl_kwargs_expr``).
+    """
+    from rote.adapters._common import ir_type
+
+    if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None:
+        return node.signature_spec.input_schema
+    pinned = set(node.constants or {})
+    if node.input_schema:
+        schema = dict(node.input_schema)
+        if isinstance(schema.get("properties"), dict):
+            schema["properties"] = {
+                k: v for k, v in schema["properties"].items() if k not in pinned
+            }
+        if isinstance(schema.get("required"), list):
+            schema["required"] = [k for k in schema["required"] if k not in pinned]
+        return schema
+    names = [k for k in dict.fromkeys([*node.input, *(node.inputs or {})]) if k not in pinned]
+    properties = {k: ir_type(node.input[k])[0] if k in node.input else {} for k in names}
+    return {"type": "object", "properties": properties, "required": names}
 
 
 #: What an MCP result may be when the tool declares no output schema: a bare

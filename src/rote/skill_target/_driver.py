@@ -10,24 +10,36 @@ MCP, so a call that needs none starts in tens of milliseconds.
 
 Three tiers, one direction of escalation: this program does every tool call,
 pure function, retry and check it can; it escalates to the agent running the
-skill for model work (``DECIDE``; ``LOOP`` once the tool proxy exists); and
-it reaches a person only through that agent (``HUMAN``). Every byte printed
+skill for model work (``DECIDE``, and ``LOOP`` for an agent loop); and it
+reaches a person only through that agent (``HUMAN``). Every byte printed
 lands in the agent's context, so each call prints one short block:
 
     ROTE/1 <KIND> <skill> run=<id> [step=<id>] [...]
 
-``DECIDE`` and ``HUMAN`` exit 0 and say what to run next. ``DONE`` exits 0,
-writes the result to ``result.json`` and prints a bounded summary. ``ERROR``
-exits 1 (2 for a malformed command) with the cause and the fix.
+``DECIDE``, ``LOOP`` and ``HUMAN`` exit 0 and say what to run next. ``DONE``
+exits 0, writes the result to ``result.json`` and prints a bounded summary.
+``ERROR`` exits 1 (2 for a malformed command) with the cause and the fix.
 
 Commands (``argv`` after the script)::
 
     start '<input json>' | --file <path>
     answer <run> <step> '<json>' | --file <path> [--said '<words>' | --said-file <path>]
+    tool <run> <step> <tool> '<arguments json>' | --file <path>
     resume <run>
     status [<run>]
     cancel <run>
     runs [--prune]
+
+An agent loop is a ``LOOP`` block: the task, the loop's inputs, the tools
+it may call, its call cap and the answer schema. The agent does the task
+itself, and ``tool`` is its only way to the loop's tools: the declared MCP
+tools, each on the one server ``tool_servers`` pins it to (no other server
+is ever asked), and the loop's code and MCP sub-nodes, run here with their
+constants merged last, all behind the read-only gate. A judge
+sub-node is a rule in the block that the agent applies itself. Every call
+is counted in the journal before it is made, so ``max_iterations`` holds
+across a resume and across parallel calls. The answer is checked against
+the loop's declared output (``agent_loop_output``, as on every runtime).
 
 The run's journal lives in its own folder (:func:`run_root`), mode 0700:
 ``run.json`` (input, pending step, answers, attempts, the wave in flight),
@@ -43,11 +55,8 @@ the journal, a fan_out step's finished elements included, so a crash costs
 only what was running (at-least-once tool calls, the guarantee the durable
 runtimes give).
 
-Not here yet, on purpose: ``LOOP`` (an agent loop needs the tool proxy, the
-``tool`` command that is its only way to its tools; until then ``start``
-refuses a plan with a loop before anything runs, and the journal already
-counts ``tool_calls`` per loop for it), and the Codex sandbox check (the
-values ``CODEX_SANDBOX_NETWORK_DISABLED`` takes are unverified).
+Not here yet, on purpose: the Codex sandbox check (the values
+``CODEX_SANDBOX_NETWORK_DISABLED`` takes are unverified).
 
 A plan emitted with ``--judges helper`` (``"judges": "helper"``) never
 asks the agent to decide: each judge runs in code through the verbatim
@@ -75,10 +84,9 @@ PROTOCOL = "ROTE/1"
 PLAN_FORMAT = "rote-plan/1"
 RUN_FORMAT = "rote-skill-run/1"
 
-#: The plan step kinds this driver runs. ``loop`` joins with the tool proxy;
-#: until then ``start`` refuses a plan that has one, and so does the emitter
-#: (``rote.adapters.skill``), which reads this tuple.
-STEP_KINDS = ("call", "mcp", "judge", "gate")
+#: The plan step kinds this driver runs. ``start`` refuses a plan with any
+#: other, and so does the emitter (``rote.adapters.skill``), which reads this.
+STEP_KINDS = ("call", "mcp", "judge", "gate", "loop")
 #: The skill names a driver accepts (the agentskills.io ``name`` rule). The
 #: name is a directory under the run root and a word in a shell command.
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -361,15 +369,6 @@ def unrunnable_step(plan: dict[str, Any]) -> str | None:
     for step in plan.get("steps") or []:
         if step.get("kind") in STEP_KINDS:
             continue
-        if step.get("kind") == "loop":
-            # The LOOP block hands the agent a bounded task whose tools it may
-            # call only through this driver (`tool <run> <step> <tool>`), so
-            # the cap, the declared tools and the read-only gate hold. Without
-            # that proxy a LOOP block would let the agent use any tool it has.
-            return (
-                f"step {step['id']} is an agent loop, and this driver does not run agent "
-                "loops yet: they need its tool proxy."
-            )
         return (
             f"step {step.get('id')} is a {step.get('kind')!r} step, which this driver cannot run."
         )
@@ -445,7 +444,7 @@ class Driver:
         usage: bool = False,
     ) -> Block:
         """An ERROR block. ``fix`` is required: every error says what to do next."""
-        lines = [cause, f"Fix: {fix}"]
+        lines = [redact_urls(cause), f"Fix: {redact_urls(fix)}"]
         lines.append(
             "Fix the command and run it again."
             if usage
@@ -841,17 +840,25 @@ class Driver:
     ) -> Block | None:
         schema = _schema()
         pending = state["pending"]
-        output = step["output_schema"]
+        output = answer_schema(step)
         attempts = state["attempts"][step["id"]]
-        if step["fan_param"] is None:
+        if step.get("fan_param") is None:
             if not errors:
                 errors = schema.schema_errors(output, value)
             if errors:
                 if attempts >= MAX_ANSWER_ATTEMPTS:
                     return self._too_many(path, state, step["id"], errors)
                 self._write(path, state)
-                return self._reask(path.name, step["id"], attempts + 1, errors, [], pending)
-            self._record_decision(path, state, step, schema.project(output, value))
+                kind = "LOOP" if step["kind"] == "loop" else "DECIDE"
+                return self._reask(path.name, step["id"], attempts + 1, errors, [], pending, kind)
+            if step["kind"] == "loop":
+                # As every runtime returns a loop's submission: the value as
+                # checked, a single-type output unwrapped (agent_loop_output).
+                unwrap = step.get("unwrap_key")
+                result = value[unwrap] if unwrap else value
+            else:
+                result = schema.project(output, value)
+            self._record_decision(path, state, step, result)
             return None
         wanted = list(pending["batches"][pending["batch"]])
         collected: dict[str, Any] = pending["collected"]
@@ -902,6 +909,7 @@ class Driver:
         errors: list[str],
         missing: list[str],
         pending: dict[str, Any],
+        kind: str = "DECIDE",
     ) -> Block:
         extra = []
         if pending.get("batches") and len(pending["batches"]) > 1:
@@ -911,7 +919,7 @@ class Driver:
         if missing:
             lines.append("missing items: " + ", ".join(missing))
         lines += self._next("answer", run, step, "'<your JSON>'")
-        return Block("DECIDE", self._head(run, f"step={step}", *extra, f"attempt={attempt}"), lines)
+        return Block(kind, self._head(run, f"step={step}", *extra, f"attempt={attempt}"), lines)
 
     # ── running ──
 
@@ -978,7 +986,11 @@ class Driver:
                         self._write(path, state)
                         return block
             for step in in_wave:
-                if step["kind"] in ("judge", "gate") and step["id"] not in results:
+                if step["id"] in results:
+                    continue
+                if step["kind"] == "loop":
+                    return self._ask_loop(path, step, results)
+                if step["kind"] in ("judge", "gate"):
                     with self._locked(path):
                         return self._ask(path, self._read(path), step, results)
         return self._finish(path, results)
@@ -1163,8 +1175,17 @@ class Driver:
         return schema.project(step["output_schema"], answer)
 
     def _failure_block(
-        self, path: Path, state: dict[str, Any], step: dict[str, Any], exc: BaseException
+        self,
+        path: Path,
+        state: dict[str, Any],
+        step: dict[str, Any],
+        exc: BaseException,
+        server: str | None = None,
     ) -> Block:
+        """The block for a step that failed, recording what the run now waits on.
+
+        ``server`` is the MCP server that failed when the step itself names
+        none (an agent loop reaches several)."""
         name = type(exc).__name__
         run = path.name
         if name == "RoteMcpAuthNeeded":
@@ -1176,15 +1197,14 @@ class Driver:
         state["error"] = f"{name}: {exc}"
         if name == "RoteMcpConfigError":
             message = str(exc)
-            server = str(step.get("server") or "")
-            if "this run is read-only" in message:
-                fix = f"rote skill trust {self.name} --allow-writes (after the user agrees)"
-            else:
-                fix = (
-                    f"rote mcp add {server} <url> (or set ROTE_MCP_{server.upper()}_URL), "
-                    f"then: {self.command} resume {run}"
-                )
-            return self._error(run, message, fix, step=step["id"])
+            return self._error(
+                run,
+                message,
+                self._config_fix(
+                    message, server or str(step.get("server") or ""), f"{self.command} resume {run}"
+                ),
+                step=step["id"],
+            )
         if name == "RoteMcpInputRequired":
             return self._error(
                 run,
@@ -1207,6 +1227,12 @@ class Driver:
             f"{self.command} resume {run} to retry",
             step=step["id"],
         )
+
+    def _config_fix(self, message: str, server: str, then: str) -> str:
+        """The fix for a ``RoteMcpConfigError``: consent to writes, or an endpoint."""
+        if "this run is read-only" in message:
+            return f"rote skill trust {self.name} --allow-writes (after the user agrees)"
+        return f"rote mcp add {server} <url> (or set ROTE_MCP_{server.upper()}_URL), then: {then}"
 
     # ── asking ──
 
@@ -1298,13 +1324,329 @@ class Driver:
             step=step["id"],
         )
 
+    # ── agent loops ──
+
+    def _ask_loop(self, path: Path, step: dict[str, Any], results: dict[str, Any]) -> Block:
+        """Hand the agent its loop: resolve the tools (network, outside the lock), then wait.
+
+        The tools are resolved again each time the loop becomes pending (a
+        resume after a login, say); the call count is not, so the cap holds.
+        """
+        run = path.name
+        with self._locked(path):
+            state = self._read(path)
+        try:
+            payload = _payload(step, state["input"], results)
+            tools, withheld = self._loop_tools(step, run)
+        except (BindingError, _LoopToolsError) as exc:
+            fix = (
+                exc.fix
+                if isinstance(exc, _LoopToolsError)
+                else "recompile the skill (rote compile)"
+            )
+            with self._locked(path):
+                state = self._read(path)
+                state["state"] = "error"
+                state["error"] = str(exc)
+                self._write(path, state)
+            return self._error(run, f"{step['id']}: {exc}", fix, step=step["id"])
+        except Exception as exc:
+            server = exc.server if isinstance(exc, _ServerFailure) else None
+            cause = exc.cause if isinstance(exc, _ServerFailure) else exc
+            with self._locked(path):
+                state = self._read(path)
+                block = self._failure_block(path, state, step, cause, server)
+                self._write(path, state)
+            return block
+        head, tail = step["task"]
+        pending = {
+            "step": step["id"],
+            "kind": "loop",
+            "task": head + _compact(payload) + tail,
+            "tools": tools,
+            "withheld": withheld,
+        }
+        with self._locked(path):
+            state = self._read(path)
+            state["pending"] = pending
+            state["state"] = "waiting"
+            state["attempts"][step["id"]] = 0
+            calls = int(state.setdefault("tool_calls", {}).setdefault(step["id"], 0))
+            self._write(path, state)
+        return self._loop_block(run, step, pending, calls)
+
+    def _loop_tools(self, step: dict[str, Any], run: str) -> tuple[dict[str, Any], dict[str, str]]:
+        """``({tool: entry}, {withheld tool: why})`` for a loop about to start.
+
+        A body sub-node's entry names it (``body``); a declared MCP tool's
+        names the one server ``tool_servers`` pins it to, and nothing else:
+        a pinned server that does not offer the tool is an error, never a
+        search elsewhere, and an unpinned tool is refused (the emitter
+        refuses it first, :mod:`rote.plan`), so no server the skill does not
+        name is ever contacted. Every server the loop reaches is listed
+        once. In a read-only run a tool that may write, declared or an
+        MCP-bound body sub-node, is withheld by the rule a tool step's call
+        meets (``write_refusal``).
+        """
+        entries: dict[str, Any] = {}
+        for body in step["body"]:
+            if body["kind"] in ("call", "mcp") or (body["kind"] == "judge" and self.helper_judges):
+                entries[body["id"]] = {
+                    "body": body["id"],
+                    "schema": body["tool_schema"],
+                    "description": _first_line(body["description"]),
+                }
+        declared: list[str] = step["tools"]
+        pins: dict[str, str] = step["tool_servers"]
+        unpinned = [t for t in declared if t not in pins]
+        if unpinned:
+            raise _LoopToolsError(
+                f"its tool(s) {', '.join(unpinned)} name no server in tool_servers, and a "
+                "compiled skill calls a loop's tool only on the server the IR pins.",
+                "pin each in the node's tool_servers and recompile the skill (rote compile)",
+            )
+        clash = sorted(set(declared) & set(entries))
+        if clash:
+            raise _LoopToolsError(
+                f"{', '.join(clash)} is both a declared tool and a loop_body sub-node.",
+                "recompile the skill (rote compile)",
+            )
+        bodies = [b for b in step["body"] if b["kind"] == "mcp"]
+        urls: dict[str, str | None] = {pins[t]: None for t in declared}
+        for body in bodies:
+            urls.setdefault(body["server"], body.get("url"))
+        if not urls:
+            return entries, {}
+        import asyncio
+
+        mcp = importlib.import_module("_rote_mcp")
+        names = sorted(urls)
+
+        async def _all() -> list[Any]:
+            listings = (mcp.list_server_tools(name, urls[name]) for name in names)
+            return await asyncio.gather(*listings, return_exceptions=True)
+
+        outcomes = dict(zip(names, _run_async(_all()), strict=True))
+        for name in names:
+            if isinstance(outcomes[name], BaseException):
+                raise _ServerFailure(name, outcomes[name])
+        listed: dict[str, tuple[str, list[Any]]] = outcomes
+        withheld: dict[str, str] = {}
+        for body in bodies:
+            url, offered = listed[body["server"]]
+            why = mcp.write_refusal(body["server"], url, body["tool"], offered)
+            if why is not None:
+                withheld[body["id"]] = why
+                del entries[body["id"]]
+        for tool in declared:
+            server = pins[tool]
+            url, offered = listed[server]
+            spec = next((t for t in offered if t.name == tool), None)
+            if spec is None:
+                raise _LoopToolsError(
+                    f"its tool {tool} is served by {server} (tool_servers), and {server} at "
+                    f"{url} does not offer it. A tool is called only on its own server.",
+                    f"point {server} at the server that serves {tool} (rote mcp add "
+                    f"{server} <url>), or recompile the skill; then: "
+                    f"{self.command} resume {run}",
+                )
+            why = mcp.write_refusal(server, url, tool, offered)
+            if why is not None:
+                withheld[tool] = why
+                continue
+            entries[tool] = {
+                "server": server,
+                "schema": getattr(spec, "input_schema", None) or {},
+                "description": _first_line(getattr(spec, "description", None) or ""),
+            }
+        if declared and all(t in withheld for t in declared):
+            raise _LoopToolsError(
+                "this run is read-only, and every MCP tool the loop declares may write: "
+                + "; ".join(withheld[t] for t in declared),
+                f"rote skill trust {self.name} --allow-writes (after the user agrees)",
+            )
+        return entries, withheld
+
+    def _loop_block(
+        self, run: str, step: dict[str, Any], pending: dict[str, Any], calls: int, note: str = ""
+    ) -> Block:
+        cap = int(step["max_iterations"])
+        lines = [note] if note else []
+        lines += [
+            "Do this task yourself, with only the tools listed here. Do not ask the user.",
+            "--- TASK ---",
+            pending["task"],
+        ]
+        rules = [
+            b for b in step["body"] if b["id"] not in pending["tools"] and b["kind"] == "judge"
+        ]
+        if rules:
+            lines.append("--- RULES (apply each yourself where the task needs it; not tools) ---")
+            for rule in rules:
+                lines += [
+                    f"{rule['id']}: {_rule_text(rule['prompt'])}",
+                    f"{rule['id']} gives: {_brief(rule['output_schema'])}",
+                ]
+        if pending["tools"]:
+            lines += [
+                f"--- TOOLS (at most {cap} calls in all; {cap - calls} left) ---",
+                f"{self.command} tool {run} {step['id']} <tool> '<arguments json>' "
+                "(or --file <path>)",
+            ]
+            for name, entry in pending["tools"].items():
+                described = f": {entry['description']}" if entry["description"] else ""
+                lines.append(f"{name} {_brief(entry['schema'])}{described}")
+        if pending.get("withheld"):
+            lines.append(
+                "Not available, because this run is read-only and they may write: "
+                + ", ".join(sorted(pending["withheld"]))
+                + ". Do not say you used them; say which part you could not do."
+            )
+        lines += [
+            "--- ANSWER SHAPE (key? = optional) ---",
+            _brief(answer_schema(step)),
+            *self._next("answer", run, step["id"], "'<your JSON>'"),
+        ]
+        header = self._head(run, f"step={step['id']}", f"calls={calls}/{cap}")
+        return Block("LOOP", header, lines)
+
+    def _tool_refused(self, run: str, step: str, tool: str, why: str, then: str) -> Block:
+        """A tool call the driver refused: nothing was called, and nothing counted."""
+        lines = [f"Refused: {redact_urls(why)} Nothing was called.", then]
+        return Block("LOOP", self._head(run, f"step={step}", f"tool={tool}", "refused"), lines, 2)
+
+    def tool(self, run: str, step_id: str, name: str, raw: str) -> Block:
+        """One call to a pending loop's tool, checked and counted before it is made."""
+        path = self._dir(run)
+        with self._locked(path):
+            state = self._read(path)
+            pending = state.get("pending")
+            if (
+                state["state"] in (*_FINISHED, "error")
+                or not pending
+                or pending["step"] != step_id
+                or pending["kind"] != "loop"
+            ):
+                return self._current(
+                    path,
+                    state,
+                    f"Note: {step_id} is not an agent loop waiting for its tools; nothing "
+                    "was called.",
+                )
+            step = self.by_id[step_id]
+            entry = pending["tools"].get(name)
+            use = "Call one of the tools the LOOP block lists, or answer."
+            if entry is None:
+                why = (pending.get("withheld") or {}).get(name)
+                if why is not None:
+                    return self._tool_refused(
+                        run,
+                        step_id,
+                        name,
+                        f"{why}",
+                        "Do the task without it, or ask the user whether to let this skill "
+                        f"write (rote skill trust {self.name} --allow-writes).",
+                    )
+                listed = ", ".join(sorted(pending["tools"])) or "none"
+                return self._tool_refused(
+                    run, step_id, name, f"{name} is not one of this loop's tools ({listed}).", use
+                )
+            try:
+                arguments = json.loads(raw)
+            except json.JSONDecodeError as e:
+                return self._tool_refused(
+                    run,
+                    step_id,
+                    name,
+                    f"the arguments are not JSON (line {e.lineno} column {e.colno}: {e.msg}).",
+                    "Write them to a file and pass --file <path>.",
+                )
+            if not isinstance(arguments, dict):
+                return self._tool_refused(
+                    run, step_id, name, "the arguments must be one JSON object.", use
+                )
+            try:
+                errors = _schema().schema_errors(entry["schema"], arguments, "arguments")
+            except ValueError:
+                errors = []  # a schema this check cannot read: the server checks it
+            if errors:
+                return self._tool_refused(
+                    run, step_id, name, "; ".join(errors[:5]) + ".", "Fix the arguments."
+                )
+            cap = int(step["max_iterations"])
+            calls = int((state.get("tool_calls") or {}).get(step_id, 0))
+            if calls >= cap:
+                return self._tool_refused(
+                    run,
+                    step_id,
+                    name,
+                    f"this loop has made all {cap} of its tool calls.",
+                    "Answer now with what you have: "
+                    + " ".join([self.command, "answer", run, step_id, "'<your JSON>'"]),
+                )
+            # Counted before the call, under the lock: a call that crashes
+            # still counts, and parallel calls cannot pass the cap together.
+            calls += 1
+            state.setdefault("tool_calls", {})[step_id] = calls
+            self._write(path, state)
+        header = self._head(run, f"step={step_id}", f"tool={name}", f"call={calls}/{cap}")
+        try:
+            if "body" in entry:
+                _progress(f"running {name}")
+                body = next(b for b in step["body"] if b["id"] == entry["body"])
+                value = self._checked(name, self._attempts(body, name, arguments))
+            else:
+                _progress(f"calling {entry['server']}.{name}")
+                mcp = importlib.import_module("_rote_mcp")
+                value = _run_async(mcp.call_mcp_tool(entry["server"], None, name, arguments))
+        except Exception as exc:
+            kind = type(exc).__name__
+            if kind == "RoteMcpAuthNeeded":
+                with self._locked(path):
+                    state = self._read(path)
+                    server = str(getattr(exc, "server", "") or entry.get("server", ""))
+                    if (state.get("pending") or {}).get("step") == step_id:
+                        state["pending"] = {"step": step_id, "kind": "login", "server": server}
+                        self._write(path, state)
+                return self._login_block(run, step_id, server)
+            if kind == "RoteMcpConfigError":
+                then = " ".join([self.command, "status", run]) + " (the loop is still waiting)"
+                return self._error(
+                    run,
+                    str(exc),
+                    self._config_fix(str(exc), str(entry.get("server", "")), then),
+                    step=step_id,
+                )
+            lines = [f"{kind}: {redact_urls(str(exc))[:500]}"]
+            return Block(
+                "LOOP", header + " failed", [*lines, *self._last_call(run, step_id, calls, cap)]
+            )
+        text = value if isinstance(value, str) else _compact(value)
+        return Block("LOOP", header, [text, *self._last_call(run, step_id, calls, cap)])
+
+    def _last_call(self, run: str, step: str, calls: int, cap: int) -> list[str]:
+        if calls < cap:
+            return []
+        return [
+            "That was the loop's last tool call. Answer next:",
+            *self._next("answer", run, step, "'<your JSON>'")[1:],
+        ]
+
     def _pending_block(
-        self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
+        self,
+        run: str,
+        step: dict[str, Any],
+        pending: dict[str, Any],
+        note: str = "",
+        state: dict[str, Any] | None = None,
     ) -> Block:
         if pending["kind"] == "login":
             return self._login_block(run, step["id"], pending["server"], note)
         if pending["kind"] == "gate":
             return self._gate_block(run, step, pending, note)
+        if pending["kind"] == "loop":
+            calls = int(((state or {}).get("tool_calls") or {}).get(step["id"], 0))
+            return self._loop_block(run, step, pending, calls, note)
         return self._decide_block(run, step, pending, note)
 
     def _decide_block(
@@ -1412,7 +1754,7 @@ class Driver:
             )
         pending = state.get("pending")
         if pending:
-            return self._pending_block(run, self.by_id[pending["step"]], pending, note)
+            return self._pending_block(run, self.by_id[pending["step"]], pending, note, state)
         self._claim_free(path, state)
         return self._error(run, "the run is between steps.", f"{self.command} resume {run}")
 
@@ -1505,6 +1847,131 @@ class Driver:
 
 class _NotJson(Exception):
     """A step returned a value a journal cannot hold."""
+
+
+class _LoopToolsError(Exception):
+    """An agent loop's tools cannot be bound as declared; ``fix`` says what to do."""
+
+    def __init__(self, cause: str, fix: str) -> None:
+        super().__init__(cause)
+        self.fix = fix
+
+
+class _ServerFailure(Exception):
+    """Listing ``server``'s tools failed with ``cause``, for a loop that needs it."""
+
+    def __init__(self, server: str, cause: BaseException) -> None:
+        super().__init__(f"{server}: {cause}")
+        self.server = server
+        self.cause = cause
+
+
+#: What a loop with no declared output answers: its final text, as every
+#: runtime returns it (``{"result": <final text>}``).
+_TEXT_ANSWER = {
+    "type": "object",
+    "properties": {"result": {"type": "string"}},
+    "required": ["result"],
+    "additionalProperties": False,
+}
+
+
+def answer_schema(step: dict[str, Any]) -> Any:
+    """The schema an agent's answer to ``step`` (a judge or a loop) must fit."""
+    if step["kind"] == "loop":
+        return step["output_schema"] or _TEXT_ANSWER
+    return step["output_schema"]
+
+
+_URL = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+
+
+def redact_urls(text: str) -> str:
+    """``text`` with every URL's userinfo, query and fragment removed.
+
+    A block lands in the agent's context and its transcript, and a server
+    URL can carry a key in its query (``?api_key=``) or its userinfo."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    def _clean(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        trail = ""
+        while raw and raw[-1] in ".,;:)]}":
+            raw, trail = raw[:-1], raw[-1] + trail
+        try:
+            parts = urlsplit(raw)
+            host = parts.hostname or ""
+            if parts.port is not None:
+                host = f"{host}:{parts.port}"
+        except ValueError:
+            return "<url>" + trail
+        query = "?<redacted>" if parts.query else ""
+        return urlunsplit((parts.scheme, host, parts.path, "", "")) + query + trail
+
+    return _URL.sub(_clean, text)
+
+
+#: A judge prompt line that tells a decoder how to answer ("Return your
+#: decision via the structured output tool."): at a LOOP rule the agent has
+#: no such tool, so the line would only mislead it.
+_DECODER_LINE = re.compile(r"(?im)^[^\n]*\bstructured output tool\b[^\n]*\n?")
+
+
+def _rule_text(prompt: str) -> str:
+    """A judge sub-node's prompt as a rule the agent applies itself."""
+    return re.sub(r"\n{3,}", "\n\n", _DECODER_LINE.sub("", prompt)).strip()
+
+
+def _first_line(text: str, limit: int = 160) -> str:
+    """A description's first line, printable characters only, at most ``limit``."""
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    line = "".join(c for c in line if c.isprintable())
+    return line if len(line) <= limit else line[: limit - 3].rstrip() + "..."
+
+
+def _brief(schema: Any, root: Any = None, depth: int = 0) -> str:
+    """A compact type signature for ``schema``: ``{query: string, limit?: integer}``.
+
+    For the LOOP block, where every byte stays in context. The full schema
+    still checks the arguments; this only tells the agent what to send.
+    """
+    if not isinstance(schema, dict) or not schema:
+        return "any"
+    root = schema if root is None else root
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = (
+            (root.get("$defs") or {}).get(ref.rsplit("/", 1)[-1])
+            if isinstance(root, dict)
+            else None
+        )
+        return (
+            _brief(target, root, depth + 1) if isinstance(target, dict) and depth < 4 else "object"
+        )
+    for key in ("anyOf", "oneOf"):
+        if isinstance(schema.get(key), list):
+            return " | ".join(dict.fromkeys(_brief(s, root, depth + 1) for s in schema[key]))
+    if isinstance(schema.get("enum"), list):
+        return " | ".join(_compact(v) for v in schema["enum"])
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        return " | ".join(str(k) for k in kind)
+    if kind == "array":
+        return f"[{_brief(schema.get('items'), root, depth + 1)}]"
+    properties = schema.get("properties")
+    if kind == "object" or isinstance(properties, dict):
+        if not isinstance(properties, dict) or not properties or depth >= 3:
+            return "object"
+        required = set(schema.get("required") or ())
+        return (
+            "{"
+            + ", ".join(
+                f"{key}{'' if key in required else '?'}: {_brief(sub, root, depth + 1)}"
+                for key, sub in properties.items()
+            )
+            + "}"
+        )
+    return str(kind) if kind else "any"
 
 
 def _location(exc: BaseException, root: Path) -> str:
@@ -1637,6 +2104,7 @@ def _said(args: list[str]) -> tuple[list[str], str | None]:
 USAGE = (
     "start '<input json>' | --file <path>; "
     "answer <run> <step> '<json>' | --file <path> [--said '<their words>']; "
+    "tool <run> <step> <tool> '<arguments json>' | --file <path>; "
     "resume <run>; status [<run>]; cancel <run>; runs [--prune]"
 )
 
@@ -1649,6 +2117,8 @@ def dispatch(driver: Driver, argv: list[str]) -> Block:
         if verb == "answer" and len(args) >= 3:
             rest, said = _said(args[2:])
             return driver.answer(args[0], args[1], _value_arg(rest, "the answer"), said)
+        if verb == "tool" and len(args) >= 4:
+            return driver.tool(args[0], args[1], args[2], _value_arg(args[3:], "the arguments"))
         if verb == "resume" and len(args) == 1:
             return driver.resume(args[0])
         if verb == "status" and len(args) <= 1:
