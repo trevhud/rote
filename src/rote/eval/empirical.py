@@ -103,8 +103,15 @@ def skill_run_isolation_args(
     mcp_servers: Mapping[str, Mapping[str, Any]] | None,
     allowed_mcp_tools: Sequence[str],
     denied_mcp_tools: Sequence[str] = (),
+    extra_tools: Sequence[str] = (),
 ) -> list[str]:
     """The ``claude -p`` flags that keep a skill run inside rote's gate.
+
+    ``extra_tools`` loads more built-ins than :data:`SKILL_RUN_TOOLS` into the
+    model's context. Loaded is not allowed: under ``dontAsk`` a tool runs
+    only where ``allowed_mcp_tools`` names a rule for it. ``rote eval --run
+    --runtime skill`` loads Bash on both sides this way, as a real Claude
+    Code session does, and allows it only for ``rote skill run <name>``.
 
     One function for every skill run (``rote run <skill>``, the baseline,
     ``rote eval --run``, the bench's fidelity references), because each
@@ -135,7 +142,7 @@ def skill_run_isolation_args(
         "--mcp-config",
         str(config_path),
         "--tools",
-        ",".join(SKILL_RUN_TOOLS),
+        ",".join(dict.fromkeys([*SKILL_RUN_TOOLS, *extra_tools])),
         "--permission-mode",
         "dontAsk",
         "--allowedTools",
@@ -383,6 +390,29 @@ def gate_answers_server(answers: Sequence[Any], work: Path) -> tuple[dict[str, A
         "args": ["-m", "rote.eval.gate_server", str(answers_file), str(work / "calls.jsonl")],
     }
     return entry, f"mcp__{GATE_SERVER}__{GATE_TOOL}"
+
+
+def split_task(pipeline: Pipeline, task: Any) -> tuple[Any, dict[str, Any]]:
+    """``(input, signals)`` from ``rote eval --run``'s task file.
+
+    Envelope form: ``{"input": {...}, "signals": {...}}``. An explicit
+    ``signals`` key always means the envelope; otherwise ``input`` reads as
+    the envelope only when the pipeline's declared input contract has no
+    field of that name, since a payload may legitimately have one."""
+    declared = set(pipeline.input.required) | set(pipeline.input.optional)
+    if pipeline.input.input_schema is not None:
+        props = pipeline.input.input_schema.get("properties")
+        if isinstance(props, dict):
+            declared |= set(props.keys())
+    is_envelope = (
+        isinstance(task, dict)
+        and "input" in task
+        and set(task) <= {"input", "signals"}
+        and ("signals" in task or "input" not in declared)
+    )
+    if is_envelope:
+        return task["input"], dict(task.get("signals") or {})
+    return task, {}
 
 
 def _skill_prompt(

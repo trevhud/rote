@@ -410,7 +410,11 @@ through your API credentials.
   much of the run is still LLM-decided). `rote compile` writes this to
   `compiled/scorecard.md` automatically. Add `--run` to *measure*
   instead of estimate: it executes both sides for real and appends
-  measured cost, turns, and output agreement across trials.
+  measured cost, turns, and output agreement across trials. With
+  `--run --runtime skill` the after side is the compiled skill, run by
+  an agent through `rote skill run`, so both sides are agents and the
+  table compares context, tokens, time, cost and field fidelity
+  (`--budget` is required).
 - **Per-node inference**: emitted judges read `ROTE_MODEL_<ID>` and
   `ROTE_BASE_URL_<ID>` at runtime, so you can swap the model or point at
   any OpenAI-compatible endpoint (Ollama, vLLM, a gateway) without

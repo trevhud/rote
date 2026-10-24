@@ -142,7 +142,8 @@ jobs:
             tests/test_agent_loop_output_parity.py \
             tests/test_pipeline_input_parity.py \
             tests/test_judge_sampling_sdk.py \
-            tests/test_serve_server.py
+            tests/test_serve_server.py \
+            tests/test_skill_e2e.py
 
   ts-e2e:
     # The TypeScript runtimes' live suites. These were opt-in on the
