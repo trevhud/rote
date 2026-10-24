@@ -4795,6 +4795,24 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
     if args.trials < 1:
         print(f"error: --trials must be >= 1, got {args.trials}", file=sys.stderr)
         return 2
+    # Flags of the pipeline-trial mode that mean nothing here: refused, not ignored.
+    pipeline_only = [
+        flag
+        for flag, value in (
+            ("--inference", args.inference),
+            ("--python", args.python),
+            ("--runtime-dir", args.runtime_dir),
+            ("--prior", args.prior),
+        )
+        if value is not None
+    ]
+    if pipeline_only:
+        print(
+            f"error: {', '.join(pipeline_only)} do not apply to --run --runtime skill: both "
+            "sides run as claude -p agents",
+            file=sys.stderr,
+        )
+        return 2
     if args.budget is None:
         print(
             "error: --run --runtime skill needs --budget USD: every trial is a paid "

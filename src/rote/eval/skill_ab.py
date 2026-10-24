@@ -96,8 +96,10 @@ TRIAL_TIMEOUT_SECONDS = 900.0
 DEFAULT_TRIAL_ESTIMATE_USD = 0.40
 #: A control run ("reply ok"): one request, mostly a cache write.
 DEFAULT_CONTROL_ESTIMATE_USD = 0.10
-#: A compile, when the eval compiles the skill itself.
-DEFAULT_COMPILE_ESTIMATE_USD = 0.60
+#: A compile, when the eval compiles the skill itself: the top of the measured
+#: range (CLAUDE.md: Sonnet 4.6 compiles ran $1.20 to $5.14), so a first compile
+#: cannot overshoot --budget by a multiple.
+DEFAULT_COMPILE_ESTIMATE_USD = 5.20
 #: The control run's whole prompt.
 CONTROL_PROMPT = "Reply with the single word ok. Do not use any tool."
 #: The corpus record kind (the corpus is shared with ``rote eval --run``).
@@ -479,8 +481,41 @@ def subject_for(
         case=case,
         reference=reference,
         live_servers=live,
-        provenance=dict(provenance or {"pipeline": "given"}),
+        provenance=dict(provenance or given_provenance(pipeline_yaml)),
     )
+
+
+def given_provenance(pipeline_yaml: Path) -> dict[str, Any]:
+    """What is known about how a given pipeline was made.
+
+    A compile records its System-1 settings in ``system1/decisions.json``
+    (the decider that checked the structure, the structure pass's model,
+    the tie-break) and its cost in ``compile-metrics.json``; both are copied
+    when present. A pipeline with neither was written by hand (an example's
+    ``expected/``), and the record says so rather than calling it a compile."""
+    from rote.bench.collect import read_compile_metrics
+
+    compiled = pipeline_yaml.parent
+    record: dict[str, Any] = {"pipeline": "given"}
+    decisions_path = compiled / "system1" / "decisions.json"
+    metrics = read_compile_metrics(compiled)
+    if not decisions_path.is_file() and not metrics:
+        record["pipeline"] = "given, with no compile record (hand-written)"
+        return record
+    if decisions_path.is_file():
+        decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+        checker = decisions.get("checker")
+        if isinstance(checker, dict):
+            record["decider"] = checker.get("decider")
+        structure = decisions.get("structure")
+        if isinstance(structure, dict):
+            record["structure"] = structure.get("model")
+        tiebreak = decisions.get("tiebreak")
+        record["tiebreak"] = tiebreak.get("model") if isinstance(tiebreak, dict) else "none"
+    if metrics:
+        record["compile_cost_usd"] = metrics.get("cost_usd")
+        record["compile_turns"] = metrics.get("num_turns")
+    return record
 
 
 def bench_case(skill_dir: Path, case_id: str) -> tuple[CaseFile, Case]:

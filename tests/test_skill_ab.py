@@ -159,7 +159,10 @@ def test_no_run_folder_is_a_bypass(tmp_path: Path) -> None:
 
 
 def test_a_gate_the_agent_answered_fails(tmp_path: Path) -> None:
-    _run_folder(tmp_path, gate={"result": {"approved": True}, "answered_by": "agent"})
+    # It even carries words: answered_by alone decides who answered.
+    _run_folder(
+        tmp_path, gate={"result": {"approved": True}, "answered_by": "agent", "said": "yes"}
+    )
     assert _evidence(tmp_path).problems == (
         "gate approve was not answered by a person (answered_by='agent')",
     )
@@ -255,9 +258,28 @@ def test_a_paired_run_measures_both_sides_and_checks_the_compiled_one(
     assert c.driver.reported_checked > 0
     # Two controls and two trials, at the fake's $0.01 a request.
     assert harness.ledger.spent == pytest.approx(0.01 + 0.01 + 0.03 + 0.04)
+    # Bash is loaded on both sides; only the compiled side may run it.
+    for trial in (o, c):
+        argv = json.loads((trial.work_dir / "argv.json").read_text())
+        tools = argv[argv.index("--tools") + 1].split(",")
+        assert tools == ["Read", "Write", "Edit", "Glob", "Grep", "Bash"], trial.side
+    original_rules = json.loads((o.work_dir / "argv.json").read_text())
+    allowed = original_rules[original_rules.index("--allowedTools") + 1]
+    assert "Bash(" not in allowed
+    compiled_rules = json.loads((c.work_dir / "argv.json").read_text())
+    assert (
+        "Bash(rote skill run expense-audit *)"
+        in compiled_rules[compiled_rules.index("--allowedTools") + 1]
+    )
     (pair,) = report.pairs
-    assert pair.compared == len(expense.contract)
-    assert pair.headline == f"reproduced {pair.reproduced} of {pair.compared} fields"
+    assert pair.compared == len(expense.contract) == 13
+    # The fake's compiled result takes the four totals from the driver; two of
+    # them differ from the recorded original (the IR's own reading of the skill).
+    assert pair.reproduced == 11
+    assert sorted(f.spec.name for f in pair.fields if f.status != "matched") == [
+        "reimbursable_usd",
+        "returned_usd",
+    ]
     rendered = skill_ab.render_markdown([report], model="fake-model", spent=0.09)
     assert "### compute-heavy" in rendered and "| expense-audit/base | original | 1/1 |" in rendered
 
@@ -344,3 +366,39 @@ def test_the_paired_eval_needs_a_budget_and_one_input(
     both = ["--case", "base", "--input", "x.json", "--budget", "1"]
     assert main(["eval", target, "--run", "--runtime", "skill", *both]) == 2
     assert "exactly one of --input" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--inference", "api"], ["--python", "python3"], ["--runtime-dir", "x"], ["--prior", "a=1"]],
+)
+def test_pipeline_trial_flags_are_refused_in_the_paired_eval(
+    extra: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from rote.cli import main
+
+    target = str(EXPENSE / "expected" / "pipeline.yaml")
+    argv = ["eval", target, "--run", "--runtime", "skill", "--case", "base", "--budget", "1"]
+    assert main([*argv, *extra]) == 2
+    assert f"{extra[0]} do not apply to --run --runtime skill" in capsys.readouterr().err
+
+
+def test_a_given_pipeline_records_its_compile_settings_or_says_it_had_none() -> None:
+    docs = skill_ab.given_provenance(
+        REPO / "examples" / "docs-digest" / "compiled" / "pipeline.yaml"
+    )
+    assert (docs["pipeline"], docs["decider"], docs["structure"], docs["tiebreak"]) == (
+        "given",
+        "rules",
+        "claude-haiku-5-5",
+        "none",
+    )
+    assert docs["compile_cost_usd"] == pytest.approx(0.072854)
+    expected = skill_ab.given_provenance(EXPENSE / "expected" / "pipeline.yaml")
+    assert expected == {"pipeline": "given, with no compile record (hand-written)"}
+
+
+def test_the_compile_estimate_covers_a_measured_compile() -> None:
+    # CLAUDE.md: Sonnet 4.6 compiles ran up to $5.14; an estimate below that
+    # lets a first compile overshoot --budget by a multiple.
+    assert skill_ab.DEFAULT_COMPILE_ESTIMATE_USD >= 5.14

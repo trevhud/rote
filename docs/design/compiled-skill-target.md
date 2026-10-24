@@ -802,9 +802,12 @@ number:
 
 ### Measured again, through `rote skill run` (PR 7)
 
-`rote eval <compiled> --run --runtime skill`, 2026-10-24, the same model and
-the same three compiled pipelines as the prototype round (the ops-report
-compile is that round's). The compiled side is now the real emitted skill,
+`rote eval <compiled> --run --runtime skill`, 2026-10-24, with the same model
+and the same three pipelines as the prototype round. docs-digest's is its
+committed compile, and ops-report's is the prototype round's fresh compile.
+expense-audit's is not a compile at all: it is the hand-drafted
+`examples/expense-audit/expected/` IR, so its "compiled" row measures that
+IR run as a skill. The compiled side is now the real emitted skill,
 installed and run through `rote skill run`, and Bash is loaded on both sides.
 Medians of 3 trials a side. Fields: original trial i against compiled trial i
 (for the original row, the original against itself). K is `I - T*B`.
@@ -833,11 +836,15 @@ the person. The measurement cost $3.26 ($3.55 with a one-trial smoke run).
   higher, from two more turns (read the run's result.json, then write).
 - **docs-digest** costs 39% less and leaves 66% less in context, but is 5 s
   slower: the driver call takes about 7 s.
-- **Field differences are the compile's, as before:** ops-report's
-  `outstanding_requests` and `open_ticket_alerts`, and expense-audit's
-  `blocked_ids`, `review_queue`, `reimbursable_usd` and `returned_usd`.
+- **Field differences come from the IR, not the driver:** ops-report's
+  `outstanding_requests` and `open_ticket_alerts` (from its compile), and
+  expense-audit's `blocked_ids`, `review_queue`, `reimbursable_usd` and
+  `returned_usd` (from the hand-drafted IR). PR 7's review checked that the
+  driver's result matches the dbos runtime's on the same IR exactly.
   expense-audit's original disagrees with itself on `review_queue` too, so
   that field is noisy on both sides.
+- **The batch-size sweep** (PR 7's row) is left for later. It needs
+  deal-monitor's judges.
 
 bdr-outreach is not measured. Its two heaviest phases are agent loops, and
 a loop's tool results enter context in both versions, so it should save the
