@@ -1154,3 +1154,17 @@ def test_re_emitting_session_judges_retires_the_inference_helper(tmp_path: Path)
     emit(DEAL_MONITOR, out, judges="session", allow_stubs=True)
     assert (out / "scripts" / "_rote_inference.py").read_text() == "# mine\n"
     assert "scripts/_rote_inference.py" not in manifest(out)["files"]
+
+
+def test_a_malformed_registry_is_an_error_block_naming_the_file(tmp_path: Path) -> None:
+    from rote.mcp.registry import registry_path
+
+    out = tmp_path / "docs-digest"
+    emit(DOCS_DIGEST, out)
+    registry = registry_path()
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text("{not json", encoding="utf-8")
+    status, text = drive(out / "scripts", "start", '{"repo": "a/b", "topic": "t"}')
+    assert status == 1 and header(text)["kind"] == "ERROR", text
+    assert f"the MCP registry {registry} cannot be read" in text
+    assert "Fix: fix or remove that file" in text

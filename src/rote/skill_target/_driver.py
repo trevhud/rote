@@ -1682,6 +1682,15 @@ def _read_only_servers(scripts: Path) -> dict[str, str]:
     }
 
 
+def _registry_file() -> str:
+    """The registry file ``_registry_servers`` reads, for a message naming it."""
+    override = os.environ.get("ROTE_MCP_CONFIG")
+    if override:
+        return override
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return str((Path(xdg) if xdg else Path.home() / ".config") / "rote" / "mcp.json")
+
+
 def main(
     argv: list[str],
     scripts: Path | None = None,
@@ -1712,12 +1721,22 @@ def main(
     else:
         os.environ["ROTE_MCP_READ_ONLY"] = "1"
     os.environ.pop("ROTE_MCP_READ_ONLY_SERVERS", None)
-    declared = _read_only_servers(scripts)
-    if declared:
-        os.environ["ROTE_MCP_READ_ONLY_SERVERS"] = json.dumps(declared)
     driver: Driver | None = None
     try:
         driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None, skill)
+        try:
+            declared = _read_only_servers(scripts)
+        except (OSError, ValueError) as e:
+            raise Stop(
+                driver._error(
+                    None,
+                    f"the MCP registry {_registry_file()} cannot be read: {e}.",
+                    "fix or remove that file (rote mcp list shows what it holds), then run "
+                    "the command again",
+                )
+            ) from None
+        if declared:
+            os.environ["ROTE_MCP_READ_ONLY_SERVERS"] = json.dumps(declared)
         block = dispatch(driver, argv)
     except Stop as stop:
         block = stop.block
