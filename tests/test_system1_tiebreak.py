@@ -24,6 +24,7 @@ from rote.compiler.system1 import tiebreak as tb
 from rote.compiler.system1.decide import REVIEW_BELOW, unit_segments, unsure_units
 from rote.compiler.system1.parse import parse_skill
 from rote.compiler.system1.tiebreak import Lane, TieBreakUnavailable
+from tests._helpers import require_extra
 
 REPO = Path(__file__).resolve().parents[1]
 RUBRIC = REPO / "skills" / "rote-compile" / "references" / "node-kinds.md"
@@ -345,13 +346,14 @@ def test_the_lane_is_the_compile_drivers_own(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(TieBreakUnavailable, match="'codex' driver has no client"):
         tb.lane_for(_Named("codex"))  # named codex, but not the CodexDriver
     # A driver named like one rote knows but not that class has no client either.
+    require_extra("openai-api")  # lane_for imports openai before its class check
     with pytest.raises(TieBreakUnavailable, match="'openai-api' driver has no client"):
         tb.lane_for(_Named("openai-api"))
 
 
 def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A gateway base URL and headers on the compile apply to the tie-break too."""
-    pytest.importorskip("anthropic")
+    require_extra("api")
     from rote.compiler.drivers.anthropic_api import AnthropicApiDriver
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -409,7 +411,7 @@ def test_the_sdk_lane_sends_a_schema_locked_call_with_the_lent_client() -> None:
     class _Client:
         messages = _Messages()
 
-    pytest.importorskip("anthropic")
+    require_extra("api")
     payload, rows = structured_call(
         node_id="system1_tiebreak",
         provider="api",
@@ -754,7 +756,7 @@ async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
 def test_the_openai_api_driver_lends_its_own_client() -> None:
     """GPT-5.5, GLM or Kimi through a gateway: the tie-break goes to the same
     endpoint with the same headers and the compile's own model."""
-    pytest.importorskip("openai")
+    require_extra("openai-api")
     from tests._helpers import GATEWAY_HEADERS, GATEWAY_URL, openai_compile_driver
 
     lane = tb.lane_for(openai_compile_driver())
@@ -769,7 +771,7 @@ def test_an_openai_api_tiebreak_goes_only_to_the_compiles_gateway(
 ) -> None:
     """The whole call, real client to the wire: the request reaches the gateway
     schema-locked, and nothing touches an Anthropic key, client or claude."""
-    pytest.importorskip("openai")
+    require_extra("openai-api")
     from tests._helpers import (
         assert_sent_through_the_gateway,
         openai_compile_driver,

@@ -34,8 +34,6 @@ from tests._skill_driver import (
     run_dir,
 )
 
-pytest.importorskip("fastmcp")
-
 REPO = Path(__file__).resolve().parent.parent
 
 MODULES = {

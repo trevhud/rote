@@ -35,8 +35,6 @@ from tests._skill_driver import (
     run_dir,
 )
 
-pytest.importorskip("fastmcp")
-
 FAST = {"RETRY_BASE_DELAY_SECONDS": 0.0}
 
 MATH = """\

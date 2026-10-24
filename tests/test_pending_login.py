@@ -114,7 +114,6 @@ def test_a_pasted_callback_is_only_ever_sent_to_this_logins_listener(
 
 
 def test_the_state_check_drops_a_forged_success_and_keeps_waiting() -> None:
-    pytest.importorskip("fastmcp")
     from fastmcp.client.oauth_callback import OAuthCallbackResult
 
     from rote.mcp.auth import _StateCheckedReady

@@ -30,10 +30,12 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import httpx
 import pytest
 
+from tests._helpers import require_extra
+
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-pytest.importorskip("trustme")
+require_extra("serve")
+require_extra("dev", module="trustme")
 
 from rote.cli import main as cli_main  # noqa: E402
 from rote.mcp import (  # noqa: E402

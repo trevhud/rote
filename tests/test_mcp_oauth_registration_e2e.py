@@ -28,8 +28,11 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests._helpers import require_extra
+
 pytestmark = pytest.mark.slow
-pytest.importorskip("trustme")
+require_extra("serve")
+require_extra("dev", module="trustme")
 
 from rote.mcp import (  # noqa: E402
     McpAuthError,

@@ -14,7 +14,7 @@ import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from rote.adapters._common import strip_ts_comments
 from rote.ir import Node, Pipeline
@@ -288,6 +288,7 @@ def refuse_anthropic(monkeypatch: Any) -> None:
     """Make every way to reach Anthropic fail the test: its SDK clients, a
     ``claude`` lookup or subprocess. An Anthropic key sits in the environment
     so a request carrying it is visible, and pricing is offline."""
+    require_extra("api")
     import shutil
     import subprocess
 
@@ -463,20 +464,13 @@ def first_free_callback_port() -> Iterator[int]:
     after the first can be freed it skips, except under CI, where it fails:
     a skip there would hide the test on every run.
     """
-    import os
-
-    import pytest
-
     from rote.mcp.auth import CALLBACK_PORTS, bind_callback_sockets
 
     held = {port: bind_callback_sockets(port) for port in CALLBACK_PORTS}
     try:
         free = [p for p in CALLBACK_PORTS[1:] if held[p] is not None][:2]
         if not free:
-            why = f"no published callback port after the first is free: {CALLBACK_PORTS}"
-            if os.environ.get("CI"):
-                pytest.fail(why)
-            pytest.skip(why)
+            skip_unless_ci(f"no published callback port after the first is free: {CALLBACK_PORTS}")
         for port in free:
             for sock in held.pop(port) or []:
                 sock.close()
@@ -485,3 +479,39 @@ def first_free_callback_port() -> Iterator[int]:
         for sockets in held.values():
             for sock in sockets or []:
                 sock.close()
+
+
+# ───────── Missing tooling: skip locally, fail on CI ─────────
+
+
+def skip_unless_ci(why: str) -> NoReturn:
+    """Skip with ``why``, except under CI (``CI`` set), where it fails.
+
+    CI installs every extra and every tool a test needs, so a missing one
+    there is a broken environment, and a skip would hide the test on every
+    run (the rule tests/test_sandbox.py set for the sandbox). Callable at
+    module level: the module is then skipped, or fails to collect."""
+    import os
+
+    import pytest
+
+    if os.environ.get("CI"):
+        pytest.fail(f"CI must not skip this: {why}", pytrace=False)
+    pytest.skip(why, allow_module_level=True)
+
+
+def require_extra(extra: str, *, module: str | None = None) -> None:
+    """Skip (fail on CI) unless rote-cli's ``extra`` is installed.
+
+    With ``module``, the check is that module importing, for a test-only
+    dependency of the ``dev`` extra (trustme). Otherwise it is
+    :func:`rote.extras.is_installed`, which tells fastmcp's server half
+    (``serve``) from the slim client every base install has: ``import
+    fastmcp`` succeeds either way, so an import check proves nothing."""
+    from rote.extras import EXTRAS, install_hint, is_installed, module_is_importable
+
+    if module_is_importable(module) if module else is_installed(extra):
+        return
+    what = f"{module}, from the {extra} extra" if module else f"the {extra} extra"
+    hint = install_hint(extra) if extra in EXTRAS else f"uv sync --extra {extra}"
+    skip_unless_ci(f"needs {what}: {hint}")

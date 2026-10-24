@@ -27,6 +27,7 @@ import pytest
 
 from rote.cli import main
 from rote.ir import NodeKind, load_pipeline
+from tests._helpers import require_extra
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "expense-audit"
 GATED = EXAMPLE / "expected" / "pipeline.yaml"
@@ -321,6 +322,7 @@ def test_temporal_activities_run_the_shipped_sync_modules(
     call. Activity functions are ordinary coroutines, so this calls one
     directly with no Temporal server.
     """
+    require_extra("temporal")
     import asyncio
     import sys
 
@@ -425,7 +427,7 @@ def test_gated_run_on_temporal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Temporal awaits the same sync extracted/ modules dbos and python call."""
-    pytest.importorskip("temporalio")
+    require_extra("temporal")
     report_dir = tmp_path / "reports"
     monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(report_dir))
     app = tmp_path / "expense-audit-temporal"
@@ -447,7 +449,7 @@ def test_temporal_writes_the_report_inside_the_app_dir_like_python_and_dbos(
     """With no EXPENSE_AUDIT_REPORT_DIR the report goes under the working
     directory. python and dbos run with the app dir as theirs, so temporal,
     whose worker runs in rote's own process, must too, not the shell's."""
-    pytest.importorskip("temporalio")
+    require_extra("temporal")
     monkeypatch.delenv("EXPENSE_AUDIT_REPORT_DIR", raising=False)
     shell = tmp_path / "shell"
     shell.mkdir()
