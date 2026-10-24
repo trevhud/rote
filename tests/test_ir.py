@@ -1259,6 +1259,44 @@ def test_a_gate_that_binds_what_it_shows_is_valid() -> None:
     )
 
 
+def _reader_of(ref: str, output: object) -> dict[str, object]:
+    src: dict[str, object] = {
+        "id": "src",
+        "kind": "pure_function",
+        "description": "x",
+        "impl": "extracted/a.py:go",
+        "output": output,
+    }
+    reader = {
+        "id": "reader",
+        "kind": "pure_function",
+        "description": "x",
+        "impl": "extracted/b.py:go",
+        "inputs": {"value": ref},
+    }
+    return {
+        "name": "p",
+        "version": "0.1.0",
+        "input": {"type": "In"},
+        "nodes": [src, reader],
+        "edges": [{"from": "src", "to": "reader"}],
+        "entry_nodes": ["src"],
+        "exit_nodes": ["reader"],
+    }
+
+
+def test_an_input_names_only_a_field_its_source_declares() -> None:
+    """Valid IR is emittable IR: reading a key the source's output does not
+    declare is a KeyError (Python) or `undefined` (TS) at run time."""
+    with pytest.raises(ValidationError, match=re.escape("declares only output keys ['digest']")):
+        Pipeline.model_validate(_reader_of("src.output.items", {"digest": "str"}))
+    Pipeline.model_validate(_reader_of("src.output.digest", {"digest": "str"}))
+    Pipeline.model_validate(_reader_of("src.output", {"digest": "str"}))
+    # No declared keys (the empty default, or a type name): nothing to check against.
+    Pipeline.model_validate(_reader_of("src.output.items", {}))
+    Pipeline.model_validate(_reader_of("src.output.items", "dict"))
+
+
 def test_only_a_gate_is_held_to_what_it_documents() -> None:
     # `input:` documents types on every kind; only a gate shows it to a person.
     Node.model_validate(

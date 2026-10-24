@@ -411,6 +411,41 @@ def test_gates_compare_signal_and_payload() -> None:
     assert gates["payload_jaccard_mean"] == 0.5
 
 
+def _gold_with_gate_inputs(skill: str, inputs: dict[str, str] | None) -> Pipeline:
+    doc = load_pipeline(
+        Path(__file__).parent.parent / "examples" / skill / "expected" / "pipeline.yaml"
+    )
+    raw = doc.model_dump(mode="json", exclude_none=True)
+    for n in raw["nodes"]:
+        if n["kind"] == "hitl_gate":
+            n["inputs"] = inputs
+            n.pop("input", None)
+            n.pop("notify", None)
+    return Pipeline.model_validate(raw)
+
+
+def test_a_gate_is_scored_on_what_it_shows_the_person() -> None:
+    """The gate's bound inputs against the gold's, by the data's field names."""
+    gold = load_pipeline(
+        Path(__file__).parent.parent / "examples" / "expense-audit" / "expected" / "pipeline.yaml"
+    )
+    same = score_pipeline(gold, gold)["gates"]
+    assert same["shown_jaccard_mean"] == 1.0
+    assert same["gates"][0]["shown_expected"] == ["period", "queue", "review"]
+    # Every gate before System-1 decided it: the whole input, nothing else.
+    whole = _gold_with_gate_inputs("expense-audit", {"request": "pipeline.input"})
+    assert score_pipeline(gold, whole)["gates"]["shown_jaccard_mean"] == 0.0
+    half = _gold_with_gate_inputs("expense-audit", {"q": "summarize_audit.output.review_queue"})
+    assert score_pipeline(gold, half)["gates"]["gates"][0]["shown_jaccard"] == pytest.approx(0.6667)
+    # A gate that only asks for data: showing nothing is agreement, anything is not.
+    ops = load_pipeline(
+        Path(__file__).parent.parent / "examples" / "ops-report" / "expected" / "pipeline.yaml"
+    )
+    assert score_pipeline(ops, ops)["gates"]["shown_jaccard_mean"] == 1.0
+    shown = _gold_with_gate_inputs("ops-report", {"request": "pipeline.input"})
+    assert score_pipeline(ops, shown)["gates"]["shown_jaccard_mean"] == 0.0
+
+
 def test_inputs_overlap() -> None:
     inputs = score_pipeline(_expected(), _compiled())["inputs"]
     assert (inputs["precision"], inputs["recall"]) == (0.5, 0.5)

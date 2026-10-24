@@ -325,15 +325,15 @@ Per node:
   an earlier node ("<node id>.<key>", a key in that node's outputs), a whole
   result that has no keys ("<node id>": a fanned node's list, an MCP call's
   result), or a field of the run's input ("pipeline.input.<field>"). Pick
-  the key that holds what they review (the review queue, the contacts to
-  approve) and any short value that says what it is for (the period, the
-  campaign), not every result upstream: the person reads all of it. A gate
+  the key that holds what they review (the requests to approve, the draft
+  to sign off) and any short value that says what it is for (the branch,
+  the season), not every result upstream: the person reads all of it. A gate
   that only asks the person for data they hold shows only what that
   question needs, often nothing. message: one or two plain sentences to
   the person saying what to decide. A {{name}} placeholder is filled with
   a shown short value (a period, a name, a count); a shown list or object
-  is printed below the message, so name it in words ("Approve or reject
-  each review item in the queue below for {{period}}."). The gate
+  is printed below the message, so name it in words ("Approve or decline
+  each book purchase request below for the {{branch}} library."). The gate
   waits for every node in its reads and after, whatever it shows.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty.
@@ -604,7 +604,7 @@ def check(
     seen: dict[str, dict[str, Any]] = {}
     signals: set[str] = set()
     ui_session = False
-    fanned_over = {str(n.get("fan_out_over")) for n in answer.get("nodes") or []} - {""}
+    listing = listing_nodes(list(answer.get("nodes") or []))
     run_outputs = {str(k) for k in answer.get("run_outputs") or []}
     for pos, n in enumerate(answer.get("nodes") or []):
         nid = str(n.get("id", ""))
@@ -706,7 +706,7 @@ def check(
             if gate.get("timeout") and not _DURATION.match(str(gate["timeout"])):
                 out.append(f"{where}: gate timeout {gate['timeout']!r} is not like '72h' or '7d'")
             out += _check_gate_shows(
-                where, n, seen, fanned_over, run_outputs, _input_names(answer, sample)
+                where, n, seen, listing, run_outputs, _input_names(answer, sample)
             )
         if kind == "agent_loop":
             lp = n.get("loop") or {}
@@ -835,32 +835,50 @@ def _check_gate_waiters(answer: dict[str, Any]) -> list[str]:
     ]
 
 
-def result_keys(
-    n: Mapping[str, Any], fanned_over: set[str], run_outputs: set[str]
-) -> list[str] | None:
+def output_keys(keys: list[str], lists_output: bool, run_outputs: set[str]) -> list[str]:
+    """A node's output keys as the skeleton renders them, from the keys the model named.
+
+    The one rule :func:`to_plan` and the gate checks share. Only a node
+    another fans over returns the ``items`` list. Its list is ``items``,
+    and a name the model gave that list ("paired_results") would be a second
+    key the text agent cannot satisfy with the same list: a live compile
+    re-asked between the two until it failed. Only a run output keeps its
+    own key beside ``items``."""
+    named = [k for k in keys if k != "items"]
+    if lists_output:
+        return ["items", *(k for k in named if k in run_outputs)]
+    return named
+
+
+def listing_nodes(nodes: list[dict[str, Any]]) -> set[str]:
+    """The ids of the nodes another node fans over, in the answer's form.
+
+    A fan over a node that itself fans out reads its whole result (a list),
+    so that node returns no ``items`` (:func:`to_plan`'s ``lists_output``)."""
+    fanned = {str(n.get("id")) for n in nodes if n.get("fan_out_over")}
+    return {str(n["fan_out_over"]) for n in nodes if n.get("fan_out_over")} - fanned
+
+
+def result_keys(n: Mapping[str, Any], listing: set[str], run_outputs: set[str]) -> list[str] | None:
     """The keys a node's result has in the IR, or None when none are decided.
 
-    The rules :func:`to_plan` renders ``output`` by: a gate returns its
-    payload, a node another fans over returns ``items`` (and its run
-    outputs), and a fanned node (a list) or an MCP call (the tool's own
-    shape) has no keys the skeleton decides."""
+    A gate returns its payload. A fanned node returns a list and an MCP call
+    the tool's own shape, so the skeleton decides no keys for either. Every
+    other node's keys are :func:`output_keys`, which ``to_plan`` renders."""
     kind = n.get("kind")
     if kind == "hitl_gate":
         return [str(k) for k in (n.get("gate") or {}).get("payload") or []]
     if n.get("fan_out_over"):
         return None
-    if kind == "external_call" and (n.get("system") or {}).get("how") == "declared_tool":
-        return None
-    keys = [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
-    if str(n.get("id")) in fanned_over:
-        return ["items", *(k for k in keys if k in run_outputs and k != "items")]
-    return keys or None
+    mcp = kind == "external_call" and (n.get("system") or {}).get("how") == "declared_tool"
+    named = [] if mcp else [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
+    return output_keys(named, str(n.get("id")) in listing, run_outputs) or None
 
 
 def _show_problem(
     show: Mapping[str, Any],
     earlier: Mapping[str, Mapping[str, Any]],
-    fanned_over: set[str],
+    listing: set[str],
     run_outputs: set[str],
     input_names: set[str],
 ) -> str | None:
@@ -883,7 +901,7 @@ def _show_problem(
             f"shows {name!r} from {ref!r}, but {head!r} is not an earlier node outside a "
             "loop; write '<node id>.<output key>' or 'pipeline.input.<field>'"
         )
-    keys = result_keys(source, fanned_over, run_outputs)
+    keys = result_keys(source, listing, run_outputs)
     if not key:
         if keys is not None:
             return (
@@ -919,7 +937,7 @@ def _check_gate_shows(
     where: str,
     n: Mapping[str, Any],
     earlier: Mapping[str, Mapping[str, Any]],
-    fanned_over: set[str],
+    listing: set[str],
     run_outputs: set[str],
     input_names: set[str],
 ) -> list[str]:
@@ -930,7 +948,7 @@ def _check_gate_shows(
     out: list[str] = []
     names: set[str] = set()
     for show in gate.get("shows") or []:
-        problem = _show_problem(show, earlier, fanned_over, run_outputs, input_names)
+        problem = _show_problem(show, earlier, listing, run_outputs, input_names)
         if problem is None and str(show.get("name")) in names:
             problem = f"shows {show.get('name')!r} twice"
         if problem:
@@ -1589,32 +1607,11 @@ def resolve(
             signals.add(sig)
             payload = [str(k) for k in gate.get("payload") or [] if _IDENTIFIER.match(str(k))]
             timeout = gate.get("timeout") if _DURATION.match(str(gate.get("timeout", ""))) else ""
-            # What the gate shows: only what resolves to real data. A message
-            # naming anything else is dropped whole, never half-filled.
-            earlier = {str(m["id"]): m for m in nodes}
-            fanned_over = {str(m.get("fan_out_over")) for m in answer.get("nodes") or []} - {""}
-            run_outputs = {str(k) for k in answer.get("run_outputs") or []}
-            inputs_known = _input_names(answer, sample)
-            shows: list[dict[str, str]] = []
-            for show in gate.get("shows") or []:
-                problem = _show_problem(show, earlier, fanned_over, run_outputs, inputs_known)
-                if problem is None and str(show.get("name")) in {s["name"] for s in shows}:
-                    problem = f"shows {show.get('name')!r} twice"
-                if problem:
-                    notes.append(f"`{nid}`: dropped what it showed the person: {problem}")
-                    continue
-                shows.append({"name": str(show["name"]), "from": str(show["from"])})
-            message = str(gate.get("message") or "").strip()
-            problem = _message_problem(message, {s["name"] for s in shows})
-            if problem:
-                notes.append(f"`{nid}`: dropped its message to the person: {problem}")
-                message = ""
             n["gate"] = {
+                **gate,
                 "signal": sig,
                 "payload": payload or ["approved", "notes"],
                 "timeout": timeout,
-                "shows": shows,
-                "message": message,
             }
         if n["kind"] == "agent_loop":
             lp = n.get("loop") or {}
@@ -1627,6 +1624,7 @@ def resolve(
         nodes.append(n)
     if sample is not None and sample.gates:
         notes += _gates_from_sample(nodes, sample)
+    notes += _resolve_gate_shows(nodes, answer, sample)
     # Which step a gate guards is a reading of the skill, so no ordering is
     # added here; the gap is listed for a reviewer.
     notes += [
@@ -1636,6 +1634,42 @@ def resolve(
         for gate, exits in _gates_nothing_waits_for(nodes)
     ]
     return {**answer, "nodes": nodes}, notes
+
+
+def _resolve_gate_shows(
+    nodes: list[dict[str, Any]], answer: dict[str, Any], sample: Any
+) -> list[str]:
+    """Keep only what each gate shows that resolves to real data, in place.
+
+    Run on the resolved nodes, after every one is final: resolve may drop a
+    fan, rename or drop a node, turn a call into a pure_function, or take a
+    gate's keys from the sample, and each changes which keys a result has. A
+    message naming anything not shown is dropped whole, never half-filled."""
+    listing = listing_nodes(nodes)
+    run_outputs = {str(k) for k in answer.get("run_outputs") or []}
+    inputs_known = _input_names(answer, sample)
+    notes: list[str] = []
+    for pos, n in enumerate(nodes):
+        if n["kind"] != "hitl_gate":
+            continue
+        gate = n["gate"]
+        earlier = {str(m["id"]): m for m in nodes[:pos]}
+        shows: list[dict[str, str]] = []
+        for show in gate.get("shows") or []:
+            problem = _show_problem(show, earlier, listing, run_outputs, inputs_known)
+            if problem is None and str(show.get("name")) in {s["name"] for s in shows}:
+                problem = f"shows {show.get('name')!r} twice"
+            if problem:
+                notes.append(f"`{n['id']}`: dropped what it showed the person: {problem}")
+                continue
+            shows.append({"name": str(show["name"]), "from": str(show["from"])})
+        message = str(gate.get("message") or "").strip()
+        problem = _message_problem(message, {s["name"] for s in shows})
+        if problem:
+            notes.append(f"`{n['id']}`: dropped its message to the person: {problem}")
+            message = ""
+        n["gate"] = {**gate, "shows": shows, "message": message}
+    return notes
 
 
 def _gates_from_sample(nodes: list[dict[str, Any]], sample: Any) -> list[str]:
@@ -1941,15 +1975,9 @@ def to_plan(
         by_id[node.id] = node
     run_outputs = {str(k) for k in answer.get("run_outputs") or []}
     for node in nodes:
-        if "items" in node.output_keys and not node.lists_output:
-            # Only a node a later one fans over returns the `items` list.
-            node.output_keys = [k for k in node.output_keys if k != "items"]
-        if node.lists_output:
-            # Its list is `items`. A name the model gave that list ("paired_results")
-            # would be a second key the text agent cannot satisfy with the same
-            # list: a live compile re-asked between the two until it failed. Only
-            # a run output keeps its own key beside `items`.
-            node.output_keys = [k for k in node.output_keys if k in run_outputs]
+        # `items` itself is the skeleton's to add (`_output`), for a listing node.
+        keys = output_keys(node.output_keys, node.lists_output, run_outputs)
+        node.output_keys = [k for k in keys if k != "items"]
     fields = {
         slug(str(f["name"])): _one_line(f.get("description", ""), 200)
         for f in answer.get("input_fields") or []

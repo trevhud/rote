@@ -343,6 +343,11 @@ the gold:
 | bdr-outreach | enrollment handoff | (gate missing that run) | `final_report` | `report_markdown`, campaign name |
 | ops-report | manual data | `request` | nothing (asks for data) | nothing |
 
+`rote bench` scores this as `gateShow` (`shown_jaccard_mean`: the normalized
+field-name tokens of a gate's bound inputs against the gold's, 1.0 when both
+show nothing). On the runs above, before to after: expense-audit 0.00 to
+1.00, bdr-outreach 0.00 to 0.15, ops-report 0.00 to 1.00.
+
 The compiled expense-audit skill's HUMAN block went from showing 3.9 KB of
 data (the whole input and summary) to 0.9 KB (the queue), 1.9 KB in all.
 

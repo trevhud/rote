@@ -448,6 +448,9 @@ def test_an_argument_binds_from_an_input_field_or_an_upstream_field(skill: Any) 
     answer = good_answer()
     answer["nodes"][0]["args"] = [{"param": "query", "source": "input_field", "value": "day"}]
     answer["nodes"][0]["outputs"] = ["next_query"]
+    # Not fanned over: a listing node's output declares only `items`, so the
+    # IR would refuse a read of `next_query` (_validate_input_fields_declared).
+    answer["nodes"][1]["fan_out_over"] = ""
     answer["nodes"].append(
         node(
             "refine",
@@ -1863,11 +1866,17 @@ def test_a_gate_that_shows_nothing_binds_nothing(skill: Any) -> None:
             "whole, as 'summarize_email'",
         ),
         (
-            {"name": "emails", "from": "fetch_emails.messages"},  # an MCP result
+            # An MCP result a later node fans over: its IR output is `items`.
+            {"name": "emails", "from": "fetch_emails.messages"},
             "",
-            "shows 'emails' from 'fetch_emails.messages', but the result of 'fetch_emails' "
-            "has no decided keys (a list, or a tool's own result): show it whole, as "
-            "'fetch_emails'",
+            "shows 'emails' from 'fetch_emails.messages', but 'fetch_emails' returns only "
+            "['items']",
+        ),
+        (
+            {"name": "notes", "from": "note_finding.note"},  # runs inside the loop
+            "",
+            "shows 'notes' from 'note_finding.note', but 'note_finding' is not an earlier "
+            "node outside a loop; write '<node id>.<output key>' or 'pipeline.input.<field>'",
         ),
         (
             {"name": "week", "from": "pipeline.input.week"},
@@ -1891,9 +1900,14 @@ def test_a_gate_that_shows_nothing_binds_nothing(skill: Any) -> None:
 def test_what_a_gate_shows_must_resolve_to_real_data(
     skill: Any, show: dict[str, str], message: str, expected: str
 ) -> None:
-    assert _show_findings(_showing(show, message=message), skill) == [
-        f"node approve_digest: {expected}"
-    ]
+    answer = _showing(show, message=message)
+    # A loop with a node of its own, before the gate.
+    loop = {"tools": ["search_messages"], "stop_condition": "", "max_iterations": 0}
+    research = node("research", 2, "agent_loop", mandatory=False, loop=loop)
+    note = node("note_finding", 2, "pure_function", in_loop="research", mandatory=False)
+    note["outputs"] = ["note"]
+    answer["nodes"][3:3] = [research, note]
+    assert _show_findings(answer, skill) == [f"node approve_digest: {expected}"]
 
 
 def test_whole_results_with_no_keys_and_input_fields_are_shown(skill: Any) -> None:
@@ -1901,7 +1915,7 @@ def test_whole_results_with_no_keys_and_input_fields_are_shown(skill: Any) -> No
     source is accepted on a source where it resolves."""
     shows = (
         {"name": "summaries", "from": "summarize_email"},  # a fanned list
-        {"name": "emails", "from": "fetch_emails"},  # an MCP call's own result
+        {"name": "emails", "from": "fetch_emails.items"},  # the list a fan reads
         {"name": "flagged", "from": "render_digest.flagged_total"},
         DAY,
     )
@@ -1984,3 +1998,61 @@ def test_a_gate_message_needs_no_channel_or_target() -> None:
     from rote.ir import NotifyConfig
 
     assert NotifyConfig.model_validate({"message_template": "Approve."}).channel is None
+
+
+def test_an_mcp_result_nothing_fans_over_has_no_keys_and_is_shown_whole(skill: Any) -> None:
+    unlisted = _showing({"name": "emails", "from": "fetch_emails.messages"})
+    unlisted["nodes"][1]["fan_out_over"] = ""
+    assert _show_findings(unlisted, skill) == [
+        "node approve_digest: shows 'emails' from 'fetch_emails.messages', but the result of "
+        "'fetch_emails' has no decided keys (a list, or a tool's own result): show it whole, "
+        "as 'fetch_emails'"
+    ]
+    whole = _showing({"name": "emails", "from": "fetch_emails"})
+    whole["nodes"][1]["fan_out_over"] = ""
+    assert _show_findings(whole, skill) == []
+
+
+def test_items_is_a_key_only_of_a_node_another_fans_over(skill: Any) -> None:
+    """The model named `items` among render_digest's outputs, but nothing fans
+    over it, so its IR output has no `items` (``structure.output_keys``, the
+    rule to_plan renders by). Showing it went unchecked and failed at run time
+    with a KeyError; the IR now refuses the reference too."""
+    answer = _showing({"name": "listed", "from": "render_digest.items"})
+    answer["nodes"][2]["outputs"] = ["items", "digest"]
+    assert _show_findings(answer, skill) == [
+        "node approve_digest: shows 'listed' from 'render_digest.items', but 'render_digest' "
+        "returns only ['digest']"
+    ]
+    fine = _showing(DIGEST)
+    fine["nodes"][2]["outputs"] = ["items", "digest"]
+    plan, _, _ = run(skill, fine)
+    doc = pipeline_doc(plan)
+    assert next(n for n in doc["nodes"] if n["id"] == "render_digest")["output"] == {
+        "digest": "Any"
+    }
+    gate = next(n for n in doc["nodes"] if n["id"] == "approve_digest")
+    gate["inputs"] = {"listed": "render_digest.output.items"}
+    with pytest.raises(ValueError, match="declares only output keys \\['digest'\\]"):
+        Pipeline.model_validate(doc)
+
+
+def test_resolve_judges_shows_on_the_resolved_nodes(skill: Any) -> None:
+    """resolve drops a fan over a node that comes later, so that node returns
+    no `items` list: what it returns is judged on the resolved skeleton, not
+    on the model's raw answer, in both directions."""
+    early = node("early", 2, "pure_function", reads=["pipeline.input"])
+    early["fan_out_over"] = "render_digest"  # a later node: resolve drops the fan
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = _showing(DIGEST)
+    answer["nodes"].insert(2, early)
+    fixed, notes = structure.resolve(answer, skill, SKILL, declared)
+    gate = next(n for n in fixed["nodes"] if n["id"] == "approve_digest")["gate"]
+    assert gate["shows"] == [DIGEST]
+    assert not [n for n in notes if n.startswith("`approve_digest`")]
+    listed = _showing({"name": "listed", "from": "render_digest.items"})
+    listed["nodes"].insert(2, early)
+    fixed, notes = structure.resolve(listed, skill, SKILL, declared)
+    gate = next(n for n in fixed["nodes"] if n["id"] == "approve_digest")["gate"]
+    assert gate["shows"] == []
+    assert any("'render_digest' returns only ['digest', 'flagged_total']" in n for n in notes)

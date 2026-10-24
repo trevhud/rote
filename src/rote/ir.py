@@ -1153,6 +1153,40 @@ class Pipeline(BaseModel):
             raise ValueError("\n".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_input_fields_declared(self) -> Self:
+        """An input reading ``<node>.output.<field>`` names a field that node declares.
+
+        Where a node lists its output keys (a non-empty ``output`` mapping),
+        a reference to any other key reads a field the result never has: the
+        run fails with a KeyError (Python) or carries ``undefined`` on (TS).
+        A System-1 review found a gate bound to ``render_digest.output.items``
+        of a node whose output had no ``items``, and the IR accepted it.
+        An empty mapping or a type name declares no keys, so it is not
+        checked. Loop-body sub-nodes' inputs describe rather than bind, the
+        same exemption as the reachability rule above."""
+        by_id = {n.id: n for n in self.nodes}
+        owned = {sub for n in self.nodes for sub in n.loop_body or ()}
+        errors: list[str] = []
+        for node in self.nodes:
+            if node.id in owned:
+                continue
+            for param, ref in (node.inputs or {}).items():
+                parsed = parse_input_ref(ref)
+                source = by_id.get(parsed.node_id) if parsed.node_id is not None else None
+                if source is None or parsed.field is None:
+                    continue
+                declared = source.output
+                if isinstance(declared, dict) and declared and parsed.field not in declared:
+                    errors.append(
+                        f"Node {node.id!r} input {param!r} references {ref!r}, but "
+                        f"{source.id!r} declares only output keys {sorted(declared)}. "
+                        f"Read one of those, or add {parsed.field!r} to its output."
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
     def execution_waves(self) -> list[list[Node]]:
         """Topologically sort the top-level nodes into parallel waves.
 
