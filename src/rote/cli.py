@@ -243,11 +243,16 @@ def _compiled_skill_next_steps(runtime_dir: Path, skill_path: Path) -> tuple[str
     if slot.is_symlink() and slot.resolve() == runtime_dir.resolve():
         swap = [f"then your agent has it: {shown} already links to it"]
     elif slot.exists() or slot.is_symlink():
+        # A free name to move it to: mv onto an existing dir nests inside it.
+        aside = f"{name}.original"
+        n = 2
+        while (ctx.home / aside).exists() or (ctx.home / aside).is_symlink():
+            aside, n = f"{name}.original-{n}", n + 1
         swap = [
             f"then, for Claude Code: your original {name} skill is at {shown}. To use the "
             f"compiled one instead, move the original out of the skills folder (nothing is "
-            f"deleted): mv {shown} ~/{name}.original && {link}",
-            f"  undo: rm {shown} && mv ~/{name}.original {shown}",
+            f"deleted): mv {shown} ~/{aside} && {link}",
+            f"  undo: rm {shown} && mv ~/{aside} {shown}",
         ]
     else:
         swap = [f"then swap it in for the original {name} skill (Claude Code: {link})"]

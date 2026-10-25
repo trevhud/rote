@@ -446,3 +446,25 @@ def test_a_moved_claude_config_dir_is_where_the_slot_is_checked(
         f"then, for Claude Code: your original word-lookup skill is at {quoted}."
     )
     assert f"mv {quoted} ~/word-lookup.original && ln -s " in lines[0]
+
+
+def test_the_move_aside_name_is_one_nothing_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mv onto an existing ~/<name>.original nests the original inside it, so
+    the printed name skips every taken one (a file or link counts too)."""
+    home = tmp_path / "home"
+    slot = home / ".claude" / "skills" / "word-lookup"
+    slot.mkdir(parents=True)
+    (home / "word-lookup.original").mkdir()
+    (home / "word-lookup.original-2").write_text("taken\n", encoding="utf-8")
+    compiled, lines = _next_lines(tmp_path, monkeypatch)
+    assert (
+        f"mv ~/.claude/skills/word-lookup ~/word-lookup.original-3 && ln -s {compiled.resolve()} "
+        in lines[0]
+    )
+    assert lines[1] == (
+        "  undo: rm ~/.claude/skills/word-lookup && mv ~/word-lookup.original-3 "
+        "~/.claude/skills/word-lookup"
+    )
+    assert "word-lookup.original " not in lines[0]
