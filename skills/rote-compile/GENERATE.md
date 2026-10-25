@@ -158,6 +158,16 @@ already fixed its input schema (the node's `inputs:`) and output schema.
 - Do not paste whole reference files, only the rubric.
 - End with: "Return your decision via the structured output tool."
 
+Passthrough. When the skill has this step return input data unchanged (it
+says to keep, carry or pass along a record, or the output names the same
+thing the input already holds), list each such field in `passthrough` as
+`{output_field, input_path}`, choosing only from the candidates the task
+offers. Code copies those fields from the input and the model is never
+asked for them, so the prompt must not tell it to copy them, and need not
+render them. Leave a field out when the skill has the judge write or change
+it, even when a candidate's shape matches: a summary is not its input. No
+candidates offered means `passthrough` is `[]`.
+
 ## A repair
 
 Asked to repair, you get your earlier answer and what rote found wrong

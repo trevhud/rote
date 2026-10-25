@@ -299,6 +299,8 @@ signature_spec:
                                   # server (Ollama, vLLM, a gateway). Only set
                                   # it when the source skill names an endpoint.
   temperature: 0.0                # DO NOT SET — see below
+  passthrough:                    # optional; see "Fields returned unchanged"
+    contact_id: contact.id
 ```
 
 Emitted code layers runtime overrides on top of these defaults —
@@ -330,6 +332,35 @@ Workers AI). The output shape is pinned whatever the sampler does.
 If a source skill *explicitly* names a temperature, set it and know
 that emitted code turns it into a `ROTE_TEMPERATURE_<NODE_ID>`
 override whose empty value drops the parameter again.
+
+### Fields returned unchanged: `passthrough`
+
+When the skill has a judge hand back input data as it came (a vetted
+contact's id and email next to the verdict, a scored record kept whole),
+do not ask the model to retype it. Name each such output field in
+`passthrough`, mapped to the dotted path of the input it copies:
+
+```yaml
+output_schema:
+  type: object
+  properties:
+    decision: {enum: [keep, discard]}
+    contact_id: {type: string}
+  required: [decision, contact_id]
+passthrough:
+  contact_id: contact.id        # {output field: input path}
+```
+
+The request's schema leaves `contact_id` out, and code copies it from the
+validated input before the whole output schema is checked, so downstream
+nodes still read `vet_contact.output.contact_id`, the value cannot drift,
+and the model writes fewer tokens. Rules the IR enforces: the target is a
+top-level output property, the path walks declared object properties of
+the input from a bound `inputs:` key, the two schemas are identical, and at
+least one output field is left for the model to decide. The prompt then
+says nothing about copying, and renders the copied data only where the
+decision reads it. A field the judge writes or rewrites (a summary of the
+record, a normalized name) is not passthrough, whatever its shape.
 
 ### Deriving the JSON Schemas
 

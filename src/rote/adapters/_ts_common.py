@@ -50,7 +50,11 @@ from rote.adapters._common import (
     safe_block_comment_line,
     temperature_env_var,
 )
-from rote.inference import DEFAULT_JUDGE_EFFORT, structured_output_schema
+from rote.inference import (
+    DEFAULT_JUDGE_EFFORT,
+    passthrough_answer_schema,
+    structured_output_schema,
+)
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
@@ -257,6 +261,31 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 """.replace("__PROMPT_PLACEHOLDER__", PROMPT_PLACEHOLDER)
 
 
+def _schema_import_line(passthrough: dict[str, str] | None) -> str:
+    """The judge module's import from ``_roteSchema.ts``."""
+    names = "schemaErrors, withPassthrough" if passthrough else "schemaErrors"
+    return f'import {{ {names} }} from "./_roteSchema";'
+
+
+def _passthrough_const_lines(passthrough: dict[str, str] | None) -> list[str]:
+    """``PASSTHROUGH``: output fields copied from the input, never asked of the model."""
+    if not passthrough:
+        return []
+    return [
+        "",
+        "// Output fields copied from the validated input, never asked of the model:",
+        "// {output field: input path}. OUTPUT_JSON_SCHEMA leaves them out.",
+        f"const PASSTHROUGH: Record<string, string> = {json.dumps(passthrough, indent=4)};",
+    ]
+
+
+def _merge_lines(var: str, passthrough: dict[str, str] | None) -> list[str]:
+    """Copy the passthrough fields into the answer, before it is checked."""
+    if not passthrough:
+        return []
+    return [f"    {var} = withPassthrough({var}, input, PASSTHROUGH);"]
+
+
 def _answer_check_lines(node_id: str, var: str) -> list[str]:
     """Hold a judge's raw answer to its whole output schema, before Zod types it."""
     return [
@@ -280,6 +309,7 @@ def emit_signature_anthropic(
     output_zod: str,
     output_schema_json: str,
     answer_schema_json: str,
+    passthrough: dict[str, str] | None,
     prompt_template: str,
     model: str,
     base_url: str | None,
@@ -316,7 +346,7 @@ def emit_signature_anthropic(
         'import Anthropic from "@anthropic-ai/sdk";',
         'import { z } from "zod";',
         "",
-        'import { schemaErrors } from "./_roteSchema";',
+        _schema_import_line(passthrough),
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -332,6 +362,7 @@ def emit_signature_anthropic(
         "// The whole output schema, which the answer is held to (bounds, pattern",
         "// and lengths included: structured outputs and Zod drop them).",
         f"const ANSWER_SCHEMA = {answer_schema_json};",
+        *_passthrough_const_lines(passthrough),
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -395,6 +426,7 @@ def emit_signature_anthropic(
             f"            `structured output for {node_id} is not JSON: ${{text.slice(0, 200)}}`,",
             "        );",
             "    }",
+            *_merge_lines("answer", passthrough),
             *_answer_check_lines(node_id, "answer"),
             f"    return {pascal}Output.parse(answer);",
             "}",
@@ -414,6 +446,7 @@ def emit_signature_openai(
     output_zod: str,
     output_schema_json: str,
     answer_schema_json: str,
+    passthrough: dict[str, str] | None,
     prompt_template: str,
     model: str,
     base_url: str | None,
@@ -441,7 +474,7 @@ def emit_signature_openai(
         'import OpenAI from "openai";',
         'import { z } from "zod";',
         "",
-        'import { schemaErrors } from "./_roteSchema";',
+        _schema_import_line(passthrough),
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -456,6 +489,7 @@ def emit_signature_openai(
         "// The whole output schema, which the answer is held to (bounds, pattern",
         "// and lengths included: structured outputs and Zod drop them).",
         f"const ANSWER_SCHEMA = {answer_schema_json};",
+        *_passthrough_const_lines(passthrough),
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -503,7 +537,8 @@ def emit_signature_openai(
             "    if (!content) {",
             f'        throw new Error("OpenAI returned no content for {node_id}");',
             "    }",
-            "    const answer: unknown = JSON.parse(content);",
+            f"    {'let' if passthrough else 'const'} answer: unknown = JSON.parse(content);",
+            *_merge_lines("answer", passthrough),
             *_answer_check_lines(node_id, "answer"),
             f"    return {pascal}Output.parse(answer);",
             "}",
@@ -523,6 +558,7 @@ def emit_signature_workers_ai(
     output_zod: str,
     output_schema_json: str,
     answer_schema_json: str,
+    passthrough: dict[str, str] | None,
     prompt_template: str,
     model: str,
     base_url: str | None,  # unused: Workers AI routes via the AI binding, not a base URL
@@ -561,7 +597,7 @@ def emit_signature_workers_ai(
         "",
         'import { z } from "zod";',
         "",
-        'import { schemaErrors } from "./_roteSchema";',
+        _schema_import_line(passthrough),
         *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
@@ -576,6 +612,7 @@ def emit_signature_workers_ai(
         "// The whole output schema, which the answer is held to (bounds, pattern",
         "// and lengths included: structured outputs and Zod drop them).",
         f"const ANSWER_SCHEMA = {answer_schema_json};",
+        *_passthrough_const_lines(passthrough),
         "",
         _INTERPOLATE_HELPER.rstrip("\n"),
         "",
@@ -629,7 +666,12 @@ def emit_signature_workers_ai(
         "    if (raw === undefined || raw === null) {",
         f'        throw new Error("Workers AI returned no response for {node_id}");',
         "    }",
-        '    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;',
+        (
+            '    let parsed: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;'
+            if passthrough
+            else '    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;'
+        ),
+        *_merge_lines("parsed", passthrough),
         *_answer_check_lines(node_id, "parsed"),
         f"    return {pascal}Output.parse(parsed);",
         "}",
@@ -977,12 +1019,15 @@ def emit_ts_signature_module(
     name for the header JSDoc.
     """
     spec = require_signature_spec(node)
-    request_schema = spec.output_schema
+    # The model answers the output less its passthrough fields; code copies
+    # those in from the input (withPassthrough) before the whole output
+    # schema, ANSWER_SCHEMA, is checked.
+    request_schema = passthrough_answer_schema(spec.output_schema, spec.passthrough)
     if spec.client == "anthropic":
         emitter = emit_signature_anthropic
         model = spec.model or anthropic_default_model
         # Raises at emit time for a schema structured outputs cannot express.
-        request_schema = structured_output_schema(spec.output_schema, node_id=node.id)
+        request_schema = structured_output_schema(request_schema, node_id=node.id)
     elif spec.client == "openai":
         emitter = emit_signature_openai
         model = spec.model or openai_default_model
@@ -1000,6 +1045,7 @@ def emit_ts_signature_module(
         output_zod=json_schema_to_zod(spec.output_schema, indent=0),
         output_schema_json=json.dumps(request_schema, indent=2),
         answer_schema_json=json.dumps(spec.output_schema, indent=2),
+        passthrough=spec.passthrough,
         prompt_template=spec.prompt,
         model=model,
         base_url=spec.base_url,
@@ -3246,6 +3292,52 @@ function numberErrors(s: JsonSchema, value: number, path: string): string[] {
         }
     }
     return errors;
+}
+
+/**
+ * `{output field: a copy of the input value its source path names}` for a
+ * judge's `signature_spec.passthrough`. A path that reaches no value
+ * contributes nothing, so the field is absent. The twin of the Python
+ * helper's passthrough_values.
+ */
+export function passthroughValues(
+    input: unknown,
+    passthrough: Record<string, string>,
+): Record<string, unknown> {
+    const values: Record<string, unknown> = {};
+    for (const [target, source] of Object.entries(passthrough)) {
+        let value: unknown = input;
+        let found = true;
+        for (const part of source.split(".")) {
+            if (!isJsonObject(value) || !Object.prototype.hasOwnProperty.call(value, part)) {
+                found = false;
+                break;
+            }
+            value = value[part];
+        }
+        if (found && value !== undefined) values[target] = JSON.parse(JSON.stringify(value));
+    }
+    return values;
+}
+
+/**
+ * The model's answer with each passthrough field copied in from the judge's
+ * validated input; the copy wins over anything the model wrote under that
+ * name, even when the input has no value there. An answer that is not an
+ * object is returned as it is, for the schema check to name. The twin of
+ * the Python helper's with_passthrough.
+ */
+export function withPassthrough(
+    answer: unknown,
+    input: unknown,
+    passthrough: Record<string, string>,
+): unknown {
+    if (!isJsonObject(answer)) return answer;
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(answer)) {
+        if (!Object.prototype.hasOwnProperty.call(passthrough, key)) kept[key] = value;
+    }
+    return { ...kept, ...passthroughValues(input, passthrough) };
 }
 """
 

@@ -907,9 +907,15 @@ class Driver:
     ) -> Block | None:
         schema = _schema()
         pending = state["pending"]
-        output = answer_schema(step)
+        output = answer_schema(step) if step["kind"] == "loop" else step["output_schema"]
+        # Passthrough is a judge's alone: a ``do`` step answers in full.
+        passthrough = (step.get("passthrough") or {}) if step["kind"] == "judge" else {}
         attempts = state["attempts"][step["id"]]
         if step.get("fan_param") is None:
+            if passthrough:
+                # The copies are the input's, merged in before the whole
+                # output schema checks the answer, as every runtime does.
+                value = schema.with_passthrough(value, pending.get("copied"), passthrough)
             if not errors:
                 errors = schema.schema_errors(output, value)
             if errors:
@@ -936,6 +942,10 @@ class Driver:
                 if item_id not in wanted:
                     errors.append(f"answer: {item_id!r} is not an item of this batch")
                     continue
+                if passthrough:
+                    item = schema.with_passthrough(
+                        item, pending["copied"][int(item_id)], passthrough
+                    )
                 found = schema.schema_errors(output, item, f"answer.{item_id}")
                 if found:
                     errors.extend(found)
@@ -1227,10 +1237,16 @@ class Driver:
             raise ValueError(
                 f"{step['id']}'s input does not fit its input schema: " + "; ".join(errors[:5])
             )
-        prompt = interpolate(step["prompt"], schema.project(step["input_schema"], payload))
+        projected = schema.project(step["input_schema"], payload)
+        prompt = interpolate(step["prompt"], projected)
         lane = step["lane"]
         knob = step["id"].upper()
         kwargs: dict[str, Any] = {}
+        if step.get("passthrough"):
+            # Copied from the input as it was given (the emitted judge's
+            # exclude_unset dump): a field the input left out stays out.
+            kwargs["passthrough"] = step["passthrough"]
+            kwargs["inputs"] = schema.project(step["input_schema"], payload, unset=False)
         if lane.get("temperature") is not None:
             temperature = os.environ.get(f"ROTE_TEMPERATURE_{knob}", str(lane["temperature"]))
             kwargs["sampling"] = {"temperature": float(temperature)} if temperature.strip() else {}
@@ -1353,6 +1369,9 @@ class Driver:
         spec_in = step["input_schema"]
         fan = step["fan_param"]
         refs = [r.split(".") for r in step["references"]]
+        # The input each answer's passthrough fields are copied from, cut to
+        # their source paths: kept in the journal, never shown to the agent.
+        sources = [p.split(".") for p in (step.get("passthrough") or {}).values()]
         if fan is None:
             errors = schema.schema_errors(spec_in, payload, "input")
             if errors:
@@ -1362,13 +1381,15 @@ class Driver:
                 task = interpolate(step["prompt"], projected)
             except KeyError as exc:
                 return self._judge_input_error(step, [str(exc.args[0])])
-            return {"task": task}
+            given = schema.project(spec_in, payload, unset=False)
+            return {"task": task, **({"copied": select(given, sources)} if sources else {})}
         try:
             elements = _fan_list(payload.get(fan), step["id"], fan)
         except TypeError as exc:
             return self._judge_input_error(step, [str(exc)])
         shared_payload = {k: v for k, v in payload.items() if k != fan}
         items: list[Any] = []
+        copied: list[Any] = []
         shared: dict[str, Any] = {}
         for index, element in enumerate(elements):
             full = {**shared_payload, fan: element}
@@ -1377,6 +1398,8 @@ class Driver:
                 return self._judge_input_error(step, errors)
             projected = schema.project(spec_in, full)
             items.append(select(projected.get(fan), [r[1:] for r in refs if r[0] == fan]))
+            if sources:
+                copied.append(select(schema.project(spec_in, full, unset=False), sources))
             if index == 0:
                 shared = {
                     k: select(projected.get(k), [r[1:] for r in refs if r[0] == k])
@@ -1387,9 +1410,10 @@ class Driver:
             "shared": shared,
             "items": items,
             "count": len(items),
-            "batches": _batches(items, step["output_schema"]),
+            "batches": _batches(items, answer_schema(step)),
             "batch": 0,
             "collected": {},
+            **({"copied": copied} if sources else {}),
         }
 
     def _do_items(self, step: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | Block:
@@ -1809,7 +1833,7 @@ class Driver:
         self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
     ) -> Block:
         notes = [note] if note else []
-        schema_line = _compact(step["output_schema"])
+        schema_line = _compact(answer_schema(step))
         if step["fan_param"] is None:
             lines = [
                 *notes,
@@ -2030,9 +2054,16 @@ _TEXT_ANSWER = {
 
 
 def answer_schema(step: dict[str, Any]) -> Any:
-    """The schema an agent's answer to ``step`` (a judge, a ``do`` step or a loop) must fit."""
+    """The schema an agent's answer to ``step`` (a judge, a ``do`` step or a loop) must fit.
+
+    A judge's passthrough fields are not in it: the driver copies them from
+    the input (``with_passthrough``), so the agent never retypes them.
+    Passthrough is a judge's alone; a ``do`` step answers its whole schema.
+    """
     if step["kind"] == "loop":
         return step["output_schema"] or _TEXT_ANSWER
+    if step["kind"] == "judge":
+        return _schema().passthrough_answer_schema(step["output_schema"], step.get("passthrough"))
     return step["output_schema"]
 
 

@@ -76,6 +76,11 @@ vet_contact_judge:
     prompt: "..."          # {{ var }} names one of the node's inputs: keys
 ```
 
+A judge output field that is input data returned unchanged goes in
+`signature_spec.passthrough: {<output field>: <input path>}` (an input
+path of exactly that field's schema): code copies it and the prompt does
+not mention it (llm-judge-extraction.md, "Fields returned unchanged").
+
 Declare the `properties` of every object in a judge's `output_schema`,
 nested ones included: structured outputs reject free-form objects and
 untyped values.

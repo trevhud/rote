@@ -91,6 +91,7 @@ def _blank() -> dict[str, Any]:
         "test": "",
         "prompt": "",
         "client": "anthropic",
+        "passthrough": [],
         "edits": [],
     }
 
@@ -346,6 +347,46 @@ def test_judge_prompt_variables_must_exist_in_the_input_schema(tmp_path: Path) -
     assert judge_problems(ctx, node, {"prompt": f"Judge {{{{ {param} }}}}."}) == []
     problems = judge_problems(ctx, node, {"prompt": "Judge {{ nothing_here }}."})
     assert problems and "nothing_here" in problems[0]
+
+
+def test_a_judge_may_pass_through_only_an_input_field_of_the_same_schema(tmp_path: Path) -> None:
+    """Code offers the candidates (same schema, by shape); the model picks
+    which the skill returns unchanged; code checks the pick and writes it."""
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    node = _node(ctx, NodeKind.LLM_JUDGE)
+    param, schema = next(iter(ctx.judge_input_schema(node)["properties"].items()))
+    ctx.interface = {
+        node.id: {
+            "description": "x",
+            "output_schema": {
+                "type": "object",
+                "properties": {"copied": schema, "verdict": {"enum": ["a", "b"]}},
+                "required": ["copied", "verdict"],
+            },
+        }
+    }
+    prompt = judge_request(ctx, node, "S", "m").prompt
+    assert f"- `copied` <- `{param}`" in prompt
+    assert "`verdict` <-" not in prompt  # no input has its schema
+    ok = {"prompt": f"Judge {{{{ {param} }}}}.", "passthrough": {"copied": param}}
+    assert judge_problems(ctx, node, ok) == []
+    wrong_path = {**ok, "passthrough": {"copied": f"{param}.nope"}}
+    assert any("is not a candidate" in p for p in judge_problems(ctx, node, wrong_path))
+    wrong_field = {**ok, "passthrough": {"verdict": param}}
+    assert any("offered for `verdict`: none" in p for p in judge_problems(ctx, node, wrong_field))
+    every = {**ok, "passthrough": {"copied": param, "verdict": param}}
+    assert any("decide nothing" in p for p in judge_problems(ctx, node, every))
+    answered = generate.judge_passthrough(
+        {"passthrough": [{"output_field": "copied", "input_path": param}]}
+    )
+    assert answered == {"copied": param}
+    entries = generate.text_entries(
+        ctx, {node.id: {"prompt": "p", "client": "anthropic", "passthrough": answered}}
+    )
+    assert entries[node.id]["signature_spec"]["passthrough"] == {"copied": param}
+    # Negative half: no passthrough writes none.
+    plain = generate.text_entries(ctx, {node.id: {"prompt": "p", "client": "anthropic"}})
+    assert "passthrough" not in plain[node.id]["signature_spec"]
 
 
 def test_interface_checks_fan_out_sources_and_consumer_fields(tmp_path: Path) -> None:
