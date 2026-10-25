@@ -98,9 +98,10 @@ changes nothing for those lines. A decision that names an id not in the
 queue fails the step with the ids to fix.
 
 The policy gives no severity for a cap breach or a missing pre-approval.
-They are blocks because the skill, run as an agent, blocked them in 10
-and 11 of 12 recorded runs, and the compiled pipeline should do what the
-skill does. `expected/extracted/audit.py` marks both as assumptions.
+They are blocks because the skill, run as an agent, blocked cap breaches
+in 10 of 12 recorded runs and a missing pre-approval in 8 of 9 (the runs
+whose input has one), and the compiled pipeline should do what the skill
+does. `expected/extracted/audit.py` marks both as assumptions.
 
 ## Layout
 

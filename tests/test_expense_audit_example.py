@@ -17,8 +17,9 @@ in references/fx-rates.md:
   EXP-2420 $446.25 (entertainment without pre-approval) (sum $889.81)
 
 Cap breaches and a missing pre-approval are blocks because the original
-skill, run as an agent, blocked them in 10 and 11 of 12 recorded runs;
-the policy names no severity for either (see the markers in
+skill, run as an agent, blocked cap breaches in 10 of 12 recorded runs
+and a missing pre-approval in 8 of 9 (the runs whose input has one); the
+policy names no severity for either (see the markers in
 expected/extracted/audit.py).
 """
 
@@ -85,6 +86,9 @@ def _assert_final(result: dict[str, Any], report_dir: Path) -> None:
     assert result["reimbursable_usd"] == 2414.34  # 2395.59 + 18.75
     assert result["pending_usd"] == 0.0
     assert result["returned_usd"] == 889.81  # 64.17 + 130.39 + 249.00 + 446.25
+    # The decision's three block ids are reported back, and the review item
+    # it approved (EXP-2413) is not: that decision took effect.
+    assert result["overridden_ids"] == ["EXP-2403", "EXP-2410", "EXP-2420"]
     report = (report_dir / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert "Status: **final** (reviewed by Priya Shah)" in report
     assert "| EXP-2410 | Ben Okafor | over_cap | block |" in report
@@ -165,6 +169,7 @@ def test_free_first_run_on_python(
     assert result["returned_usd"] == 889.81
     assert result["auto_approved"] == ["Dev Patel", "Emi Tanaka"]
     assert (result["review_items"], result["blocked_items"]) == (1, 5)
+    assert result["overridden_ids"] == []  # no decision, nothing overridden
 
     report = (report_dir / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert result["report_path"] == str((report_dir / "2026-09-expense-audit.md").resolve())
@@ -238,6 +243,7 @@ def test_controller_cannot_approve_a_block_item(
         0.0,
         50.0,
     )
+    assert result["overridden_ids"] == ["EXP-1"]
     report = (tmp_path / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert "| EXP-1 | A | duplicate | block |  | returned |" in report
     assert "| approved |" not in report
@@ -308,6 +314,8 @@ def test_two_over_limit_reports_take_separate_decisions(
     assert result["reimbursable_usd"] == 2550.00  # Ana's whole report
     assert result["returned_usd"] == 2640.00  # Ben's whole report
     assert result["pending_usd"] == 0.0
+    # Decisions on review items took effect, so none is reported overridden.
+    assert result["overridden_ids"] == []
     report = (tmp_path / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert "| REPORT:Ana Ruiz | Ana Ruiz | report_limit | review |" in report
     assert report.count("| approved |") == 1

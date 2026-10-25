@@ -64,7 +64,7 @@ def _line_findings(
         found.append(("unknown_category", "block", f"category {category!r} is not in the policy"))
     elif category in PREAPPROVAL_CATEGORIES:
         if not expense.get("preapproval_id"):
-            # rote: assumption: entertainment without a pre-approval id is a block. The policy says it "Always needs a pre-approval id" and names no severity; the original skill blocked it in 11 of 12 recorded runs (fidelity/reference.json and the 2026-10-24 A/B runs).
+            # rote: assumption: entertainment without a pre-approval id is a block. The policy says it "Always needs a pre-approval id" and names no severity; the original skill blocked it in 8 of 9 recorded runs whose input has one (fidelity/reference.json's base case and the 2026-10-24 A/B runs; second_batch gives EXP-2420 a pre-approval).
             found.append(("preapproval_missing", "block", f"{category} without a pre-approval id"))
     else:
         cap = caps[category]
