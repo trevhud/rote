@@ -295,6 +295,12 @@ touching Python tooling:
 /plugin install rote@rote
 ```
 
+New here? Run `/rote:setup`, or `uvx --from rote-cli rote setup` in a
+terminal. It imports the MCP servers you already use, compiles one of your
+skills, and shows that the compiled skill gives the same answer, with time
+and cost on each side. It asks before every step and shows the cost before
+anything is spent.
+
 Then say "compile this skill" (or run `/rote:compile`). It confirms the
 source directory, asks which runtime you want, runs the CLI via
 [uv](https://docs.astral.sh/uv/) in the background, and reports the

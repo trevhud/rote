@@ -11,6 +11,10 @@ loop.
 This plugin adds skills to Claude. Each one lives in its own folder under
 [`skills/`](skills/). The main ones:
 
+- **setup** (`/rote:setup`): runs `rote setup` for you, the guided first run.
+  It imports the MCP servers you already use, compiles one of your skills,
+  and shows that the compiled skill gives the same answer. Every question
+  and every yes is yours: it relays them and never answers for you.
 - **compile** (`/rote:compile`): confirms the skill directory with you, asks
   which runtime you want, runs the rote CLI in the background, and explains
   the emitted pipeline.

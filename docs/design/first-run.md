@@ -1,9 +1,9 @@
 # First-run onboarding: architecture
 
 Status: foundation landed (#241); every client source landed (PR 2); `rote mcp import`
-landed (PR 3, below). `rote setup` and its other steps are follow-up PRs built to the
-interfaces below. Product design: "rote first-run design"
-(approved 2026-10-22, all nine recommendations taken).
+landed (PR 3, below); `rote setup` and `/rote:setup` (PRs 8 and 9, "`rote setup`" below).
+Product design: "rote first-run design" (approved 2026-10-22, all nine recommendations
+taken).
 
 The rule everything here serves: **every side effect is an Action in a Plan,
 shown and confirmed before it runs, and interactivity is decided once, before
@@ -518,12 +518,8 @@ Resumability comes from `status()` reading the world (servers in the registry,
 token files, a chosen skill), not from a setup state file: an interrupted run
 re-runs, the finished steps say "done already", and the rest continue. The one
 fact the world does not hold, the chosen skill, is stored by the skill step in
-user config when that PR lands. Each step is also its own idempotent command,
+`setup.json` (below). Each step is also its own idempotent command,
 which builds the same `Step` and calls `run_steps([step], ...)`.
-
-Under an agent, `rote setup --json` prints each step's status and its plan as
-of now, with `command` for each action; the agent relays the choices and runs
-the commands one step at a time (the `/rote:setup` plugin skill drives this).
 
 `rote init` is the first command on this layer (`init_wizard.build_plan`
 returns the Plan; `_cmd_init` confirms and applies). It becomes setup's
@@ -653,6 +649,63 @@ empty header and never a retry. Skill runs pass a templated header as a
 `tests/test_mcp_header_template_parity_e2e.py` runs the TS rule on the Python
 table and both helpers against one real server.
 
+## `rote setup` (PRs 8 and 9)
+
+`rote.setup.first_run.cmd_setup` runs six steps, each through `run_steps`,
+numbered `Step i/6`, after one line naming the client rote runs under
+(`Mode.detected`):
+
+| # | id | Step | Done when (read from the world) |
+| --- | --- | --- | --- |
+| 1 | `mcp-import` | `McpImportStep`, with `login=()` (logins are step 2) | every preselectable, non-work server is registered |
+| 2 | `login` | `LoginStep`: registered servers without headers whose `auth_status` is not usable | none is left |
+| 3 | `skill` | `SkillStep`: pick (ranked, the user's own first, rote's demo last, the pick explained in one line), its input, and a per-server "only reads?" yes | `setup.json` names a skill and `require_live_servers` passes |
+| 4-6 | `compile`, `install`, `eval` | `rote try`'s steps, from `try_skill.session_for` and `try_steps` | `rote try`'s own status |
+
+- **The pick is kept in `setup.json`** (`ROTE_SETUP_STATE_PATH`, else
+  `$XDG_DATA_HOME/rote/setup.json`; in `rote.isolation.STATE_PATHS`), written
+  by an Action in the skill step's plan: the skill, its input file, and the
+  `rote try` work dir (`./rote-try-<skill>` where it was picked), so a re-run
+  from another directory resumes the same work.
+- **The comparison calls only servers registered read-only**
+  (`skill_ab.subject_for`). The skill step asks, per server the skill names
+  (`servers_named`), whether it only reads (flag `--read-only <name>`,
+  default no), and its plan sets `read_only: true` on the ones the user
+  vouched for. `try_skill.require_live_servers` refuses before the compile,
+  for `rote try` too, when one is still missing, so no compile is paid for
+  and then refused at the eval.
+- **Logins.** A person gets `login_action` (the blocking browser login,
+  shared with `rote mcp import`). Nobody at the terminal gets
+  `rote.setup.mcp_login.no_wait_actions` (shared with `rote mcp login
+  --no-wait`), and setup stops with `reason: authorization_pending` and a
+  `logins` list: the agent hands over each URL, runs each `--complete`, then
+  setup again.
+- **Skip.** A person's no to a plan skips `mcp-import` or `login` and goes on,
+  and ends setup at any other step. `--skip <step>` is the same no without a
+  person.
+
+**Agent protocol.** Every stop is one `action_required` object (exit 2), plus
+`ask` (the question or the plan in a sentence or two, money and time
+included, for the agent to put to its user), `step` (`id`, `title`, `index`,
+`total`), `steps` (what this run did so far), and what the step found
+(`servers`, `skills`). A missing answer adds `answer_with` (how to write it).
+A plan's consent is `--approve <step>`, never `--yes`: `--yes` approves every
+plan after it, so an agent's yes for the import would cover the compile.
+`next[0]` is the yes (`--approve <step>`, plus `--live` for a spend) and
+`next[1]` the no (`--skip <step>`). `person_required` (the install relying on
+read-only servers) names the command the user runs in their own terminal,
+then setup again. `/rote:setup` (`plugin/skills/setup/SKILL.md`) tells the
+agent to relay each `ask`, never answer for the user, and run the `next`
+command that carries the answer.
+
+**Rehearsal.** `scripts/rehearse-setup [--mode agent|tty|both]` runs the whole
+flow in a temp home (HOME and every rote state path moved), with a fixture
+Claude Code config naming two localhost fixture MCP servers, a copy of
+docs-digest in that home's `~/.claude/skills`, the compile stubbed and the
+fake `claude`: once as an agent relaying each stop (the install in a pty as
+"the user's own terminal"), once on a pseudo-terminal answering questionary
+prompts with keystrokes. `tests/test_setup_rehearsal.py` runs both (slow).
+
 ## Remaining PRs
 
 | # | PR | Builds on | Parallel with |
@@ -663,6 +716,6 @@ table and both helpers against one real server.
 | 5 | Skill discovery and ranking (`rote.skills`, landed; see above) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
 | 6 | Bundle docs-digest into examples/ and the wheel, with a recorded reference run | none | 2, 3, 4, 5 |
 | 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report). The live path landed on the compiled-skill target as `rote.setup.try_skill` (compiled-skill-target.md §9, PR 8) | 6, `Plan` | 2, 3, 4, 5 |
-| 8 | `rote setup` (steps from 3, 5, 7 plus init's defaults; first-run banner on bare `rote`) | 3, 4, 5, 7 | 9 once its JSON is fixed |
-| 9 | `/rote:setup` plugin skill + AGENTS.md section | 8's `--json` shape | 10 |
+| 8 | `rote setup` (steps from 3, 4, 5, 7): **landed**. Still open: init's defaults as a step, the first-run banner on bare `rote` | 3, 4, 5, 7 | 9 |
+| 9 | `/rote:setup` plugin skill + AGENTS.md section: **landed** | 8's `--json` shape | 10 |
 | 10 | Fresh-install test: a real TTY (pty), inside Claude Code, and CI | 8 | 9 |

@@ -1,8 +1,7 @@
-"""The seam ``rote setup`` will be built on: steps that plan, then apply.
+"""The seam ``rote setup`` is built on: steps that plan, then apply.
 
-``rote setup`` is not built yet (docs/design/first-run.md has the plan).
-This module fixes the contract its steps follow, so the step PRs (MCP
-import, skill pick, proof) can land independently:
+``rote setup`` (:mod:`rote.setup.first_run`) chains the steps below; each
+step PR (MCP import, login, skill pick, proof) follows this contract:
 
 - A :class:`Step` reports its :meth:`~Step.status` from the world, read
   only (is a server registered, is it logged in, is a skill chosen). That
@@ -85,15 +84,24 @@ def run_steps(
     prompter: Prompter,
     *,
     granted: Collection[str] = (),
+    yes: bool | None = None,
+    first: int = 1,
+    total: int | None = None,
 ) -> list[StepReport]:
     """Run ``steps`` in order. Raises what the prompter or the confirmation
     raises when nobody is at the terminal (``PromptRequired``,
     ``ConfirmationRequired``), with the reports so far lost to the caller
     only in the sense that every finished step is already applied and its
-    status will read ``done`` on the next run."""
+    status will read ``done`` on the next run.
+
+    ``yes`` approves the plans (default: ``ctx.mode.yes``); ``rote setup``
+    passes it per step, since an agent's consent covers one plan. ``first``
+    and ``total`` number the steps when the caller runs a longer list a
+    piece at a time."""
     reports: list[StepReport] = []
-    total = len(steps)
-    for index, step in enumerate(steps, start=1):
+    total = len(steps) + first - 1 if total is None else total
+    approve = ctx.mode.yes if yes is None else yes
+    for index, step in enumerate(steps, start=first):
         ctx.out.say(f"Step {index}/{total}  {step.title}", style="bold")
         status = step.status(ctx)
         if status.state == "done":
@@ -102,7 +110,7 @@ def run_steps(
             continue
         plan = step.plan(ctx, prompter)
         ctx.out.plan(plan)
-        if not confirm_plan(plan, prompter, yes=ctx.mode.yes, granted=granted):
+        if not confirm_plan(plan, prompter, yes=approve, granted=granted):
             reports.append(StepReport(step.id, "declined", "not applied", plan))
             break
         outcomes = tuple(apply_plan(plan))

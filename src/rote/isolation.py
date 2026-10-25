@@ -40,6 +40,8 @@ STATE_PATHS: dict[str, str] = {
     "ROTE_PRICING_CACHE_DIR": "pricing-cache",
     # A compiled skill's run journals (rote.skill_target._driver.run_root).
     "ROTE_SKILL_RUN_DIR": "skill-runs",
+    # What `rote setup` remembers between runs (rote.setup.first_run).
+    "ROTE_SETUP_STATE_PATH": "setup/setup.json",
     # Not rote state: the home dir other AI clients' configs are read from
     # (rote.clients). Moved so isolated runs and tests never read them.
     "ROTE_CLIENT_HOME_DIR": "client-home",

@@ -37,6 +37,7 @@ any name is "already registered", not a second entry.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shlex
@@ -795,25 +796,9 @@ class ImportPlanner:
         return [self._login_action(by_name[n]) for n in chosen]
 
     def _login_action(self, row: Row) -> Action:
-        name = row.name
         host = row.candidate.host
         assert host is not None
-        login = self.login if self.login is not None else _login_server
-
-        def run() -> str:
-            login(name)
-            return name
-
-        return Action(
-            id=f"login-{name}",
-            title=f"Log in to {name}",
-            effects=(
-                Contact(host=host.split(":", 1)[0], purpose="OAuth discovery and sign-in"),
-                Launch(program="your browser", purpose=f"approve rote's access to {name}"),
-            ),
-            run=run,
-            command=f"rote mcp login {name}",
-        )
+        return login_action(row.name, host, self.login)
 
     def _notes(
         self, rows: Sequence[Row], writes: Sequence[Row], actions: Sequence[Action]
@@ -872,6 +857,28 @@ def _login_server(name: str) -> None:
     login_server(name)
 
 
+def login_action(name: str, host: str, login: Callable[[str], object] | None = None) -> Action:
+    """The blocking browser login for one registered server, as an Action:
+    ``rote mcp import``'s and ``rote setup``'s login step's, for a person.
+    ``login`` is injected by tests; the default is ``rote mcp login``'s."""
+    run_login = login if login is not None else _login_server
+
+    def run() -> str:
+        run_login(name)
+        return name
+
+    return Action(
+        id=f"login-{name}",
+        title=f"Log in to {name}",
+        effects=(
+            Contact(host=host.split(":", 1)[0], purpose="OAuth discovery and sign-in"),
+            Launch(program="your browser", purpose=f"approve rote's access to {name}"),
+        ),
+        run=run,
+        command=f"rote mcp login {name}",
+    )
+
+
 def render_rows(rows: Sequence[Row]) -> list[str]:
     """The diff against rote's registry for a person: one line per server
     the plan adds, replaces, skips or keeps, and per server it cannot
@@ -925,7 +932,9 @@ class McpImportStep:
         not on a work domain, is registered (by endpoint)."""
         from rote.interact.prompter import NonInteractivePrompter
 
-        planner = self._make_planner(NonInteractivePrompter(why="reading status"), ctx.out)
+        # Read quietly: plan() reads the clients again and says what it found.
+        quiet = Output(ctx.mode, stdout=io.StringIO(), stderr=io.StringIO())
+        planner = self._make_planner(NonInteractivePrompter(why="reading status"), quiet)
         planner._read()
         try:
             registry = parse_registry(snapshot(planner.registry_path).data)

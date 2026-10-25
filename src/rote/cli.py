@@ -2725,32 +2725,15 @@ def _report_mcp_login(server: str, summary: dict[str, Any], out: Any) -> None:
 
 def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: Any) -> int:
     """Start a login an agent can hand to its user, then exit (rote.mcp.pending_login)."""
-    import webbrowser
-    from urllib.parse import urlsplit
-
-    from rote.interact.plan import (
-        Action,
-        ConfirmationRequired,
-        Contact,
-        FileWrite,
-        Launch,
-        Plan,
-        apply_plan,
-        confirm_plan,
-    )
+    from rote.interact.plan import ConfirmationRequired, Plan, apply_plan, confirm_plan
     from rote.interact.prompter import PromptCancelled, prompter_for
     from rote.interact.report import (
         EXIT_ACTION_REQUIRED,
         action_required,
         authorization_pending,
     )
-    from rote.mcp.auth import CALLBACK_PORTS
-    from rote.mcp.pending_login import (
-        PENDING_TTL_SECONDS,
-        Started,
-        pending_dir,
-        start_pending_login,
-    )
+    from rote.mcp.pending_login import PENDING_TTL_SECONDS
+    from rote.setup.mcp_login import no_wait_actions
 
     server = args.name
     if args.callback_port is not None:
@@ -2765,55 +2748,8 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
             file=sys.stderr,
         )
         return 2
-    host = urlsplit(config.url).hostname or config.url
     minutes = PENDING_TTL_SECONDS // 60
-    ports = f"{CALLBACK_PORTS[0]}-{CALLBACK_PORTS[-1]}"
-    started: list[Started] = []
-
-    def start() -> str:
-        started.append(start_pending_login(server, config))
-        return started[0].kind
-
-    actions = [
-        Action(
-            id=f"start-login-{server}",
-            title=f"Start an OAuth login for {server!r} that waits in the background",
-            effects=(
-                Contact(
-                    host=host,
-                    purpose="find its authorization server, and register rote as a "
-                    "client there if it needs one",
-                ),
-                Launch(
-                    program=f"a rote callback listener on localhost (one of ports {ports})",
-                    purpose=f"receive the browser's return, for at most {minutes} minutes",
-                ),
-                FileWrite(
-                    path=pending_dir() / "<id>.json",
-                    summary="the pending login record, owner-only",
-                    file_mode=0o600,
-                ),
-            ),
-            run=start,
-            command=f"rote mcp login {server} --no-wait",
-        )
-    ]
-    if not args.no_browser:
-
-        def open_browser() -> bool:
-            if not started or started[0].authorization_url is None:
-                return False
-            return bool(webbrowser.open(started[0].authorization_url))
-
-        actions.append(
-            Action(
-                id="open-browser",
-                title="Open the authorization page",
-                effects=(Launch(program="your web browser", purpose="approve the login"),),
-                run=open_browser,
-                command=f"rote mcp login {server} --no-wait --no-browser",
-            )
-        )
+    actions, started = no_wait_actions(server, config, browser=not args.no_browser)
     plan = Plan(title=f"Log in to {server!r} without waiting", actions=tuple(actions))
     argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
     out.plan(plan)
@@ -2841,7 +2777,7 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
         return 0
     pending = begun.pending
     url = begun.authorization_url or ""
-    opened = any(o.action_id == "open-browser" and o.result is True for o in outcomes)
+    opened = any(o.action_id.startswith("open-browser") and o.result is True for o in outcomes)
     out.say(f"Authorize {server!r} in a browser on this machine:")
     out.say("")
     out.say(f"  {url}")
@@ -5579,6 +5515,126 @@ def _add_try_parser(subparsers: Any) -> None:
     try_p.set_defaults(func=_cmd_try)
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """``rote setup``: :func:`rote.setup.first_run.cmd_setup`, imported on use."""
+    from rote.setup.first_run import cmd_setup
+
+    return cmd_setup(args)
+
+
+def _add_setup_parser(subparsers: Any) -> None:
+    # rote.setup.first_run's STEP_IDS, spelled out so building the parser
+    # does not import rote.setup (rich); a test pins them.
+    steps = "mcp-import, login, skill, compile, install, eval"
+    setup_p = subparsers.add_parser(
+        "setup",
+        help="The guided first run: import your MCP servers, compile a skill, compare (asks first)",
+        description=(
+            "Walks you through rote, one step at a time: import the MCP servers from the AI "
+            "client you run rote in, log in to the ones that need it, pick one of your skills, "
+            "then rote try on it (compile it, install it, run the original and the compiled "
+            "skill on the same input and compare). Each step is a plan you confirm; the paid "
+            "ones show time and cost first. Interrupted? Run rote setup again: finished steps "
+            "are skipped. Nobody at the terminal (an agent): each question and each consent "
+            "stops with one action_required JSON object saying what to ask, and "
+            f"--approve <step> carries the user's yes for that step only. Steps: {steps}."
+        ),
+    )
+    from rote.clients import SOURCES as _CLIENT_SOURCES
+
+    setup_p.add_argument(
+        "--from",
+        dest="from_client",
+        default=None,
+        metavar="CLIENT",
+        help="import from one client only (" + ", ".join(s.id for s in _CLIENT_SOURCES) + ")",
+    )
+    setup_p.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="import exactly these servers (default: asked)",
+    )
+    setup_p.add_argument(
+        "--work-domain",
+        action="append",
+        default=None,
+        metavar="DOMAIN",
+        help="a work domain whose servers are never preselected ('none' for none)",
+    )
+    setup_p.add_argument(
+        "--allow-url-secret",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="import NAME although its URL path looks like it carries a key",
+    )
+    setup_p.add_argument(
+        "--allow-untrusted",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="import NAME although rote could not check the client's trust in it",
+    )
+    setup_p.add_argument(
+        "--login",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="log in to these registered servers (default: asked)",
+    )
+    setup_p.add_argument(
+        "--skill",
+        default=None,
+        metavar="SKILL",
+        help="the skill to compile: a directory, or a name from rote skills list (default: asked)",
+    )
+    setup_p.add_argument(
+        "--input",
+        default=None,
+        metavar="FILE",
+        help="the JSON both sides run on (default: the skill's input.json, else asked)",
+    )
+    setup_p.add_argument(
+        "--read-only",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="your word that every tool on NAME only reads, so the comparison may call it",
+    )
+    setup_p.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="where rote try's work goes (default: ./rote-try-<skill>)",
+    )
+    setup_p.add_argument(
+        "--trials", type=int, default=2, help="paired trials for the comparison (default 2)"
+    )
+    setup_p.add_argument(
+        "--approve",
+        action="append",
+        default=None,
+        metavar="STEP",
+        help="apply STEP's plan without asking (one step; repeatable)",
+    )
+    setup_p.add_argument(
+        "--skip",
+        action="append",
+        default=None,
+        metavar="STEP",
+        help="skip STEP (after mcp-import or login setup goes on; after any other it ends)",
+    )
+    setup_p.add_argument(
+        "--live",
+        action="store_true",
+        help="allow the paid steps (compile, eval) when nobody is at the terminal",
+    )
+    _add_onboarding_mode_flags(setup_p)
+    setup_p.set_defaults(func=_cmd_setup)
+
+
 def _add_onboarding_mode_flags(parser: argparse.ArgumentParser, *, force: bool = True) -> None:
     """The flags every onboarding command shares (``rote.interact.mode``).
 
@@ -6807,6 +6863,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init_p.set_defaults(func=_cmd_init)
 
     _add_try_parser(subparsers)
+    _add_setup_parser(subparsers)
 
     # rote config
     config_p = subparsers.add_parser(
