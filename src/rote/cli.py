@@ -2112,6 +2112,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
         CloudflareTrigger,
         DbosTrigger,
         Registry,
+        RegistryMoved,
         TemporalTrigger,
         default_registry_path,
         entry_from_pipeline,
@@ -2190,7 +2191,11 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    try:
+        registry_path = Path(args.registry) if args.registry else default_registry_path()
+    except RegistryMoved as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     try:
         registry = Registry.load(registry_path)
     except Exception as e:
@@ -2220,7 +2225,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     Streamable HTTP. Nothing may be printed to stdout in stdio mode —
     stdout is the MCP transport.
     """
-    from rote.serve.registry import default_registry_path
+    from rote.serve.registry import RegistryMoved, default_registry_path
 
     # The base install's fastmcp is the slim client; the server half is
     # the serve extra. Never offered as an install here: in stdio mode
@@ -2243,7 +2248,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
         return 2
 
-    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    try:
+        registry_path = Path(args.registry) if args.registry else default_registry_path()
+    except RegistryMoved as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if not registry_path.exists():
         print(
             f"rote serve: registry {registry_path} does not exist yet. Serving only "

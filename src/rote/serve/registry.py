@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -64,9 +65,33 @@ def default_registry_path() -> Path:
     ``~/.local/share/rote/serve-registry.json``, beside the app registry. It
     used to be ``~/.rote/registry.json``, the one per-user file outside the
     XDG dirs, so redirecting them (as the test suite does) did not move it.
+
+    Raises :class:`RegistryMoved` while the old file is still there, rather
+    than serving or extending an empty registry beside it: the user's
+    registered tools would silently disappear.
     """
     override = os.environ.get("ROTE_SERVE_REGISTRY_PATH")
-    return Path(override) if override else data_home() / "rote" / "serve-registry.json"
+    if override:
+        return Path(override)
+    path = data_home() / "rote" / "serve-registry.json"
+    legacy = Path.home() / ".rote" / "registry.json"
+    if not legacy.exists():
+        return path
+    old, new = shlex.quote(str(legacy)), shlex.quote(str(path))
+    if path.exists():
+        raise RegistryMoved(
+            f"two serve registries exist: {path}, the one rote reads, and {legacy}, "
+            "the old location, which rote no longer reads. Re-register anything the "
+            f"old one holds that the new one lacks, then delete it: rm {old}"
+        )
+    raise RegistryMoved(
+        f"the serve registry moved from {legacy} to {path}. Move it: "
+        f"mkdir -p {shlex.quote(str(path.parent))} && mv {old} {new}"
+    )
+
+
+class RegistryMoved(RuntimeError):
+    """The default registry is still at its pre-XDG location, ``~/.rote/registry.json``."""
 
 
 class TemporalTrigger(BaseModel):

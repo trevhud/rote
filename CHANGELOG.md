@@ -69,9 +69,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   dir.** The default is now `$XDG_DATA_HOME/rote/serve-registry.json`
   (`~/.local/share/rote/serve-registry.json`), beside the app registry,
   instead of `~/.rote/registry.json`, the one per-user file outside the XDG
-  dirs. `ROTE_SERVE_REGISTRY_PATH` still overrides it. To keep existing
-  registrations, move the old file:
-  `mv ~/.rote/registry.json ~/.local/share/rote/serve-registry.json`.
+  dirs. `ROTE_SERVE_REGISTRY_PATH` still overrides it. While the old file
+  exists, `rote register` and `rote serve` exit 2 and print the `mv`
+  command that moves it. If both files exist, rote reads only the new one
+  and asks you to delete the old one.
 
 - **The base install carries only the MCP client; the workflow runtimes are
   extras installed when you pick one.** `pip install rote-cli` now brings
