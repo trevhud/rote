@@ -1160,15 +1160,17 @@ def passthrough_values(inputs: Any, passthrough: Mapping[str, str]) -> dict[str,
 def with_passthrough(answer: Any, inputs: Any, passthrough: Mapping[str, str]) -> Any:
     """The model's ``answer`` with each passthrough field copied in from ``inputs``.
 
-    The copy wins over anything the model wrote under that name: those
-    fields are the input's, never the model's. An answer that is not an
+    The copy wins over anything the model wrote under that name, even when
+    the input has no value there (the field is then absent): those fields
+    are the input's, never the model's. An answer that is not an
     object is returned as it is, for the schema check to name. The TS twin
     is ``withPassthrough`` in ``_roteSchema.ts``, held to this one by
     ``tests/test_judge_passthrough.py``.
     """
     if not isinstance(answer, dict):
         return answer
-    return {**answer, **passthrough_values(inputs, passthrough)}
+    kept = {k: v for k, v in answer.items() if k not in passthrough}
+    return {**kept, **passthrough_values(inputs, passthrough)}
 
 
 # ───────── the one entry point emitted judges call ─────────
@@ -1868,7 +1870,9 @@ def _union_branch(options: list[Any], value: Any, root: Mapping[str, Any]) -> An
     return best[1]
 
 
-def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> Any:
+def project(
+    schema: Any, value: Any, root: Mapping[str, Any] | None = None, *, unset: bool = True
+) -> Any:
     """``value`` as the emitted judge's model dumps it. Call only on a valid value.
 
     What ``model_dump(by_alias=True)`` returns for an accepted value, so a
@@ -1877,6 +1881,10 @@ def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> A
     property as its ``default`` or ``None``, a union through the branch
     Pydantic's smart mode picks (:func:`_union_branch`), an integral float
     under ``integer`` as an int and an int under ``number`` as a float.
+
+    ``unset=False`` is ``model_dump(exclude_unset=True)``: an omitted property
+    stays omitted, at every depth. Passthrough copies are made from that
+    form, so a copy is absent where the input was, on every runtime.
     """
     if not isinstance(schema, Mapping) or not schema:
         return copy.deepcopy(value)
@@ -1884,7 +1892,7 @@ def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> A
     schema = _resolve(schema, root)
     for key in ("anyOf", "oneOf"):
         if key in schema:
-            return project(_union_branch(schema[key], value, root), value, root)
+            return project(_union_branch(schema[key], value, root), value, root, unset=unset)
     kinds = schema.get("type")
     allowed = [kinds] if isinstance(kinds, str) else list(kinds or ())
     if isinstance(value, float) and "number" not in allowed and "integer" in allowed:
@@ -1900,14 +1908,16 @@ def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> A
         for key, prop in properties.items():
             if key in value:
                 item = value[key]
-                out[key] = None if item is None else project(prop, item, root)
+                out[key] = None if item is None else project(prop, item, root, unset=unset)
+            elif not unset:
+                continue
             elif isinstance(prop, Mapping) and "default" in prop:
                 out[key] = copy.deepcopy(prop["default"])
             else:
                 out[key] = None
         return out
     if isinstance(value, list) and isinstance(schema.get("items"), Mapping):
-        return [project(schema["items"], item, root) for item in value]
+        return [project(schema["items"], item, root, unset=unset) for item in value]
     return copy.deepcopy(value)
 
 

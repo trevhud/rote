@@ -1243,12 +1243,10 @@ class Driver:
         knob = step["id"].upper()
         kwargs: dict[str, Any] = {}
         if step.get("passthrough"):
-            # Copied from the input as the prompt reads it, the emitted
-            # judge's model_dump. (The raw payload would give the same result
-            # here: it already fit the input schema, and the answer is
-            # projected below.)
+            # Copied from the input as it was given (the emitted judge's
+            # exclude_unset dump): a field the input left out stays out.
             kwargs["passthrough"] = step["passthrough"]
-            kwargs["inputs"] = projected
+            kwargs["inputs"] = schema.project(step["input_schema"], payload, unset=False)
         if lane.get("temperature") is not None:
             temperature = os.environ.get(f"ROTE_TEMPERATURE_{knob}", str(lane["temperature"]))
             kwargs["sampling"] = {"temperature": float(temperature)} if temperature.strip() else {}
@@ -1383,7 +1381,8 @@ class Driver:
                 task = interpolate(step["prompt"], projected)
             except KeyError as exc:
                 return self._judge_input_error(step, [str(exc.args[0])])
-            return {"task": task, **({"copied": select(projected, sources)} if sources else {})}
+            given = schema.project(spec_in, payload, unset=False)
+            return {"task": task, **({"copied": select(given, sources)} if sources else {})}
         try:
             elements = _fan_list(payload.get(fan), step["id"], fan)
         except TypeError as exc:
@@ -1400,7 +1399,7 @@ class Driver:
             projected = schema.project(spec_in, full)
             items.append(select(projected.get(fan), [r[1:] for r in refs if r[0] == fan]))
             if sources:
-                copied.append(select(projected, sources))
+                copied.append(select(schema.project(spec_in, full, unset=False), sources))
             if index == 0:
                 shared = {
                     k: select(projected.get(k), [r[1:] for r in refs if r[0] == k])

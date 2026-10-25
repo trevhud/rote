@@ -41,7 +41,7 @@ from rote.plan import build_plan
 from rote.skill_target import write_scripts
 from tests import _node_trees as node_trees
 from tests._messages_api import CURRENT_SONNET, reject_like_the_api, send_json, structured_message
-from tests._skill_driver import drive, header, make_skill, result_of
+from tests._skill_driver import drive, header, journal, make_skill, result_of
 
 REPO = Path(__file__).resolve().parent.parent
 DEAL_MONITOR = REPO / "examples" / "deal-monitor" / "expected" / "pipeline.yaml"
@@ -140,19 +140,26 @@ def _decide(prompt: str) -> dict[str, Any]:
     return {"urgency": "high" if high else "low", "reason": "outage" if high else "cosmetic"}
 
 
-def _expected(ticket: dict[str, Any], *, absent_is_null: bool) -> dict[str, Any]:
-    """The judge's whole output for ``ticket``: the copies plus the decision.
-
-    Python runtimes dump an omitted optional field as None (``model_dump``),
-    TS keeps it absent (Zod), whatever wrote it: that split is the models',
-    not passthrough's."""
-    body = {**ticket}
-    if absent_is_null:
-        body.setdefault("reporter", None)
-    out: dict[str, Any] = {"ticket": body, "ticket_id": ticket["id"], **_decide(ticket["body"])}
-    if "reporter" in ticket or absent_is_null:
-        out["reporter"] = ticket.get("reporter")
+def _expected(ticket: dict[str, Any]) -> dict[str, Any]:
+    """The judge's whole output for ``ticket``, the same on every language:
+    the copies plus the decision. A field the ticket left out (T-1's
+    ``reporter``) is absent from the copy, at the top and nested."""
+    out: dict[str, Any] = {
+        "ticket": dict(ticket),
+        "ticket_id": ticket["id"],
+        **_decide(ticket["body"]),
+    }
+    if "reporter" in ticket:
+        out["reporter"] = ticket["reporter"]
     return out
+
+
+def _dumped(output: dict[str, Any]) -> Any:
+    """``output`` after a Python runtime's ``Output.model_dump()``, which writes
+    every omitted optional field as None, a model-written one included. The
+    driver projects through the same rule (``project``). That dump is not
+    passthrough's: the copy it dumps is :func:`_expected`'s."""
+    return helper.project(OUTPUT_SCHEMA, output)
 
 
 # ───────── the IR ─────────
@@ -222,6 +229,45 @@ def test_a_valid_passthrough_loads() -> None:
 def test_an_unsound_passthrough_is_refused_at_load(change: dict[str, Any], message: str) -> None:
     with pytest.raises(pydantic.ValidationError, match=re.escape(message)):
         LLMSignature.model_validate(_spec(**change))
+
+
+def _with_meta(input_meta: dict[str, Any], output_meta: dict[str, Any]) -> dict[str, Any]:
+    spec = _spec(passthrough={"meta": "ticket.meta"})
+    spec["input_schema"]["$defs"]["Ticket"]["properties"]["meta"] = input_meta
+    spec["output_schema"]["properties"]["meta"] = output_meta
+    return spec
+
+
+def test_a_property_named_like_an_annotation_is_compared() -> None:
+    """``title`` / ``description`` are annotations only as keywords; as
+    property names they are data, and their schemas must match."""
+    for name in ("title", "description", "examples", "$comment"):
+        source = {"type": "object", "properties": {name: {"type": "string"}}}
+        target = {"type": "object", "properties": {name: {"type": "integer"}}}
+        with pytest.raises(pydantic.ValidationError, match="has a different schema"):
+            LLMSignature.model_validate(_with_meta(source, target))
+        # Negative half: the same property schema on both sides loads.
+        LLMSignature.model_validate(_with_meta(source, copy.deepcopy(source)))
+    # A const is a literal: a dict inside it keeps its "title" key.
+    with pytest.raises(pydantic.ValidationError, match="has a different schema"):
+        LLMSignature.model_validate(_with_meta({"const": {"title": 1}}, {"const": {"title": 2}}))
+
+
+def test_order_of_required_and_enum_does_not_matter() -> None:
+    source = {
+        "type": "object",
+        "properties": {"a": {"enum": ["x", "y"]}, "b": {"type": "string"}},
+        "required": ["a", "b"],
+        "description": "annotations are ignored",
+    }
+    target = {
+        "type": "object",
+        "properties": {"a": {"enum": ["y", "x"]}, "b": {"type": "string"}},
+        "required": ["b", "a"],
+    }
+    LLMSignature.model_validate(_with_meta(source, target))
+    with pytest.raises(pydantic.ValidationError, match="has a different schema"):
+        LLMSignature.model_validate(_with_meta(source, {**target, "required": ["b"]}))
 
 
 def test_a_passthrough_that_leaves_the_model_nothing_to_decide_is_refused() -> None:
@@ -314,6 +360,15 @@ def test_the_copy_is_the_inputs_and_wins_over_the_model() -> None:
         "an",
         "object",
     ]
+
+
+def test_a_copied_field_the_input_lacks_drops_what_the_model_wrote() -> None:
+    merged = helper.with_passthrough(
+        {"urgency": "low", "ticket_id": "FORGED", "reporter": "Mallory"},
+        {"ticket": {"title": "t"}},
+        PASSTHROUGH,
+    )
+    assert merged == {"urgency": "low", "ticket": {"title": "t"}}
 
 
 class _JudgeStub(BaseHTTPRequestHandler):
@@ -436,7 +491,7 @@ def test_an_emitted_python_judge_copies_in_code(
         app, {"tickets": TICKETS}, timeout_seconds=120, extra_env=_stub_env(judge_stub)
     )
     assert run.error is None, run.error
-    assert run.output == {"triage": [_expected(t, absent_is_null=True) for t in TICKETS]}
+    assert run.output == {"triage": [_dumped(_expected(t)) for t in TICKETS]}
     assert len(_JudgeStub.requests) == len(TICKETS)
     for request in _JudgeStub.requests:
         assert request["output_config"]["format"]["schema"] == _sent_schema()
@@ -458,6 +513,55 @@ def test_without_passthrough_the_model_is_asked_for_every_field(
     sent = _JudgeStub.requests[0]["output_config"]["format"]["schema"]
     assert sent == structured_output_schema(OUTPUT_SCHEMA, node_id="triage")
     assert "ticket_id" in sent["properties"]
+
+
+def test_the_emitted_python_judge_copies_from_the_input_as_given() -> None:
+    """``exclude_unset``: T-1 has no reporter, so its copy has none, nested or
+    at the top, as on TS. A plain model_dump would hand call_judge None."""
+    import types
+
+    from rote.adapters._py_common import emit_signature_module
+
+    seen: dict[str, Any] = {}
+
+    def call_judge(**kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        merged = helper.with_passthrough(_decide("down"), kwargs["inputs"], kwargs["passthrough"])
+        seen["merged"] = merged
+        return merged
+
+    fake = types.ModuleType("signatures._rote_inference")
+    fake.call_judge = call_judge  # type: ignore[attr-defined]
+    package = types.ModuleType("signatures")
+    package._rote_inference = fake  # type: ignore[attr-defined]
+    source = emit_signature_module(
+        _pipeline().nodes[0],
+        anthropic_default_model="m",
+        openai_default_model="m",
+        generated_by="t",
+        regen_command="t",
+        context_note="t",
+    )
+    module = types.ModuleType("_passthrough_judge")
+    import sys
+
+    saved = {k: sys.modules.get(k) for k in ("signatures", "signatures._rote_inference")}
+    sys.modules.update({"signatures": package, "signatures._rote_inference": fake})
+    sys.modules["_passthrough_judge"] = module
+    try:
+        exec(compile(source, "_passthrough_judge", "exec"), module.__dict__)
+        for name in ("Ticket", "TriageInput", "TriageOutput"):
+            module.__dict__[name].model_rebuild(_types_namespace=module.__dict__)
+        module.Triage().forward(module.TriageInput.model_validate({"ticket": TICKETS[0]}))
+    finally:
+        del sys.modules["_passthrough_judge"]
+        for key, value in saved.items():
+            if value is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
+    assert seen["inputs"] == {"ticket": TICKETS[0]}
+    assert seen["merged"] == _expected(TICKETS[0])
 
 
 # ───────── the compiled skill's driver ─────────
@@ -483,7 +587,14 @@ def test_decide_asks_only_for_the_decision_and_done_has_the_copies(tmp_path: Pat
     }
     status, done = drive(scripts, "answer", header(out)["run"], "triage", json.dumps(answers))
     assert status == 0 and header(done)["kind"] == "DONE", done
-    assert result_of(done)["triage"] == [_expected(t, absent_is_null=True) for t in TICKETS]
+    assert result_of(done)["triage"] == [_dumped(_expected(t)) for t in TICKETS]
+
+
+def test_the_driver_keeps_copies_of_the_input_as_given(tmp_path: Path) -> None:
+    scripts = make_skill(tmp_path, _pipeline())
+    _, out = drive(scripts, "start", json.dumps({"tickets": TICKETS}))
+    copied = journal(out)["pending"]["copied"]
+    assert copied == [{"ticket": t} for t in TICKETS]  # T-1: no reporter key at all
 
 
 def test_a_single_decide_merges_the_copies_too(tmp_path: Path) -> None:
@@ -496,7 +607,7 @@ def test_a_single_decide_merges_the_copies_too(tmp_path: Path) -> None:
     answer = {**_decide(TICKETS[1]["body"]), "ticket_id": "FORGED"}
     status, done = drive(scripts, "answer", header(out)["run"], "triage", json.dumps(answer))
     assert status == 0 and header(done)["kind"] == "DONE", done
-    assert result_of(done)["triage"] == _expected(TICKETS[1], absent_is_null=True)
+    assert result_of(done)["triage"] == _dumped(_expected(TICKETS[1]))
 
 
 def test_helper_judges_in_the_driver_copy_in_code(tmp_path: Path, judge_stub: str) -> None:
@@ -510,7 +621,7 @@ def test_helper_judges_in_the_driver_copy_in_code(tmp_path: Path, judge_stub: st
         os.environ.clear()
         os.environ.update(saved)
     assert status == 0 and header(done)["kind"] == "DONE", done
-    assert result_of(done)["triage"] == [_expected(t, absent_is_null=True) for t in TICKETS]
+    assert result_of(done)["triage"] == [_dumped(_expected(t)) for t in TICKETS]
     assert [r["output_config"]["format"]["schema"] for r in _JudgeStub.requests] == [
         _sent_schema()
     ] * len(TICKETS)
@@ -527,6 +638,8 @@ MERGE_CASES: list[tuple[Any, Any, dict[str, str]]] = [
     ({"a": 1}, {"t": {"id": None}}, {"x": "t.id"}),
     ({"a": 1}, {"t": {"deep": {"er": [1, {"k": "v"}]}}}, {"x": "t.deep", "y": "t.deep.er"}),
     ({"a": 1}, {"t": [1, 2]}, {"x": "t.0"}),
+    ({"a": 1, "x": "FORGED"}, {"t": {}}, {"x": "t.id"}),
+    ({"a": 1, "x": "FORGED"}, {}, {"x": "t.id"}),
     (["not", "an", "object"], {"t": 1}, {"x": "t"}),
     (None, {"t": 1}, {"x": "t"}),
     ({}, {}, {}),
@@ -561,6 +674,7 @@ def test_python_and_ts_merge_the_same_way(tmp_path: Path) -> None:
     assert json.loads(done.stdout) == ours
     # Not degenerate: the cases copy something, overrule the model, and skip.
     assert ours[2]["ticket_id"] == "T-2" and "x" not in ours[3] and ours[4]["x"] is None
+    assert ours[7] == {"a": 1} and ours[8] == {"a": 1}  # a forged copy never survives
 
 
 DRIVER_TS = """\
@@ -603,9 +717,31 @@ def test_an_emitted_ts_judge_copies_in_code(tmp_path: Path, judge_stub: str) -> 
         env={**os.environ, **_stub_env(judge_stub), "TICKETS": json.dumps(TICKETS)},
     )
     assert proc.returncode == 0, f"driver failed:\n{proc.stdout}\n{proc.stderr}"
-    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [
-        _expected(t, absent_is_null=False) for t in TICKETS
-    ]
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [_expected(t) for t in TICKETS]
+    for request in _JudgeStub.requests:
+        assert request["output_config"]["format"]["schema"] == _sent_schema()
+
+
+@pytest.mark.slow
+@_needs_node
+def test_a_fanned_ts_judge_copies_in_a_real_inngest_run(
+    tmp_path: Path, judge_stub: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole TS path as a workflow: one durable step per ticket under the
+    Inngest dev server, each judge merging its own element's copies."""
+    from rote.runners.inngest import run_inngest
+
+    for key, value in _stub_env(judge_stub).items():
+        monkeypatch.setenv(key, value)
+    pipeline = _pipeline()
+    app = tmp_path / "inngest"
+    get_adapter("inngest").emit(pipeline, app)
+    run = run_inngest(
+        app, {"tickets": TICKETS}, pipeline=pipeline, signals={}, gate_order=[], timeout_seconds=240
+    )
+    assert run.error is None, run.error
+    assert run.output == {"triage": [_expected(t) for t in TICKETS]}
+    assert len(_JudgeStub.requests) == len(TICKETS)
     for request in _JudgeStub.requests:
         assert request["output_config"]["format"]["schema"] == _sent_schema()
 

@@ -1063,13 +1063,13 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         "            sampling=_sampling_kwargs(),\n" if spec.temperature is not None else ""
     )
     if spec.passthrough:
-        # The copies come from the same dict the prompt is rendered from.
-        variables = "        variables = inputs.model_dump(by_alias=True)\n"
-        prompt_arg = "_interpolate(PROMPT, variables)"
-        passthrough_args = "            passthrough=PASSTHROUGH,\n            inputs=variables,\n"
+        # Copied from the input as it was given: a field the input left out
+        # stays out of the copy (exclude_unset), as on every TS runtime.
+        passthrough_args = (
+            "            passthrough=PASSTHROUGH,\n"
+            "            inputs=inputs.model_dump(by_alias=True, exclude_unset=True),\n"
+        )
     else:
-        variables = ""
-        prompt_arg = "_interpolate(PROMPT, inputs.model_dump(by_alias=True))"
         passthrough_args = ""
     return (
         f"class {pascal}:\n"
@@ -1080,13 +1080,12 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"        # is resolved at runtime; see signatures/_rote_inference.py.\n"
         f"        from signatures._rote_inference import call_judge\n"
         f"\n"
-        f"{variables}"
         f"        payload = call_judge(\n"
         f"            node_id={json.dumps(node.id)},\n"
         f"            client={json.dumps(spec.client)},\n"
         f"            model=MODEL,\n"
         f"            base_url=BASE_URL,\n"
-        f"            prompt={prompt_arg},\n"
+        f"            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n"
         f"            output_schema=OUTPUT_JSON_SCHEMA,\n"
         f"{passthrough_args}"
         f"{sampling_arg}"

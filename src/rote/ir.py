@@ -12,6 +12,7 @@ speculation.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -1727,25 +1728,59 @@ def _resolve_ref(node: Any, root: dict[str, Any]) -> Any:
 _ANNOTATION_KEYWORDS = frozenset({"description", "title", "$comment", "examples"})
 
 
+#: Keywords whose value is a map of names to schemas: the names are data,
+#: never keywords, so a property named ``title`` is compared, not dropped.
+_SCHEMA_MAP_KEYWORDS = frozenset({"properties", "patternProperties", "dependentSchemas"})
+#: Keywords whose value is one schema, or a list of them.
+_SCHEMA_KEYWORDS = frozenset(
+    {
+        "items",
+        "additionalProperties",
+        "not",
+        "contains",
+        "propertyNames",
+        "if",
+        "then",
+        "else",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_SCHEMA_LIST_KEYWORDS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+#: Keywords whose list is a set: order does not change what they accept.
+_SET_KEYWORDS = frozenset({"required", "enum", "type"})
+
+
 def _comparable_schema(node: Any, root: dict[str, Any], depth: int = 0) -> Any:
     """``node`` with every ``$ref`` inlined and annotations dropped, for equality.
 
     A judge's input and output schemas each carry their own ``$defs``, so
     two schemas compare by what they accept, not by where their
-    definitions live.
+    definitions live. Annotations are dropped only where they are keywords;
+    a literal (``const``, ``default``, an ``enum`` member) is compared whole.
     """
     if depth > 32:
         raise ValueError("schema nests too deeply (a recursive $ref?) to compare")
     node = _resolve_ref(node, root)
-    if isinstance(node, dict):
-        return {
-            k: _comparable_schema(v, root, depth + 1)
-            for k, v in node.items()
-            if k not in _ANNOTATION_KEYWORDS and k != "$defs"
-        }
-    if isinstance(node, list):
-        return [_comparable_schema(v, root, depth + 1) for v in node]
-    return node
+    if not isinstance(node, dict):
+        return node  # a boolean schema
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _ANNOTATION_KEYWORDS or key == "$defs":
+            continue
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            out[key] = {
+                name: _comparable_schema(sub, root, depth + 1) for name, sub in value.items()
+            }
+        elif key in _SCHEMA_KEYWORDS:
+            out[key] = _comparable_schema(value, root, depth + 1)
+        elif key in _SCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            out[key] = [_comparable_schema(sub, root, depth + 1) for sub in value]
+        elif key in _SET_KEYWORDS and isinstance(value, list):
+            out[key] = sorted({json.dumps(v, sort_keys=True) for v in value})
+        else:
+            out[key] = value
+    return out
 
 
 def _passthrough_binding_error(node: Node) -> str | None:

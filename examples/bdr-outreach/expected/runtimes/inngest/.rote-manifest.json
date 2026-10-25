@@ -19,7 +19,7 @@
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
     "src/inngest/pipeline.ts": "484f5f03fdc42c26b89bf19dfe14797bfc5811de571541852e7fbd6182a55263",
     "src/signatures/_roteInference.ts": "790f29b716d13edce912be92bc3f5bcfa42560408ee49dbff83c2e182aa8811e",
-    "src/signatures/_roteSchema.ts": "22a91ce994eb8fb86641d935bbdbe1e9f1ae024460859125285552bcd45e8322",
+    "src/signatures/_roteSchema.ts": "50cdcec431d0e0cfb74503a9cfecb92fe5c2ddbcea06cd5c7fa976e1021bd49d",
     "src/signatures/personalize_email.ts": "235139e292e0ad8aaf4c0c534a55ff24bf90bf1a07ac74e3182acb0e1a2bed2f",
     "src/signatures/vet_contact.ts": "d312680ff247af921792501495fc15e1e79626f5dd03cc3b2951e2c8c05e1b53",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",

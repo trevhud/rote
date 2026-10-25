@@ -3323,8 +3323,9 @@ export function passthroughValues(
 /**
  * The model's answer with each passthrough field copied in from the judge's
  * validated input; the copy wins over anything the model wrote under that
- * name. An answer that is not an object is returned as it is, for the
- * schema check to name. The twin of the Python helper's with_passthrough.
+ * name, even when the input has no value there. An answer that is not an
+ * object is returned as it is, for the schema check to name. The twin of
+ * the Python helper's with_passthrough.
  */
 export function withPassthrough(
     answer: unknown,
@@ -3332,7 +3333,11 @@ export function withPassthrough(
     passthrough: Record<string, string>,
 ): unknown {
     if (!isJsonObject(answer)) return answer;
-    return { ...answer, ...passthroughValues(input, passthrough) };
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(answer)) {
+        if (!Object.prototype.hasOwnProperty.call(passthrough, key)) kept[key] = value;
+    }
+    return { ...kept, ...passthroughValues(input, passthrough) };
 }
 """
 
