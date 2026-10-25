@@ -2063,9 +2063,7 @@ def answer_schema(step: dict[str, Any]) -> Any:
     if step["kind"] == "loop":
         return step["output_schema"] or _TEXT_ANSWER
     if step["kind"] == "judge":
-        return _schema().passthrough_answer_schema(
-            step["output_schema"], step.get("passthrough")
-        )
+        return _schema().passthrough_answer_schema(step["output_schema"], step.get("passthrough"))
     return step["output_schema"]
 
 

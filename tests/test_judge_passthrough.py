@@ -610,6 +610,41 @@ def test_a_single_decide_merges_the_copies_too(tmp_path: Path) -> None:
     assert result_of(done)["triage"] == _dumped(_expected(TICKETS[1]))
 
 
+def test_a_do_step_answers_its_whole_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Passthrough is a judge's alone. A ``do`` step (an external_call with no
+    code) has no signature_spec, so its plan step carries none, and the
+    driver ignores one even if a step claimed it."""
+    import sys
+
+    from rote.skill_target._driver import answer_schema
+
+    # The driver reads the helper under its emitted name.
+    monkeypatch.setitem(sys.modules, "_rote_inference", helper)
+    data = _pipeline().model_dump(mode="json", by_alias=True, exclude_none=True)
+    data["nodes"].append(
+        {
+            "id": "file_ticket",
+            "kind": "external_call",
+            "description": "File each triaged ticket.",
+            "impl": "extracted/filing.py:file_ticket",
+            "inputs": {"triaged": "triage.output"},
+            "output_schema": copy.deepcopy(OUTPUT_SCHEMA),
+        }
+    )
+    data["edges"] = [{"from": "triage", "to": "file_ticket"}]
+    data["exit_nodes"] = ["file_ticket"]
+    plan = build_plan(
+        Pipeline.model_validate(data), mcp="live", implementations={"file_ticket": "stub"}
+    )
+    steps = {s["id"]: s for s in plan["steps"]}
+    do, judge = steps["file_ticket"], steps["triage"]
+    assert do["kind"] == "do" and "passthrough" not in do
+    assert judge["passthrough"] == PASSTHROUGH
+    assert answer_schema(judge) == helper.passthrough_answer_schema(OUTPUT_SCHEMA, PASSTHROUGH)
+    claimed = {**do, "passthrough": PASSTHROUGH}
+    assert answer_schema(claimed) == do["output_schema"]
+
+
 def test_helper_judges_in_the_driver_copy_in_code(tmp_path: Path, judge_stub: str) -> None:
     scripts = tmp_path / "scripts"
     write_scripts(scripts, build_plan(_pipeline(), mcp="live", judges="helper"))
