@@ -237,7 +237,11 @@ def test_the_wrapper_passes_rotes_exit_status(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("env_var", "resolve", "home_default"),
     [
-        ("ROTE_SERVE_REGISTRY_PATH", default_registry_path, ".rote/registry.json"),
+        (
+            "ROTE_SERVE_REGISTRY_PATH",
+            default_registry_path,
+            ".local/share/rote/serve-registry.json",
+        ),
         ("ROTE_EVAL_CORPUS_PATH", default_corpus_path, ".local/share/rote/eval-corpus.jsonl"),
         ("ROTE_PRICING_CACHE_DIR", default_cache_dir, ".cache/rote"),
     ],
@@ -255,6 +259,9 @@ def test_each_new_override_wins_and_the_default_is_unchanged(
     # The XDG dirs move these defaults too; with them unset, the home path.
     for xdg in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(xdg, raising=False)
+    # A home of its own: the serve registry refuses to resolve while a real
+    # ~/.rote/registry.json is waiting to be moved.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     assert resolve() == Path.home() / home_default
 
 

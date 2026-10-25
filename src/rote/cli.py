@@ -2102,7 +2102,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
 
     Reads the pipeline.yaml from a compile run, derives the MCP tool
     name / description / inputSchema from it, attaches the runtime
-    trigger config from the flags, and upserts ``~/.rote/registry.json``
+    trigger config from the flags, and upserts ``~/.local/share/rote/serve-registry.json``
     (or ``--registry``). ``rote serve`` picks the change up live.
     """
     import os
@@ -2112,6 +2112,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
         CloudflareTrigger,
         DbosTrigger,
         Registry,
+        RegistryMoved,
         TemporalTrigger,
         default_registry_path,
         entry_from_pipeline,
@@ -2190,7 +2191,11 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    try:
+        registry_path = Path(args.registry) if args.registry else default_registry_path()
+    except RegistryMoved as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     try:
         registry = Registry.load(registry_path)
     except Exception as e:
@@ -2220,7 +2225,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     Streamable HTTP. Nothing may be printed to stdout in stdio mode —
     stdout is the MCP transport.
     """
-    from rote.serve.registry import default_registry_path
+    from rote.serve.registry import RegistryMoved, default_registry_path
 
     # The base install's fastmcp is the slim client; the server half is
     # the serve extra. Never offered as an install here: in stdio mode
@@ -2243,7 +2248,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
         return 2
 
-    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    try:
+        registry_path = Path(args.registry) if args.registry else default_registry_path()
+    except RegistryMoved as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if not registry_path.exists():
         print(
             f"rote serve: registry {registry_path} does not exist yet. Serving only "
@@ -6107,7 +6116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Register a compiled pipeline as an MCP tool for `rote serve`",
         description=(
             "Append or update an entry in the serve registry "
-            "(~/.rote/registry.json by default) from a compile run's "
+            "(~/.local/share/rote/serve-registry.json by default) from a compile run's "
             "pipeline.yaml. Tool name comes from pipeline.name, description "
             "from pipeline.description, inputSchema from the pipeline input "
             "contract. A running `rote serve` picks the change up live."
@@ -6123,7 +6132,10 @@ def _build_parser() -> argparse.ArgumentParser:
     register.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
+        help=(
+            "Registry file (default: $ROTE_SERVE_REGISTRY_PATH, "
+            "else ~/.local/share/rote/serve-registry.json)"
+        ),
     )
     register.add_argument(
         "--runtime",
@@ -6213,7 +6225,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
+        help=(
+            "Registry file (default: $ROTE_SERVE_REGISTRY_PATH, "
+            "else ~/.local/share/rote/serve-registry.json)"
+        ),
     )
     serve.add_argument(
         "--http",
