@@ -38,8 +38,12 @@ Refused at emit, before any file is written:
   to run on the backend), naming the node;
 - an ``extracted/`` module that is still a stub, unless ``allow_stubs``
   (the preflight ``rote run`` applies, moved to emit because a compiled
-  skill is run by an agent that cannot fix one);
-- impls that cannot take their node's constants;
+  skill is run by an agent that cannot fix one). An external_call's stub is
+  not refused: that step becomes ``do``, which the agent does with its own
+  tools as the source skill did (:mod:`rote.plan`). A pure_function's is: a
+  missing pure function is a compile defect, not agent work;
+- impls that cannot take their node's constants (a ``do`` step's impl is
+  never called, so it is not checked);
 - under ``--judges helper``, a judge output schema structured outputs
   cannot express (as every Python runtime refuses it).
 """
@@ -73,7 +77,8 @@ from rote.adapters._py_common import (
     vendor_sdk_requirements,
     write_extracted_package,
 )
-from rote.ir import Pipeline, is_field_name
+from rote.contracts import ImplStatus, impl_status
+from rote.ir import Node, NodeKind, Pipeline, is_field_name
 from rote.plan import JUDGE_MODES, JudgeMode, PlanError, build_plan, plan_hash, plan_text
 
 #: The manifest's record of what this emit decided (:func:`emitted_skill`).
@@ -252,9 +257,21 @@ def refusal(pipeline: Pipeline, backend: Literal["mcp", "api"] = "mcp") -> str |
 @dataclass(frozen=True)
 class _Kinds:
     decide: bool
+    do: bool
     loop: bool
     gate: bool
     login: bool
+
+
+def agent_steps(plan: dict[str, Any]) -> set[str]:
+    """The ids of the ``do`` steps in ``plan``, an agent loop's sub-nodes included."""
+    found: set[str] = set()
+    for step in plan["steps"]:
+        if step["kind"] == "do":
+            found.add(step["id"])
+        if step["kind"] == "loop":
+            found.update(b["id"] for b in step["body"] if b["kind"] == "do")
+    return found
 
 
 def _kinds(plan: dict[str, Any]) -> _Kinds:
@@ -263,6 +280,7 @@ def _kinds(plan: dict[str, Any]) -> _Kinds:
     steps = plan["steps"]
     return _Kinds(
         decide=plan.get("judges") != "helper" and any(s["kind"] == "judge" for s in steps),
+        do=any(s["kind"] == "do" for s in steps),
         loop=any(s["kind"] == "loop" for s in steps),
         gate=any(s["kind"] == "gate" for s in steps),
         login=calls_mcp(plan),
@@ -373,6 +391,14 @@ def skill_md(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) 
             "- DECIDE: yours to answer. Decide it yourself, as it asks; do not ask the user. "
             "Then run its `answer` command."
         )
+    if kinds.do:
+        # Said through DECIDE when there is one: the body stays in context all session.
+        blocks.append(
+            "- DO: as DECIDE, but do the step with your own tools."
+            if kinds.decide
+            else "- DO: yours to do. Do the step yourself with your own tools; do not ask the "
+            "user. Then run its `answer` command."
+        )
     if kinds.loop:
         blocks.append(
             "- LOOP: yours to do. Do the task yourself with only the tools it lists; do not "
@@ -388,7 +414,7 @@ def skill_md(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) 
             "- HUMAN: for the user (a login), never for you. Ask them to do it, then run its "
             "command."
         )
-    if kinds.decide or kinds.loop or kinds.gate or kinds.login:
+    if kinds.decide or kinds.do or kinds.loop or kinds.gate or kinds.login:
         blocks.append(f"- Lost track? `{command} status` prints the pending block again.")
     body = [
         f"# {name} (compiled by rote)",
@@ -424,6 +450,8 @@ def _runs_as(step: dict[str, Any], plan: dict[str, Any]) -> str:
         return "the agent decides (DECIDE)"
     if kind == "gate":
         return "the person answers (HUMAN)"
+    if kind == "do":
+        return "the agent, with its own tools (DO)"
     return "the agent, with the loop's tools (LOOP)"
 
 
@@ -447,8 +475,8 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         f"This directory is a skill, compiled by rote from `{pipeline.name}` "
         f"v{pipeline.version}. It keeps the original skill's name and description, so a "
         "client triggers on it as it did on the original. Its steps run in code "
-        "(`scripts/`); the agent that loaded it answers only what needs a model, and a "
-        "person only what needs a person.",
+        "(`scripts/`); the agent that loaded it answers only what needs a model or its "
+        "own tools (DO), and a person only what needs a person.",
         "",
         "## What it runs",
         "",
@@ -482,8 +510,8 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
         "what it answers at DECIDE, is up to the agent. HUMAN answers are recorded with "
         "the person's words.",
         "",
-        f"- Every tool call is read-only unless the user lets it write (`rote skill trust "
-        f"{name} --allow-writes`, at their own terminal).",
+        f"- Every tool call the driver makes is read-only unless the user lets it write "
+        f"(`rote skill trust {name} --allow-writes`, at their own terminal).",
         "- A tool call that finished is never repeated; one interrupted mid-call runs again "
         "on `resume` (at least once).",
     ]
@@ -492,6 +520,14 @@ def readme(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) ->
             "- An agent loop's tools are reached only through the driver (`tool`): the "
             "loop's declared tools, each on its own server, arguments checked first, and "
             "at most the loop's `max_iterations` calls, counted across resumes."
+        )
+    if agent_steps(plan):
+        lines.append(
+            "- A DO step is an external call with no code yet: the agent does it with its own "
+            "tools, as the original skill did, and the driver checks its answer. The block "
+            "grants nothing, so the agent's client approves any write as it always does; "
+            "`--allow-writes` covers only the driver's own calls, and a DO step needs no "
+            "consent from rote."
         )
     if helper:
         lines.append(
@@ -568,12 +604,20 @@ class SkillAdapter:
                 f"judges must be one of {', '.join(JUDGE_MODES)}, got {self.config.judges!r}"
             )
 
-    def _plan(self, pipeline: Pipeline) -> dict[str, Any]:
+    def _plan(
+        self, pipeline: Pipeline, implementations: dict[str, ImplStatus] | None = None
+    ) -> dict[str, Any]:
         from rote.skill_target._driver import unrunnable_step
 
         cfg = self.config
         try:
-            plan = build_plan(pipeline, mcp="live", backend=cfg.external_backend, judges=cfg.judges)
+            plan = build_plan(
+                pipeline,
+                mcp="live",
+                backend=cfg.external_backend,
+                judges=cfg.judges,
+                implementations=dict(implementations or {}),
+            )
         except PlanError as e:
             raise PlanError(f"the skill runtime cannot run this pipeline: {e}") from e
         problem = unrunnable_step(plan)
@@ -598,25 +642,61 @@ class SkillAdapter:
                         raise ValueError(f"{e} (--judges helper)") from e
         return plan
 
-    def _stubs(self, pipeline: Pipeline, scripts: EmitWriter) -> list[str]:
-        """The ``extracted/`` modules this emit would leave as stubs, as ``write_extracted_package``
-        would write them (the agent's module, a user edit the writer keeps, or a stub)."""
+    def _landed(self, module: str, nodes: list[Node], scripts: EmitWriter) -> str:
+        """``extracted/<module>.py`` as ``write_extracted_package`` would write it: the
+        agent's module, a user edit the writer keeps, or a stub."""
+        fresh = resolve_extracted_source(self.config.extracted_source_dir, module) or (
+            emit_extracted_module(
+                module, nodes, generated_by=GENERATED_BY, caller_note=_CALLER_NOTE
+            )
+        )
+        return scripts.landed_content("extracted", f"{module}.py", content=fresh)
+
+    def _implementations(self, pipeline: Pipeline, scripts: EmitWriter) -> dict[str, ImplStatus]:
+        """Each external_call whose impl a step would call, by whether that function,
+        in the module this emit ships, does real work (:mod:`rote.plan` makes a
+        ``stub`` or ``absent`` one a ``do`` step)."""
+        backend = self.config.external_backend
+        found: dict[str, ImplStatus] = {}
+        for module, nodes in _extracted_layout(pipeline).items():
+            calls = [
+                n
+                for n in nodes
+                if n.kind is NodeKind.EXTERNAL_CALL
+                and n.impl is not None
+                and not mcp_backed(n, "skill", backend)
+            ]
+            if calls:
+                text = self._landed(module, nodes, scripts)
+                for n in calls:
+                    assert n.impl is not None
+                    found[n.id] = impl_status(text, _impl_path_parts(n.impl)[1])
+        return found
+
+    def _uncalled(self, nodes: list[Node], agent: set[str]) -> frozenset[str]:
+        """The functions in a module no step calls: each one only nodes that call
+        their MCP binding, or ``agent`` steps (``do``), point at."""
+        called: set[str] = set()
+        uncalled: set[str] = set()
+        for n in nodes:
+            if n.impl is None:
+                continue
+            skip = n.id in agent or mcp_backed(n, "skill", self.config.external_backend)
+            (uncalled if skip else called).add(_impl_path_parts(n.impl)[1])
+        return frozenset(uncalled - called)
+
+    def _stubs(self, pipeline: Pipeline, scripts: EmitWriter, agent: set[str]) -> list[str]:
+        """The ``extracted/`` modules this emit would leave as stubs that a step calls.
+
+        A function only bound nodes call (via MCP) or only ``agent`` steps
+        name (``do``: the agent does them) is never called, so it does not count.
+        """
         cfg = self.config
         layout = _extracted_layout(pipeline)
         found = []
         for module, nodes in sorted(layout.items()):
-            fresh = resolve_extracted_source(cfg.extracted_source_dir, module) or (
-                emit_extracted_module(
-                    module, nodes, generated_by=GENERATED_BY, caller_note=_CALLER_NOTE
-                )
-            )
-            text = scripts.landed_content("extracted", f"{module}.py", content=fresh)
-            backed = frozenset(
-                _impl_path_parts(n.impl)[1]
-                for n in nodes
-                if n.impl is not None and mcp_backed(n, "skill", cfg.external_backend)
-            )
-            if _is_stub_module(Path(f"{module}.py"), text, backed):
+            text = self._landed(module, nodes, scripts)
+            if _is_stub_module(Path(f"{module}.py"), text, self._uncalled(nodes, agent)):
                 found.append(f"scripts/extracted/{module}.py")
         for module in helper_module_names(cfg.extracted_source_dir, set(layout)):
             fresh = resolve_extracted_source(cfg.extracted_source_dir, module) or ""
@@ -631,12 +711,12 @@ class SkillAdapter:
         identity = identity_for(
             pipeline, skill_dir=cfg.skill_dir, source_dir=cfg.extracted_source_dir
         )
-        plan = self._plan(pipeline)
-
         writer = EmitWriter(output_dir)
         scripts = writer.scoped("scripts")
-        require_constant_parameters(pipeline, scripts, cfg.extracted_source_dir)
-        stubs = [] if cfg.allow_stubs else self._stubs(pipeline, scripts)
+        plan = self._plan(pipeline, self._implementations(pipeline, scripts))
+        agent = agent_steps(plan)
+        require_constant_parameters(pipeline, scripts, cfg.extracted_source_dir, agent)
+        stubs = [] if cfg.allow_stubs else self._stubs(pipeline, scripts, agent)
         if stubs:
             raise ValueError(
                 f"{len(stubs)} extracted/ module(s) would still be stubs, and a compiled skill "
@@ -675,13 +755,11 @@ class SkillAdapter:
             }
         )
         for module, nodes in _extracted_layout(pipeline).items():
-            backed = [
-                _impl_path_parts(n.impl)[1]
-                for n in nodes
-                if n.impl is not None and mcp_backed(n, "skill", cfg.external_backend)
-            ]
-            if backed:
-                scripts.record_mcp_backed("extracted", f"{module}.py", functions=backed)
+            # The manifest's list of functions no step calls, so `rote emit`
+            # does not report a DO step's stub as one that stops a run.
+            uncalled = self._uncalled(nodes, agent)
+            if uncalled:
+                scripts.record_mcp_backed("extracted", f"{module}.py", functions=uncalled)
         writer.record(
             MANIFEST_KEY,
             {

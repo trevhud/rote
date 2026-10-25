@@ -733,9 +733,11 @@ def emit_findings(
         skill_dir=target.skill_dir,
         judges=target.judges,
         # A stub is the compile's documented path for vendor code it cannot
-        # write; the compile-only rules report it, and `rote emit` refuses it.
-        # Sent back here, it would ask the agent to write vendor calls from
-        # memory.
+        # write; the compile-only rules report it, and `rote emit` refuses it
+        # (on --runtime skill only a pure_function's: an external_call stub is
+        # a DO step there, decided from these same modules, so this dry emit
+        # and the real one build one plan). Sent back here, it would ask the
+        # agent to write vendor calls from memory.
         allow_stubs=True,
     )
     # A compiled skill keeps its code under scripts/.

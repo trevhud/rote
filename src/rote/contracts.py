@@ -37,7 +37,7 @@ import io
 import re
 import sys
 import tokenize
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -499,6 +499,7 @@ def constants_not_accepted(
     pipeline: Pipeline,
     sources: Mapping[str, str],
     origins: Mapping[str, Path] | None = None,
+    never_called: Collection[str] = (),
 ) -> list[str]:
     """``"node X: <file> f() takes no a, b"`` for every impl that would reject its constants.
 
@@ -506,12 +507,15 @@ def constants_not_accepted(
     Python runtime will import; ``origins`` maps it to the file that text
     came from, so the message names the file to fix. Every step merges its node's constants into
     the impl's keyword arguments, loop_body sub-nodes included, so this
-    holds for every caller.
+    holds for every caller. ``never_called`` names nodes whose impl no step
+    calls (a compiled skill's ``do`` steps, which the agent does itself).
     """
     parsed: dict[str, ast.Module | None] = {}
     problems: list[str] = []
     for node in pipeline.nodes:
         if node.kind not in CONSTANT_ARGUMENT_KINDS or not node.constants or node.impl is None:
+            continue
+        if node.id in never_called:
             continue
         rel, symbol = _split_ref(node.impl)
         module = Path(rel).stem
@@ -608,6 +612,29 @@ def stub_reason(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str |
     return True, " ".join(text.split()) or None
 
 
+def _symbol_status(tree: ast.Module | None, symbol: str) -> tuple[ImplStatus, str | None]:
+    """``(status, stub reason)`` of ``symbol`` in ``tree`` (None: unreadable, so absent)."""
+    stmt = _toplevel_defs(tree).get(symbol) if tree is not None else None
+    if stmt is None:
+        return "absent", None
+    if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+        is_stub, reason = stub_reason(stmt)
+        return ("stub" if is_stub else "implemented"), reason
+    # A partial or callable object: something real is bound there.
+    return "implemented", None
+
+
+def impl_status(text: str, symbol: str) -> ImplStatus:
+    """Whether ``symbol`` in the module source ``text`` does real work, as
+    :func:`implementation_status` reads it from a file. A module that does not
+    parse has no usable function, so its symbols are ``absent``."""
+    try:
+        tree: ast.Module | None = ast.parse(text)
+    except SyntaxError:
+        tree = None
+    return _symbol_status(tree, symbol)[0]
+
+
 def implementation_status(
     pipeline: Pipeline,
     artifact_dir: Path | str,
@@ -642,18 +669,7 @@ def implementation_status(
             except (OSError, SyntaxError, UnicodeDecodeError):
                 # check_contracts reports why the module is unreadable.
                 trees[path] = None
-        tree = trees[path]
-        stmt = _toplevel_defs(tree).get(symbol) if tree is not None else None
-        status: ImplStatus
-        reason: str | None = None
-        if stmt is None:
-            status = "absent"
-        elif isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-            is_stub, reason = stub_reason(stmt)
-            status = "stub" if is_stub else "implemented"
-        else:
-            # A partial or callable object: something real is bound there.
-            status = "implemented"
+        status, reason = _symbol_status(trees[path], symbol)
         statuses.append(
             NodeImplementation(
                 node_id=node.id,

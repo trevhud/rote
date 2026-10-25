@@ -36,6 +36,10 @@ Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
 - ``gate``: ``description``, ``message``, ``answer_schema``, ``timeout_s``,
   ``signal``; a recorded plan whose sample answered the gate adds
   ``payload``.
+- ``do``: ``description``, ``constants``, ``output_schema``, ``fan_param``.
+  An external_call with nothing to run in code (no binding the backend
+  calls, and an impl that is a stub, absent, or not named): the agent does
+  the step with its own tools, as the source skill did, and answers.
 - ``loop``: ``description``, ``termination``, ``max_iterations``,
   ``tools``, ``tool_servers``, ``body`` (each sub-node as a full step, plus
   its ``tool_schema``: the arguments the agent passes when it calls it),
@@ -114,13 +118,13 @@ def judge_references(prompt: str) -> list[str]:
     return list(seen)
 
 
-def gate_answer_schema(node: Node) -> dict[str, Any]:
-    """The schema a person's answer at ``node`` must fit: its declared keys.
+def declared_answer_schema(node: Node) -> dict[str, Any]:
+    """The schema an answer standing in for ``node``'s result must fit: its declared keys.
 
-    The answer becomes the gate's result, so its keys are the ones the steps
-    after it read: every declared key required, none other allowed. A
-    single type name is the answer itself. A gate that declares nothing
-    takes any object.
+    A person's answer at a gate and the agent's at a ``do`` step become the
+    node's result, so its keys are the ones the steps after it read: every
+    declared key required, none other allowed. A single type name is the
+    answer itself. A node that declares nothing takes any object.
     """
     from rote.adapters._common import ir_type, keyed_output_schema
 
@@ -159,7 +163,12 @@ def build_plan(
     ``skip``, and a gate in ``gate_answers`` carries the sample's answer.
     ``mcp="live"`` is a compiled skill: every node runs, so a step the
     driver cannot run (a legacy ``signature:`` judge, a fan_out it cannot
-    resolve, a node with no body on ``backend``) raises :class:`PlanError`.
+    resolve, a pure_function with no impl) raises :class:`PlanError`. There
+    ``implementations`` (``rote.contracts.ImplStatus`` by node id, read from
+    the modules the skill ships) turns an external_call whose impl is a
+    ``stub`` or ``absent`` into a ``do`` step, as is one with no impl and no
+    binding the backend calls. A pure_function stub stays a ``call``: a
+    missing pure function is a compile defect, refused at emit, not agent work.
     ``judges`` says who answers a live plan's judges (:data:`JudgeMode`).
     """
     from rote.adapters._common import (
@@ -184,7 +193,7 @@ def build_plan(
                 "signal": node.signal,
                 "description": node.description.strip(),
                 "message": (node.notify.message_template or "").strip() if node.notify else "",
-                "answer_schema": gate_answer_schema(node),
+                "answer_schema": declared_answer_schema(node),
                 "timeout_s": _gate_timeout_s(node, pipeline),
             }
             if node.id in answers:
@@ -216,6 +225,13 @@ def build_plan(
                 "constants": node.constants,
                 "fan_param": fan,
                 "retry": _retry(node),
+            }
+        if kind == "do":
+            return {
+                "description": node.description.strip(),
+                "constants": node.constants,
+                "output_schema": declared_answer_schema(node),
+                "fan_param": fan,
             }
         if kind == "judge":
             spec = node.signature_spec
@@ -276,7 +292,7 @@ def build_plan(
         loop calls it with arguments the model builds, so its ``inputs:``
         describe rather than bind, and it does not fan out."""
         kind = _step_kind(node, live, backend, implementations or {}, answers)
-        if kind not in ("call", "mcp", "judge"):
+        if kind not in ("call", "mcp", "judge", "do"):
             if live:
                 raise PlanError(_no_body(node, backend))
             return {"id": node.id, "node_kind": str(node.kind), "kind": "skip"}
@@ -306,7 +322,7 @@ def build_plan(
                 steps.append(step | {"kind": "skip", "reason": _skip_reason(node, implementations)})
                 continue
             fan: str | None = None
-            if node.fan_out and kind in ("mcp", "call", "judge"):
+            if node.fan_out and kind in ("mcp", "call", "judge", "do"):
                 try:
                     fan = fan_out_element_param(node, pipeline)
                 except ValueError as e:
@@ -460,7 +476,8 @@ def _step_kind(
         return "mcp"
     if node.kind in CONSTANT_ARGUMENT_KINDS and node.impl is not None:
         if live:
-            return "call"
+            unwritten = implementations.get(node.id) in ("stub", "absent")
+            return "do" if node.kind is NodeKind.EXTERNAL_CALL and unwritten else "call"
         # The prefix runs written pure functions only: an external_call's
         # impl is vendor code, and the sandbox has no network.
         ready = implementations.get(node.id) == "implemented"
@@ -471,6 +488,8 @@ def _step_kind(
         return "judge"
     if node.kind is NodeKind.AGENT_LOOP:
         return "loop"
+    if node.kind is NodeKind.EXTERNAL_CALL:
+        return "do"  # no impl, and no binding this backend calls
     return None
 
 
