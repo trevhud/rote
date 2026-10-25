@@ -3096,7 +3096,8 @@ Don't waste time debugging stubs. These are intentional.
   prints the dev-server dashboard URL — both live only while the run
   lasts.
 - Cloud-side compilation (`rote.cloud_compile` + `_cmd_compile_cloud`):
-  logged in + flagless → the compilation runs ON rote cloud — bundle
+  logged in + `--cloud`, a cloudflare runtime, or `deploy: rote-cloud`
+  → the compilation runs ON rote cloud — bundle
   sync with per-file sha diff-skip, start-or-attach (an active
   compilation for the same skill attaches instead of double-spending;
   Ctrl-C cancels a run we started but only detaches from one we
@@ -3113,13 +3114,17 @@ Don't waste time debugging stubs. These are intentional.
   compilations`, container job) — the server must be deployed before a
   CLI release that enables this. E2E-proven against local dev
   (including a drained-tenant "insufficient credits" path).
-- Login-aware LOCAL compile default (applies when the cloud path is
-  opted out but a login exists): no explicit `--runtime` → emit
-  `cloudflare` and auto-deploy to rote cloud after emission
-  (`--no-deploy` opts out; a deploy failure exits 1 but keeps all
-  local artifacts and prints the `rote deploy … --target rote-cloud`
-  retry). Logged out → today's `dbos` default with a one-line hint,
-  never a prompt (CI-safe). The parser's `--runtime` default is now
+- The compile default is the compiled skill (`DEFAULT_COMPILE_RUNTIME =
+  "skill"`, `builtin_compile_runtime` in cli.py, which `rote config`
+  reports through too), logged in or not: no flag, env or config runtime
+  → a local `skill` compile, plus one stderr line naming the default
+  (and `--cloud` when logged in), and the summary's `next:` lines name
+  `rote skill install` and `rote try`. The one exception is `deploy:
+  rote-cloud`, which makes `cloudflare` the built-in (logged out, it exits
+  2 before the agent). A local cloudflare compile while logged in still
+  auto-deploys (`--no-deploy` opts out; a deploy failure exits 1 but keeps
+  the local artifacts and prints the `rote deploy … --target rote-cloud`
+  retry). Never a prompt (CI-safe). The parser's `--runtime` default is
   `None` — resolution happens at the top of `_cmd_compile`; don't
   reintroduce a static default in the parser.
 - `rote register` + `rote serve` (compiled pipelines as MCP tools,

@@ -25,7 +25,7 @@ rote compile  →  deploy the runtime  →  rote register  →  rote serve  → 
 ### 1. Compile and deploy
 
 ```sh
-rote compile ./my-skill --out ./my-skill-out          # default runtime: dbos
+rote compile ./my-skill --runtime dbos --out ./my-skill-out
 # → my-skill-out/compiled/pipeline.yaml
 # → my-skill-out/runtime/dbos/{main.py,dbos-config.yaml,...}
 ```

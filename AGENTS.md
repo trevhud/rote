@@ -125,9 +125,15 @@ uvx --from rote-cli rote compile <skill-dir> --runtime <runtime> --out <out-dir>
   final summary). Tail it to know where the run is:
   - `[phase N/7] <name>` — phase transitions.
   - `[turn N] <tool> <path>` — the agent's tool calls.
-- `--runtime` defaults to `dbos` (durable execution as a library, no
-  orchestrator, SQLite for dev). Others: `temporal`, `python`, `cloudflare`,
-  `dbos-ts`, `inngest`. `--out` is required.
+- `--runtime` defaults to `skill`, logged in or not: a compiled skill
+  under `<out-dir>/runtime/skill/<name>/` that keeps the original's name and
+  description and runs its fixed steps in code. The summary's `next:` lines
+  are the follow-up: `rote skill install <dir>` (a person confirms it), then
+  the skill replaces the original in the agent's skills folder, or `rote try
+  <skill>` shows the A/B proof first (paid; it asks). Workflow runtimes:
+  `dbos`, `temporal`, `python`, `cloudflare`, `dbos-ts`, `inngest`.
+  `--out` is required. A skill whose SKILL.md lacks `name:` or
+  `description:` cannot be a compiled skill; pass a workflow runtime.
 
 ## Auth: do not export an API key to "fix" it
 
@@ -234,30 +240,32 @@ or whose client trust could not be checked, needs its own
 `--allow-url-secret <name>` / `--allow-untrusted <name>`. Logins need a
 person; tell the user to run `rote mcp login <name>`.
 
-## The compile default follows the login state
+## rote cloud is opt-in, even when logged in
 
-If the machine has a rote-cloud login (`rote login`; credential at
-`~/.local/share/rote/cloud.json`), a flagless `rote compile` **runs
-the compilation on rote cloud**: skill bundle synced up (sha-diffed),
-server-side agent run, live events streamed back, server-side
-auto-deploy, artifacts downloaded into `--out` in the standard local
-layout. Consequences for automation:
+A flagless `rote compile` compiles locally to the `skill` runtime whether
+or not the machine has a rote-cloud login (`rote login`; credential at
+`~/.local/share/rote/cloud.json`). With a login, the compilation **runs on
+rote cloud** when something asks for it: `--cloud`, `--runtime
+cloudflare`, or `runtime: cloudflare` / `deploy: rote-cloud` in env or
+config. Then the skill bundle is synced up (sha-diffed), the agent runs
+server-side, events stream back, the server auto-deploys, and the
+artifacts download into `--out` in the standard local layout.
+Consequences for automation:
 
-- Pass `--local` (or `--runtime <x>` / `--no-deploy`, or set a config
-  opt-out) for deterministic on-machine behavior regardless of login
-  state; pass `--cloud` to require the server (it errors logged-out
-  rather than silently falling back).
+- Pass `--local` (or `--no-deploy`, or `deploy: none`) to keep a cloudflare
+  compile on this machine; pass `--cloud` to require the server (it errors
+  logged-out rather than silently falling back).
 - Local-only flags (`--agent`, `--backend`, `--baseline`,
   `--baseline-input`, `--yes`, `--no-eval`) are rejected in cloud mode
   with a pointer at `--local` — add it if you need them.
 - An unchanged skill with `--update` in cloud mode exits 0 with "no
   changes" and no agent run (and no upload).
-- On the *local* path while logged in, the previous behavior holds:
-  default `cloudflare` emit + auto-deploy of the emitted app; a deploy
-  failure exits 1 but the local artifacts are complete — retry with
-  `rote deploy <out-dir> --target rote-cloud`, don't re-compile.
-- Logged out, nothing changes: local `dbos` default, plus a one-line
-  stderr hint. There is never an interactive prompt on this path.
+- A local cloudflare compile while logged in auto-deploys the emitted app;
+  a deploy failure exits 1 but the local artifacts are complete — retry
+  with `rote deploy <out-dir> --target rote-cloud`, don't re-compile.
+- `deploy: rote-cloud` with no runtime set makes `cloudflare` the default,
+  and logged out it exits 2 before any agent runs. There is never an
+  interactive prompt on this path.
 - `rote whoami --json` → `{url, user, tenant}` (exit 1 when not logged
   in or the credential is rejected) is the cheap way to probe the state.
 

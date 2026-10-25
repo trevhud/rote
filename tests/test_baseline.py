@@ -774,6 +774,8 @@ def test_compile_baseline_runs_and_reports(
         [
             "compile",
             str(skill),
+            "--runtime",
+            "dbos",
             "--out",
             str(out),
             "--no-eval",
@@ -800,7 +802,9 @@ def test_compile_without_baseline_prints_nudge(
     (skill / "SKILL.md").write_text("---\nname: t\n---\n")
     _install_mock_compiler(monkeypatch)
 
-    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out"), "--no-eval"])
+    rc = cli_main(
+        ["compile", str(skill), "--runtime", "dbos", "--out", str(tmp_path / "out"), "--no-eval"]
+    )
     assert rc == 0
     assert "--baseline" in capsys.readouterr().err
 
@@ -914,6 +918,8 @@ def test_compile_baseline_cross_check_flags_unbound_tool(
         [
             "compile",
             str(skill),
+            "--runtime",
+            "dbos",
             "--out",
             str(tmp_path / "out"),
             "--no-eval",
@@ -962,7 +968,9 @@ def test_compile_cross_checks_prior_baseline_artifacts(
 
     # Step 2: compile later, same out dir, no --baseline.
     _install_mock_compiler(monkeypatch)
-    rc = cli_main(["compile", str(skill), "--out", str(out), "--no-eval", "--json"])
+    rc = cli_main(
+        ["compile", str(skill), "--runtime", "dbos", "--out", str(out), "--no-eval", "--json"]
+    )
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["mcp_cross_check"]["observed_only"][0]["server"] == "gmail"
@@ -1022,6 +1030,8 @@ def test_compile_enriches_contracts_from_baseline_observations(
         [
             "compile",
             str(skill),
+            "--runtime",
+            "dbos",
             "--out",
             str(out),
             "--no-eval",
@@ -1192,7 +1202,18 @@ def test_compile_reports_generated_tests(
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out"), "--no-eval", "--json"])
+    rc = cli_main(
+        [
+            "compile",
+            str(skill),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "out"),
+            "--no-eval",
+            "--json",
+        ]
+    )
     assert rc == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1267,7 +1288,7 @@ def test_compile_types_a_wrapped_result_as_the_step_receives_it(
         write_result={"ok": True},
     )
     out = tmp_path / "out"
-    argv = ["compile", str(skill), "--out", str(out), "--no-eval", "--json"]
+    argv = ["compile", str(skill), "--runtime", "dbos", "--out", str(out), "--no-eval", "--json"]
     assert cli_main([*argv, "--baseline", "--baseline-input", str(input_file)]) == 0
     payload = json.loads(capsys.readouterr().out)
     from rote.ir import load_pipeline
