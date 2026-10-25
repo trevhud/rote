@@ -5888,8 +5888,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Which registered MCP servers rote sends a read-only tools/list to before "
             "the agent runs, to ground tool argument names in each tool's own schema. "
-            "named (default): only servers whose registered name appears in the skill's "
-            "text (google_drive matches 'Google Drive'). all: every registered server, "
+            "named (default): servers whose registered name appears in the skill's "
+            "text (google_drive matches 'Google Drive'), plus servers you logged in to "
+            "when the skill calls one of their tools. all: every registered server, "
             "with its stored credentials. none: no server. --no-mcp implies none. Works "
             "on every compiler driver."
         ),

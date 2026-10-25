@@ -169,7 +169,9 @@ def test_real_vendor_credentials_are_invisible_to_a_test() -> None:
         )
 
 
-def test_scrub_path_mirrors_a_shared_bin_dir_without_the_clis(tmp_path: Path) -> None:
+def test_scrub_path_mirrors_a_shared_bin_dir_without_the_clis(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
     """A dir holding `claude` beside other tools keeps the other tools.
 
     On the maintainer's machine `~/.local/bin` holds `claude` and `codex`
@@ -186,7 +188,9 @@ def test_scrub_path_mirrors_a_shared_bin_dir_without_the_clis(tmp_path: Path) ->
     plain.mkdir()
 
     path = os.pathsep.join([str(shared), str(plain), str(shared)])
-    scrubbed = _inference_guard.scrub_path(path, tmp_path / "mirrors")
+    scrubbed = _inference_guard.scrub_path(path, tmp_path / _inference_guard._MIRRORS)
+    # The mirrors are read-only, which pytest's tmp_path cleanup cannot remove.
+    request.addfinalizer(lambda: _inference_guard.release_mirrors(tmp_path))
 
     entries = scrubbed.split(os.pathsep)
     assert entries[1] == str(plain)

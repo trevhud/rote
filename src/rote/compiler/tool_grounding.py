@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -184,6 +184,40 @@ def servers_to_contact(
     table = frozenset(tool_table_servers)
     found = {n: _mention(n, skill_text, table) for n in names}
     return {n: why for n, why in found.items() if why is not None}
+
+
+def logged_in_servers(registered: Mapping[str, Any]) -> list[str]:
+    """The registered servers the user has logged in to (``rote mcp login``).
+
+    A login is the user's own approval of that server, so a compile may
+    send it a read-only ``tools/list`` even when the skill never names it
+    (Atlassian's skills say "Jira" and "Confluence", never ``atlassian``).
+    What it lists is kept only for the tools the skill calls
+    (:func:`servers_whose_tools_the_skill_calls`)."""
+    from rote.mcp.tokens import auth_status, read_token_file
+
+    return sorted(
+        name
+        for name, config in registered.items()
+        if auth_status(config, read_token_file(name)) in ("authenticated", "expired (refreshable)")
+    )
+
+
+def servers_whose_tools_the_skill_calls(schemas: ToolSchemas, skill_text: str) -> dict[str, str]:
+    """``{server: why}`` for each listed server one of whose tools the skill
+    calls, as a code span (`` `getJiraIssue` ``) or a call (``getJiraIssue(``).
+
+    The tool name is the server's own word, so a match is evidence the
+    skill uses that server, where a product name in prose is not."""
+    found: dict[str, str] = {}
+    for server, tool in sorted(schemas):
+        if server in found:
+            continue
+        pattern = rf"`{re.escape(tool)}`|(?<![\w.]){re.escape(tool)}\s*\("
+        m = re.search(pattern, skill_text)
+        if m is not None:
+            found[server] = f"the skill calls its tool {m.group(0).strip()!r}"
+    return found
 
 
 #: A server the skill names AS a server: `` `deepwiki` MCP server ``,

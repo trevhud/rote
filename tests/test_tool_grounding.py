@@ -621,6 +621,134 @@ def test_the_compiler_lists_only_the_servers_its_mode_allows(
     assert not (tmp_path / "out" / GROUNDING_DIRNAME).exists()
 
 
+JIRA = ToolSchema(
+    "atlassian",
+    "getJiraIssue",
+    {
+        "type": "object",
+        "properties": {"issueIdOrKey": {"type": "string"}},
+        "required": ["issueIdOrKey"],
+    },
+    "tools/list on the registered 'atlassian'",
+    True,
+)
+
+
+def _logged_in_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill_text: str, *, mode: str = "named"
+) -> tuple[list[list[str]], _Driver]:
+    """A compile with ``atlassian`` logged in but never named, and
+    ``work_jira`` registered with no login; discovery answers with one
+    tool for each."""
+    from rote.compiler import tool_grounding
+    from rote.mcp.tokens import write_token_file
+
+    calls: list[list[str]] = []
+    work = ToolSchema("work_jira", "getJiraIssue", SEARCH, "tools/list", True)
+
+    async def _discover(servers, on_skip=None, timeout=0):  # noqa: ANN001, ANN202
+        calls.append(sorted(servers))
+        listed = {("atlassian", "getJiraIssue"): JIRA, ("work_jira", "getJiraIssue"): work}
+        return {k: v for k, v in listed.items() if k[0] in servers}
+
+    url = "https://mcp.atlassian.example/v1/mcp"
+    registry = tmp_path / "mcp.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "servers": {
+                    "atlassian": {"url": url},
+                    "work_jira": {"url": "http://127.0.0.1:9/mcp"},
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
+    write_token_file("atlassian", {"server_url": url, "tokens": {"access_token": "t"}})
+    monkeypatch.setattr(tool_grounding, "discover", _discover)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(skill_text)
+    driver = _Driver()
+    compiler = Compiler(
+        system1=False, compiler_skill_dir=tmp_path, trust_skill=True, tool_discovery=mode
+    )  # type: ignore[arg-type]
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+    asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    return calls, driver
+
+
+def test_a_logged_in_server_whose_tool_the_skill_calls_grounds_the_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atlassian's own skills say "Jira" and call getJiraIssue(...), never
+    naming a server: the login plus the tool name is the evidence."""
+    calls, driver = _logged_in_compile(
+        tmp_path, monkeypatch, "# s\n\nFetch it with getJiraIssue(cloudId, key) from Jira.\n"
+    )
+    # The logged-in server is listed; the one with no login is not contacted.
+    assert calls == [["atlassian"]]
+    assert driver.saw_schemas
+    assert "`issueIdOrKey` (string, required)" in (driver.instructions or "")
+
+
+def test_a_logged_in_server_whose_tools_the_skill_never_calls_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls, driver = _logged_in_compile(
+        tmp_path, monkeypatch, "# s\n\nSummarize the Jira board for the team.\n"
+    )
+    assert calls == [["atlassian"]]
+    assert not driver.saw_schemas
+    assert "TOOL CONTRACTS" not in (driver.instructions or "")
+
+
+def test_only_named_discovery_lists_logged_in_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls, _ = _logged_in_compile(
+        tmp_path, monkeypatch, "# s\n\ngetJiraIssue(cloudId, key)\n", mode="none"
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "called"),
+    [
+        ("Run `getJiraIssue` on each key.", True),
+        ("getJiraIssue(cloudId, key)", True),
+        ("getJiraIssue (cloudId, key)", True),
+        ("Look up the issue in Jira.", False),
+        ("Use getJiraIssueComments(key) instead.", False),
+        ("client.getJiraIssue(key)", False),
+        ("getJiraIssue without parentheses in prose", False),
+    ],
+)
+def test_a_tool_counts_as_called_only_as_a_code_span_or_a_call(text: str, called: bool) -> None:
+    from rote.compiler.tool_grounding import servers_whose_tools_the_skill_calls
+
+    found = servers_whose_tools_the_skill_calls({("atlassian", "getJiraIssue"): JIRA}, text)
+    assert ("atlassian" in found) is called
+
+
+def test_logged_in_means_a_token_for_the_endpoint_the_name_points_at(tmp_path: Path) -> None:
+    from rote.compiler.tool_grounding import logged_in_servers
+    from rote.mcp.registry import McpServerConfig
+    from rote.mcp.tokens import write_token_file
+
+    url = "https://mcp.example/mcp"
+    write_token_file("fresh", {"server_url": url, "tokens": {"access_token": "t"}})
+    write_token_file(
+        "moved", {"server_url": "https://old.example/mcp", "tokens": {"access_token": "t"}}
+    )
+    write_token_file("registered_only", {"server_url": url, "tokens": {}})
+    configs = {
+        name: McpServerConfig(url=url) for name in ("fresh", "moved", "registered_only", "never")
+    }
+    assert logged_in_servers(configs) == ["fresh"]
+
+
 def test_no_mcp_turns_discovery_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from rote.cli import main as cli_main
     from rote.compiler import CompilerError
