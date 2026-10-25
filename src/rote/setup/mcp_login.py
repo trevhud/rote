@@ -42,7 +42,8 @@ def no_wait_actions(
     actions = [
         Action(
             id=f"start-login-{server}",
-            title=f"Start an OAuth login for {server!r} that waits in the background",
+            title=f"Log in to {server}: a browser page for you to approve, waited on for up "
+            f"to {minutes} min",
             effects=(
                 Contact(
                     host=host,

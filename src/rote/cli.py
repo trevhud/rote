@@ -5535,9 +5535,11 @@ def _add_setup_parser(subparsers: Any) -> None:
             "then rote try on it (compile it, install it, run the original and the compiled "
             "skill on the same input and compare). Each step is a plan you confirm; the paid "
             "ones show time and cost first. Interrupted? Run rote setup again: finished steps "
-            "are skipped. Nobody at the terminal (an agent): each question and each consent "
+            "are skipped, and the answers you gave as flags are remembered (--reset forgets "
+            "them). Nobody at the terminal (an agent): each question and each consent "
             "stops with one action_required JSON object saying what to ask, and "
-            f"--approve <step> carries the user's yes for that step only. Steps: {steps}."
+            f"--approve <step>=<code> carries the user's yes for that plan only, once. "
+            f"Steps: {steps}."
         ),
     )
     from rote.clients import SOURCES as _CLIENT_SOURCES
@@ -5610,14 +5612,19 @@ def _add_setup_parser(subparsers: Any) -> None:
         help="where rote try's work goes (default: ./rote-try-<skill>)",
     )
     setup_p.add_argument(
-        "--trials", type=int, default=2, help="paired trials for the comparison (default 2)"
+        "--trials", type=int, default=None, help="paired trials for the comparison (default 2)"
+    )
+    setup_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="forget the answers and the skill earlier runs saved, and start over",
     )
     setup_p.add_argument(
         "--approve",
         action="append",
         default=None,
-        metavar="STEP",
-        help="apply STEP's plan without asking (one step; repeatable)",
+        metavar="STEP=CODE",
+        help="apply the plan whose code a stop printed for STEP, once (repeatable)",
     )
     setup_p.add_argument(
         "--skip",
@@ -7153,6 +7160,24 @@ def _resolve_retired_command(argv: list[str]) -> list[str]:
     return argv
 
 
+#: Bare ``rote`` before anything is set up: the first line is the next step.
+FIRST_RUN_BANNER = (
+    "New to rote? Run: rote setup",
+    "  It imports your MCP servers, compiles one of your skills, and shows the compiled",
+    "  skill gives the same answer. It asks before each step and shows the cost first.",
+    f"rote {__version__}. Every command: rote --help",
+)
+
+
+def _first_run() -> bool:
+    """Nothing set up yet: no user config, no MCP registry, no ``rote setup`` state."""
+    from rote.config import user_config_path
+    from rote.mcp.registry import registry_path
+    from rote.setup.first_run import state_path
+
+    return not any(p.exists() for p in (user_config_path(), registry_path(), state_path()))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
     if raw[:1] == ["bench"]:
@@ -7170,6 +7195,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.raw_argv = raw
 
     if not getattr(args, "command", None):
+        if _first_run():
+            for line in FIRST_RUN_BANNER:
+                print(line)
+            return 0
         # No subcommand — print a helpful banner and usage.
         print(f"rote {__version__} — compile fuzzy AI skills into deterministic workflows")
         print()

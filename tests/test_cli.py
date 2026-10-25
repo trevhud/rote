@@ -30,11 +30,25 @@ BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipe
 # ───────── In-process tests ─────────
 
 
-def test_no_args_prints_help_and_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+def test_no_args_on_a_first_run_points_to_rote_setup(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = cli_main([])
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0
+    assert lines[0] == "New to rote? Run: rote setup"
+    assert len(lines) <= 5  # a banner, not the whole help
+
+
+def test_no_args_once_set_up_prints_help_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from rote.config import user_config_path
+
+    user_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_config_path().write_text("runtime: dbos\n")
     rc = cli_main([])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "rote" in out
+    assert "rote setup" not in out.splitlines()[0]
     assert "compile" in out  # subcommand should be in help
     assert "emit" in out
 

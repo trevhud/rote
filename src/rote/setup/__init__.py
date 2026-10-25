@@ -21,7 +21,7 @@ which builds the same Step and calls :func:`run_steps` with just it.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -84,7 +84,7 @@ def run_steps(
     prompter: Prompter,
     *,
     granted: Collection[str] = (),
-    yes: bool | None = None,
+    yes: bool | Callable[[Step, Plan], bool] | None = None,
     first: int = 1,
     total: int | None = None,
 ) -> list[StepReport]:
@@ -94,13 +94,14 @@ def run_steps(
     only in the sense that every finished step is already applied and its
     status will read ``done`` on the next run.
 
-    ``yes`` approves the plans (default: ``ctx.mode.yes``); ``rote setup``
-    passes it per step, since an agent's consent covers one plan. ``first``
+    ``yes`` approves the plans (default: ``ctx.mode.yes``), or decides per
+    plan: ``rote setup`` passes a function, since an agent's consent covers
+    one plan, the one the user saw, and nothing else. ``first``
     and ``total`` number the steps when the caller runs a longer list a
     piece at a time."""
     reports: list[StepReport] = []
     total = len(steps) + first - 1 if total is None else total
-    approve = ctx.mode.yes if yes is None else yes
+    approve: bool | Callable[[Step, Plan], bool] = ctx.mode.yes if yes is None else yes
     for index, step in enumerate(steps, start=first):
         ctx.out.say(f"Step {index}/{total}  {step.title}", style="bold")
         status = step.status(ctx)
@@ -110,7 +111,8 @@ def run_steps(
             continue
         plan = step.plan(ctx, prompter)
         ctx.out.plan(plan)
-        if not confirm_plan(plan, prompter, yes=approve, granted=granted):
+        approved = approve(step, plan) if callable(approve) else approve
+        if not confirm_plan(plan, prompter, yes=approved, granted=granted):
             reports.append(StepReport(step.id, "declined", "not applied", plan))
             break
         outcomes = tuple(apply_plan(plan))

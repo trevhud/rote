@@ -240,8 +240,8 @@ def run_tty(world: World) -> tuple[int, str]:
         (r"Log in to which servers", (ENTER,), "both (the default)"),
         (r"Apply this plan\?", ("y",), "yes"),
         (r"Which skill should rote compile and compare\?", (ENTER,), "the recommended one"),
-        (r"deepwiki \(127\.0\.0\.1\): both skills call it live", ("y",), "yes"),
-        (r"mslearn \(127\.0\.0\.1\): both skills call it live", ("y",), "yes"),
+        (r"Let rote call any tool on deepwiki", ("y",), "yes"),
+        (r"Let rote call any tool on mslearn", ("y",), "yes"),
         (r"Apply this plan\?", ("y",), "yes"),
         (r"Plan: rote try docs-digest: compile[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: install[\s\S]*Apply this plan\?", ("y",), "yes"),
@@ -266,40 +266,42 @@ def run_tty(world: World) -> tuple[int, str]:
 
 
 class User:
-    """What the person tells the agent, for each thing rote asks."""
+    """What the person tells the agent, for each thing rote asks, as the
+    ``next`` command the agent then runs (its placeholder filled in)."""
 
-    def __init__(self, world: World) -> None:
-        self.world = world
-
-    def answer(self, stop: dict[str, Any]) -> tuple[str, list[str]]:
+    def answer(self, stop: dict[str, Any]) -> tuple[str, str]:
         reason = stop["reason"]
+        command: str = stop["next"][0]["command"]
         if reason == "missing_answer":
             flag = stop["missing"][0]
             if flag == "--skill":
-                mine = [s for s in stop["skills"] if not s["demo"]]
-                return f"the first of mine: {mine[0]['name']}", ["--skill", mine[0]["path"]]
-            if flag in ("--only", "--login"):
-                return "all of them", [flag, ",".join(stop["choices"])]
-            if flag.startswith("--read-only"):
-                return "yes, it only reads", flag.split()
-            raise RuntimeError(f"the scripted user has no answer for {flag}")
+                mine = next(s for s in stop["skills"] if not s["demo"])
+                said, value = f"mine, {mine['name']}", mine["key"]
+            elif flag in ("--only", "--login"):
+                said, value = "all of them", ",".join(stop["choices"])
+            elif flag.startswith("--read-only"):
+                return "yes, it only reads", command
+            else:
+                raise RuntimeError(f"the scripted user has no answer for {flag}")
+            return said, re.sub(r"<[^>]*>$", value, command)
         if reason == "confirmation_required":
-            return "yes", stop["next"][0]["command"].split()[len(self.argv) + 1 :]
+            return "yes", command
         raise RuntimeError(f"the scripted user cannot answer {reason}")
-
-    argv: list[str] = []
 
 
 def run_agent(world: World) -> tuple[int, str]:
     env = {**world.env, "CLAUDE_CODE_CHILD_SESSION": "1"}
-    argv = ["setup", "--agent-mode", "yes", "--json"]
-    user = User(world)
+    command = "rote setup --agent-mode yes --json"
+    user = User()
     transcript: list[str] = []
     for _round in range(25):
-        user.argv = argv
-        transcript.append("$ rote " + " ".join(argv))
+        transcript.append(f"$ {command}")
         proc = subprocess.run(
-            world.command(*argv), env=env, cwd=world.work, capture_output=True, text=True
+            world.command(*command.split()[1:]),
+            env=env,
+            cwd=world.work,
+            capture_output=True,
+            text=True,
         )
         stop = json.loads(proc.stdout)
         if proc.returncode != 2:
@@ -313,19 +315,18 @@ def run_agent(world: World) -> tuple[int, str]:
             f"  rote asks ({stop['reason']}, step {stop['step']['id']}): {stop['ask']}"
         )
         if stop["reason"] == "person_required":
-            command = stop["next"][0]["command"]
-            transcript.append(f"  the user runs, in their own terminal: {command}")
-            term = Pty(world.command(*command.split()[1:]), world.env, world.work)
+            install = stop["next"][0]["command"]
+            transcript.append(f"  the user runs, in their own terminal: {install}")
+            term = Pty(world.command(*install.split()[1:]), world.env, world.work)
             term.expect(r"Apply this plan\?")
             term.send("y")
             term.expect(r"allow rule")
             term.send("n")
-            status = term.wait()
-            transcript.append(f"    (exit {status})")
+            transcript.append(f"    (exit {term.wait()})")
+            command = stop["next"][-1]["command"]
             continue
-        said, extra = user.answer(stop)
-        transcript.append(f"  user: {said}  ->  passes {' '.join(extra)}")
-        argv = [*argv, *extra]
+        said, command = user.answer(stop)
+        transcript.append(f"  user: {said}")
     raise RuntimeError("setup did not finish in 25 rounds:\n" + "\n".join(transcript))
 
 

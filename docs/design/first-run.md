@@ -666,7 +666,19 @@ numbered `Step i/6`, after one line naming the client rote runs under
   `$XDG_DATA_HOME/rote/setup.json`; in `rote.isolation.STATE_PATHS`), written
   by an Action in the skill step's plan: the skill, its input file, and the
   `rote try` work dir (`./rote-try-<skill>` where it was picked), so a re-run
-  from another directory resumes the same work.
+  from another directory resumes the same work. It also holds the answers
+  given as flags (`SetupFlags.answers`, merged back by `from_args`: a value
+  flag replaces, a list of yeses adds; consent is never saved) and, per step,
+  what the user was offered and passed on (`passed_on`: import candidate
+  keys, login names), so `next` is the run's mode plus the one new answer,
+  and a partial import or login is not offered again. Those two are written
+  outside any plan, as bookkeeping. `--reset` deletes the file.
+- **Skills are offered by short key**: the name, or `name@where` when two
+  share one (`docs-digest@demo`), so no `next` carries a path.
+- **`rote init`'s defaults are not a step.** Each one it sets (runtime,
+  deploy, driver, model) is one `rote try` pins, so setup says so in one line.
+  Bare `rote` with no user config, registry or setup state prints a short
+  banner whose first line is `rote setup`.
 - **The comparison calls only servers registered read-only**
   (`skill_ab.subject_for`). The skill step asks, per server the skill names
   (`servers_named`), whether it only reads (flag `--read-only <name>`,
@@ -689,9 +701,15 @@ numbered `Step i/6`, after one line naming the client rote runs under
 included, for the agent to put to its user), `step` (`id`, `title`, `index`,
 `total`), `steps` (what this run did so far), and what the step found
 (`servers`, `skills`). A missing answer adds `answer_with` (how to write it).
-A plan's consent is `--approve <step>`, never `--yes`: `--yes` approves every
-plan after it, so an agent's yes for the import would cover the compile.
-`next[0]` is the yes (`--approve <step>`, plus `--live` for a spend) and
+A plan's consent is `--approve <step>=<code>`, never `--yes`: `--yes` approves
+every plan after it, so an agent's yes for the import would cover the compile.
+The code (`plan_code`) hashes the plan's actions and effects (paths, hosts, the
+spend range), the picked skill, and how many approvals the step has used,
+counted in `setup.json` once its plan ran. So a replay of a used approval, a
+plan that changed, or another skill's plan has another code and stops again,
+and the stop shows the new one. A question only the user can answer (does a
+server only read?) stops even under `--yes`.
+`next[0]` is the yes (`--approve <step>=<code>`, plus `--live` for a spend) and
 `next[1]` the no (`--skip <step>`). `person_required` (the install relying on
 read-only servers) names the command the user runs in their own terminal,
 then setup again. `/rote:setup` (`plugin/skills/setup/SKILL.md`) tells the

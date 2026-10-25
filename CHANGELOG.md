@@ -22,10 +22,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   done (read from the registry, the token store, `rote try`'s files, and the
   pick in `$XDG_DATA_HOME/rote/setup.json`). Under an agent every question
   and consent is one `action_required` object with `ask` (what to put to
-  the user) and `next`. `--approve <step>` approves that step only, a paid
-  step also needs `--live`, and `--skip <step>` is the user's no. The
-  plugin skill relays it. `scripts/rehearse-setup` runs the whole flow in a
-  temp home, as an agent and on a pseudo-terminal, with no inference.
+  the user) and `next`. `--approve <step>=<code>` approves the plan the user
+  saw, once (a replay or a changed plan asks again), a paid step also needs
+  `--live`, and `--skip <step>` is the user's no. The
+  plugin skill relays it. Answers are remembered in `setup.json` (with
+  `--reset` to forget them), so `next` carries only the new answer and never
+  a path, and servers the user was offered and passed on are not offered
+  again. Bare `rote` on a machine with nothing set up prints a short banner
+  that points to `rote setup`. `scripts/rehearse-setup` runs the whole flow
+  in a temp home, as an agent and on a pseudo-terminal, with no inference.
 
 - **Judge passthrough: input data a judge returns unchanged is copied in
   code.** `signature_spec.passthrough: {<output field>: <input path>}`

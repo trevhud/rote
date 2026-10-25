@@ -37,7 +37,7 @@ spends any. Then wait for their answer.
 | `authorization_pending` | approve each `logins[].authorization_url` in their browser | once they say done: each `rote mcp login --complete` command in `next`, then the last `next` command |
 | `person_required` | run `next[0].command` in their own terminal (you cannot) | once they say done: the last `next` command |
 
-Run exactly the command `next` gives, which carries every earlier answer.
+Run exactly the command `next` gives. rote remembers earlier answers, so it carries only the new one.
 Never add a flag it does not name. An error (exit 1, `error`) names its fix:
 tell the user, and run `rote setup` again once it is fixed.
 

@@ -41,7 +41,7 @@ import io
 import os
 import re
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -924,8 +924,16 @@ class McpImportStep:
     title = "Import MCP servers from your AI clients"
     command = "rote mcp import"
 
-    def __init__(self, make_planner: Callable[[Prompter, Output], ImportPlanner]) -> None:
+    def __init__(
+        self,
+        make_planner: Callable[[Prompter, Output], ImportPlanner],
+        passed_on: Callable[[], Collection[str]] = frozenset,
+    ) -> None:
         self._make_planner = make_planner
+        #: :func:`candidate_key` of each server the user was offered and did
+        #: not pick (``rote setup`` remembers them), so a partial import is
+        #: not asked again on every run.
+        self._passed_on = passed_on
 
     def status(self, ctx: SetupContext) -> StepStatus:
         """Done when every server a client uses, with nothing to opt into and
@@ -949,9 +957,14 @@ class McpImportStep:
             and not is_work_host(c.host, domains)
             and _url_key(c) not in registered
         ]
+        passed_on = set(self._passed_on())
+        left = [c for c in missing if candidate_key(c) not in passed_on]
+        if left:
+            return StepStatus("pending", f"{len(left)} server(s) not in rote's registry yet")
+        detail = f"{len(registry.servers)} server(s) registered"
         if missing:
-            return StepStatus("pending", f"{len(missing)} server(s) not in rote's registry yet")
-        return StepStatus("done", f"{len(registry.servers)} server(s) registered")
+            detail += f"; {len(missing)} you did not pick (rote mcp import adds them)"
+        return StepStatus("done", detail)
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
         planned = self._make_planner(prompter, ctx.out).build()

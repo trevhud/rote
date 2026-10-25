@@ -401,6 +401,15 @@ def _read_only_registered(servers: Sequence[str]) -> dict[str, str]:
             found[server] = entry.url
         elif server in published and entry is None:
             found[server] = published[server]
+        elif entry is not None:
+            from rote.mcp.registry import registry_path
+
+            raise SkillAbError(
+                f"the pipeline reads {server}, which is registered but not read-only, and the "
+                "eval only calls servers registered read-only. If none of its tools can change "
+                f'anything, say so: rote setup --read-only {server}, or set "read_only": true '
+                f"on {server} in {registry_path()}"
+            )
         else:
             raise SkillAbError(
                 f"the pipeline reads {server}, and the eval only calls servers registered "

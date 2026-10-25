@@ -507,6 +507,15 @@ class EvalStep:
             f"compared: {', '.join(f.name for f in subject.fields)}",
             f"takes {_minutes(cost.seconds)}",
         ]
+        spent = s.spent()
+        if spent:
+            # First, so a resumed eval says what an interrupted one cost
+            # before it asks for the whole estimate again.
+            notes.insert(
+                0,
+                f"already spent here: ${spent:.3f} (the compile, and any earlier runs that "
+                "were stopped); a yes runs the whole comparison again, at the estimate above",
+            )
         return Plan(
             f"rote try {s.name}: the paired eval",
             (Action("eval", self.title, tuple(effects), lambda: self._run(subject)),),
@@ -771,7 +780,11 @@ def render(summary: Mapping[str, Any], *, name: str, next_steps: Sequence[str]) 
     return lines
 
 
-def next_steps(session: Session, summary: Mapping[str, Any]) -> list[str]:
+def next_steps(
+    session: Session, summary: Mapping[str, Any], *, command: str = "rote try"
+) -> list[str]:
+    """What to do with the result. ``command`` is the one that measures
+    again (``rote setup`` inside setup)."""
     s = session
     steps = []
     if summary.get("ok"):
@@ -785,7 +798,10 @@ def next_steps(session: Session, summary: Mapping[str, Any]) -> list[str]:
         )
     else:
         steps.append(f"read the trials' transcripts under {s.out / 'eval'}")
-    steps.append(f"measure again: delete {s.out / RESULT_FILE} and run rote try again")
+    steps.append(
+        f"measure again: delete {s.out / RESULT_FILE} and run {command} again (it asks before "
+        "it spends again)"
+    )
     return steps
 
 

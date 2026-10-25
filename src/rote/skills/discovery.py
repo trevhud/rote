@@ -339,9 +339,9 @@ def readiness_of(skill_dir: Path, registry: RegistryView, *, bundled: bool) -> R
         from rote.demo import DEMO_NAME
 
         what = "the demo rote try runs" if skill_dir.parent.name == DEMO_NAME else "bundled"
-        reason = f"{what}: runs precompiled, no login or tokens needed"
-        if servers and not missing and not logins:
-            reason += "; its servers are ready for the live run too"
+        # rote try compiles and compares it live, like any skill (a paid run).
+        # What sets it apart is its servers: public, read-only, no login.
+        reason = f"{what}: compiled and compared live, on public servers that need no login"
         return Readiness("bundled", reason, servers, nexts)
     if not servers:
         return Readiness("ready", "it names no MCP server", servers)

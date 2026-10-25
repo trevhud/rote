@@ -24,8 +24,9 @@ an Action in its plan.
 pipe), every question and every consent stops the run with one
 ``action_required`` object (exit 2) that says what to ask the user
 (``ask``) and the command that carries the answer (``next``). Consent is
-per step: ``--approve <step>`` approves that step's plan and no other, so
-an agent's yes for the import never covers the compile; a paid step needs
+per plan: ``--approve <step>=<code>`` approves the plan the user saw
+(:func:`plan_code`), once, so an agent's yes for the import never covers
+the compile, and a replay or a changed plan asks again; a paid step needs
 ``--live`` too, and a step that only a person may approve (``rote skill
 install`` relying on read-only servers) names the command the user runs in
 their own terminal. ``--skip <step>`` is the user's no.
@@ -35,9 +36,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -60,7 +62,7 @@ from rote.interact.report import (
     person_required,
 )
 from rote.setup import SetupContext, Step, StepReport, StepStatus, run_steps
-from rote.setup.try_skill import LIVE_FLAG, TryError
+from rote.setup.try_skill import DEFAULT_TRIALS, LIVE_FLAG, TryError
 
 if TYPE_CHECKING:
     from rote.interact.mode import Mode
@@ -80,6 +82,8 @@ STEP_IDS: tuple[str, ...] = ("mcp-import", "login", "skill", "compile", "install
 #: there: the later steps build on it.
 CONTINUES_WHEN_SKIPPED = frozenset({"mcp-import", "login"})
 APPROVE_FLAG = "--approve"
+#: How many of the user's own skills the skill step offers.
+OFFERED_SKILLS = 10
 SKIP_FLAG = "--skip"
 
 #: How to pass each answer, for the agent relaying a question.
@@ -108,11 +112,20 @@ def state_path() -> Path:
 
 @dataclass(frozen=True)
 class SetupState:
-    """The picked skill, its input, and where ``rote try``'s work for it goes."""
+    """What setup keeps between runs: the picked skill, its input and work
+    dir (written by the skill step's plan), the user's answers (so ``next``
+    stays short: a re-run reads them instead of carrying them on argv), and
+    what the user was offered and passed on, per step (so a partial import
+    or login is not asked again)."""
 
     skill: Path | None = None
     input: Path | None = None
     out: Path | None = None
+    answers: Mapping[str, Any] = field(default_factory=dict)
+    passed_on: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: How many plans of each step an approval has applied. Part of the next
+    #: approval's code, so a replayed ``--approve`` never applies twice.
+    approvals: Mapping[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +133,9 @@ class SetupState:
             "skill": None if self.skill is None else str(self.skill),
             "input": None if self.input is None else str(self.input),
             "out": None if self.out is None else str(self.out),
+            "answers": dict(self.answers),
+            "passed_on": {k: list(v) for k, v in self.passed_on.items()},
+            "approvals": dict(self.approvals),
         }
 
 
@@ -130,17 +146,41 @@ def read_state() -> SetupState:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        raise SetupError(
-            f"{path} does not parse ({e}). Fix: delete it and run rote setup"
-        ) from None
+        raise SetupError(f"{path} does not parse ({e}). Fix: rote setup --reset") from None
     if not isinstance(data, dict) or data.get("format") != STATE_FORMAT:
-        raise SetupError(f"{path} is not rote setup's. Fix: delete it and run rote setup")
+        raise SetupError(f"{path} is not rote setup's. Fix: rote setup --reset")
 
     def as_path(key: str) -> Path | None:
         value = data.get(key)
         return Path(value) if isinstance(value, str) and value else None
 
-    return SetupState(as_path("skill"), as_path("input"), as_path("out"))
+    answers = data.get("answers")
+    passed = data.get("passed_on")
+    approvals = data.get("approvals")
+    return SetupState(
+        as_path("skill"),
+        as_path("input"),
+        as_path("out"),
+        answers if isinstance(answers, dict) else {},
+        {
+            k: tuple(str(x) for x in v)
+            for k, v in (passed if isinstance(passed, dict) else {}).items()
+            if isinstance(v, list)
+        },
+        {
+            k: v
+            for k, v in (approvals if isinstance(approvals, dict) else {}).items()
+            if isinstance(v, int)
+        },
+    )
+
+
+def save_state(state: SetupState) -> None:
+    """Setup's own bookkeeping file (owner-only), outside any plan: it holds
+    only what the user answered and what setup did, never a decision."""
+    from rote.interact.plan import atomic_write_text
+
+    atomic_write_text(state_path(), json.dumps(state.to_dict(), indent=2) + "\n", file_mode=0o600)
 
 
 # ───────── The answers given as flags ─────────
@@ -160,43 +200,90 @@ class SetupFlags:
     read_only: tuple[str, ...] = ()
     out: str | None = None
     trials: int = 2
-    approve: frozenset[str] = frozenset()
+    #: ``--approve <step>=<code>``: the user's yes to the plan whose code it is.
+    approve: Mapping[str, str] = field(default_factory=dict)
     skip: frozenset[str] = frozenset()
     live: bool = False
     force: bool = False
 
     @classmethod
-    def from_args(cls, args: Any) -> SetupFlags:
+    def from_args(cls, args: Any, saved: Mapping[str, Any] | None = None) -> SetupFlags:
+        """The flags of this run over the answers saved by earlier ones: a
+        value flag given now wins, a list of yeses (``--read-only``,
+        ``--skip``, ...) adds to the saved one."""
         from rote.setup.mcp_import import split_names
+
+        saved = saved or {}
 
         def names(values: Sequence[str] | None) -> tuple[str, ...]:
             return split_names(values or [])
 
-        for flag, given in ((APPROVE_FLAG, args.approve), (SKIP_FLAG, args.skip)):
-            unknown = sorted(set(names(given)) - set(STEP_IDS))
-            if unknown:
+        def merged(key: str, given: Sequence[str] | None) -> tuple[str, ...]:
+            return tuple(dict.fromkeys((*saved.get(key, ()), *names(given))))
+
+        def latest(key: str, given: Any) -> Any:
+            return given if given is not None else saved.get(key)
+
+        approve: dict[str, str] = {}
+        for item in names(args.approve):
+            step, sep, code = item.partition("=")
+            if step not in STEP_IDS:
                 raise SetupError(
-                    f"{flag} {unknown[0]}: not a step. Fix: one of {', '.join(STEP_IDS)}"
+                    f"{APPROVE_FLAG} {item}: not a step. Fix: one of {', '.join(STEP_IDS)}"
                 )
-        if args.trials < 1:
-            raise SetupError(f"--trials must be at least 1, got {args.trials}")
+            if not sep or not code:
+                raise SetupError(
+                    f"{APPROVE_FLAG} {item}: an approval names the plan it approves "
+                    f"({APPROVE_FLAG} {step}=<code>). Fix: run rote setup without it, "
+                    "show the user the plan, and pass the code it prints"
+                )
+            approve[step] = code
+        unknown = sorted(set(names(args.skip)) - set(STEP_IDS))
+        if unknown:
+            raise SetupError(
+                f"{SKIP_FLAG} {unknown[0]}: not a step. Fix: one of {', '.join(STEP_IDS)}"
+            )
+        trials = latest("trials", args.trials) or DEFAULT_TRIALS
+        if trials < 1:
+            raise SetupError(f"--trials must be at least 1, got {trials}")
+        only = latest("only", names(args.only) if args.only else None)
+        login = latest("login", names(args.login) if args.login else None)
         return cls(
             from_client=args.from_client,
-            only=names(args.only) if args.only else None,
-            work_domains=names(args.work_domain),
-            allow_url_secret=names(args.allow_url_secret),
-            allow_untrusted=names(args.allow_untrusted),
-            login=names(args.login) if args.login else None,
-            skill=args.skill,
-            input=args.input,
-            read_only=names(args.read_only),
-            out=args.out,
-            trials=args.trials,
-            approve=frozenset(names(args.approve)),
-            skip=frozenset(names(args.skip)),
+            only=None if only is None else tuple(only),
+            work_domains=merged("work_domains", args.work_domain),
+            allow_url_secret=merged("allow_url_secret", args.allow_url_secret),
+            allow_untrusted=merged("allow_untrusted", args.allow_untrusted),
+            login=None if login is None else tuple(login),
+            skill=latest("skill", args.skill),
+            input=latest("input", args.input),
+            read_only=merged("read_only", args.read_only),
+            out=latest("out", args.out),
+            trials=trials,
+            approve=approve,
+            skip=frozenset(merged("skip", args.skip)),
             live=args.live,
             force=args.force,
         )
+
+    def answers(self) -> dict[str, Any]:
+        """What :meth:`from_args` reads back on the next run. Consent
+        (``--approve``, ``--live``, ``--force``) is never saved: it is for
+        the plan this run shows."""
+        values: dict[str, Any] = {
+            "only": None if self.only is None else list(self.only),
+            "work_domains": list(self.work_domains),
+            "allow_url_secret": list(self.allow_url_secret),
+            "allow_untrusted": list(self.allow_untrusted),
+            "login": None if self.login is None else list(self.login),
+            "skill": self.skill,
+            "input": self.input,
+            "read_only": list(self.read_only),
+            "out": self.out,
+            "trials": self.trials,
+            "skip": sorted(self.skip),
+        }
+        return {k: v for k, v in values.items() if v not in (None, [])}
 
     @property
     def granted(self) -> set[str]:
@@ -252,28 +339,37 @@ class LoginStep:
     work_domains: Callable[[], Sequence[str]]
     #: The blocking login for a person; injected by tests.
     login: Callable[[str], object] | None = None
+    #: Servers the user was offered a login for and did not pick, remembered.
+    passed_on: Callable[[], Collection[str]] = frozenset
     id: str = "login"
     title: str = "Log in to the servers that need it"
     command: str = "rote mcp login <name>"
     #: Filled while planning, for :func:`cmd_setup` to read after the apply.
     offered: list[NeedsLogin] = field(default_factory=list)
+    chosen: list[str] = field(default_factory=list)
     started: dict[str, list[Started]] = field(default_factory=dict)
     #: Servers whose ``--no-wait`` login is already waiting for the browser.
     waiting: list[Any] = field(default_factory=list)
 
     def status(self, ctx: SetupContext) -> StepStatus:
         pending = needs_login(self.work_domains())
-        if not pending:
-            return StepStatus("done", "every registered server can connect")
-        names = ", ".join(n.name for n in pending)
-        return StepStatus("pending", f"{len(pending)} not logged in: {names}")
+        passed = set(self.passed_on())
+        left = [n for n in pending if n.name not in passed]
+        if left:
+            names = ", ".join(n.name for n in left)
+            return StepStatus("pending", f"{len(left)} not logged in: {names}")
+        if pending:
+            names = ", ".join(n.name for n in pending)
+            return StepStatus("done", f"you chose not to log in to {names} (rote mcp login <name>)")
+        return StepStatus("done", "every registered server can connect")
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
         from rote.mcp.pending_login import live_for_server
         from rote.setup.mcp_import import login_action
         from rote.setup.mcp_login import no_wait_actions
 
-        self.offered = needs_login(self.work_domains())
+        passed = set(self.passed_on())
+        self.offered = [n for n in needs_login(self.work_domains()) if n.name not in passed]
         by_name = {n.name: n for n in self.offered}
         if self.flags.login is not None:
             unknown = [n for n in self.flags.login if n not in by_name]
@@ -296,6 +392,7 @@ class LoginStep:
             )
         actions: list[Action] = []
         self.waiting = []
+        self.chosen = list(chosen)
         for name in chosen:
             n = by_name[name]
             if prompter.interactive:
@@ -313,6 +410,24 @@ class LoginStep:
         notes += [f"{p.server}: a login is already waiting for the browser" for p in self.waiting]
         return Plan("Log in to MCP servers", tuple(actions), tuple(notes))
 
+    def ask(self, plan: Plan) -> str:
+        """The login plan as one question for an agent to put to its user."""
+        from rote.mcp.pending_login import PENDING_TTL_SECONDS
+
+        names = [
+            a.id.removeprefix("start-login-")
+            for a in plan.actions
+            if a.id.startswith("start-login-")
+        ]
+        names = names or [a.id.removeprefix("login-") for a in plan.actions]
+        listed = (
+            " and ".join(names) if len(names) <= 2 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        )
+        return (
+            f"Log in to {listed}? rote opens a browser page for each one for you to approve, "
+            f"and waits up to {PENDING_TTL_SECONDS // 60} min."
+        )
+
     def authorizations(self) -> list[Started]:
         """The logins that now wait for the user's browser."""
         return [s for started in self.started.values() for s in started if s.kind == "authorize"]
@@ -329,9 +444,13 @@ class Offered:
     reason: str
     where: str
     bundled: bool
+    #: What ``--skill`` takes for it: the name, or ``name@where`` when two
+    #: offered skills share a name. Short, so ``next`` carries no path.
+    key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "key": self.key,
             "path": str(self.path),
             "name": self.name,
             "reason": self.reason,
@@ -360,7 +479,18 @@ def offered_skills(limit: int) -> list[Offered]:
         (demos if bundled else mine).append(
             Offered(s.path, s.name, s.readiness.reason, where, bundled)
         )
-    return [*mine[:limit], *demos[:1]]
+    offered = [*mine[:limit], *demos[:1]]
+    counts: dict[str, int] = {}
+    for o in offered:
+        counts[o.name] = counts.get(o.name, 0) + 1
+
+    def key(o: Offered) -> str:
+        if counts[o.name] == 1:
+            return o.name
+        where = "demo" if o.bundled else re.sub(r"[^a-z0-9]+", "-", o.where.lower()).strip("-")
+        return f"{o.name}@{where}"
+
+    return [replace(o, key=key(o)) for o in offered]
 
 
 def _registry() -> tuple[Any, Any]:
@@ -387,6 +517,9 @@ class SkillStep:
 
         if self.flags.skill is None:
             return None
+        keyed = [o.path for o in offered_skills(OFFERED_SKILLS) if o.key == self.flags.skill]
+        if keyed:
+            return keyed[0]
         try:
             return choose_skill(self.flags.skill, prompter)
         except TryError as e:
@@ -411,10 +544,10 @@ class SkillStep:
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
         from rote.adapters.skill import read_identity
         from rote.compiler.tool_grounding import servers_named
-        from rote.setup.try_skill import OFFERED, default_out, input_path, load_task
+        from rote.setup.try_skill import default_out, input_path, load_task
 
         skill_dir = self._flag_skill(prompter)
-        self.offered = offered_skills(OFFERED)
+        self.offered = offered_skills(OFFERED_SKILLS)
         if skill_dir is None:
             if not self.offered:
                 raise SetupError("no skills found. Fix: rote setup --skill <dir with a SKILL.md>")
@@ -425,17 +558,14 @@ class SkillStep:
                 else f"{best.reason}"
             )
             ctx.out.say(f"  Recommended: {best.name} ({best.where}): {why}")
-            choices = [
-                Choice(str(o.path), o.name, f"{o.where}  ·  {o.reason}") for o in self.offered
-            ]
-            skill_dir = Path(
-                prompter.select(
-                    "Which skill should rote compile and compare?",
-                    choices,
-                    flag="--skill",
-                    default=choices[0].value,
-                )
+            choices = [Choice(o.key, o.name, f"{o.where}  ·  {o.reason}") for o in self.offered]
+            picked = prompter.select(
+                "Which skill should rote compile and compare?",
+                choices,
+                flag="--skill",
+                default=choices[0].value,
             )
+            skill_dir = next(o.path for o in self.offered if o.key == picked)
         skill_dir = skill_dir.resolve()
         name = read_identity(skill_dir).name
         task_path = input_path(skill_dir, self.flags.input, prompter)
@@ -458,12 +588,7 @@ class SkillStep:
             from urllib.parse import urlsplit
 
             host = urlsplit(entry.url).hostname or entry.url
-            if server in self.flags.read_only or prompter.confirm(
-                f"{server} ({host}): both skills call it live for the comparison. Does every "
-                "tool on it only read? (a server marked read-only has every tool callable)",
-                flag=f"--read-only {server}",
-                default=False,
-            ):
+            if server in self.flags.read_only or self._vouch(prompter, server, host):
                 marks.append(server)
             else:
                 notes.append(
@@ -480,7 +605,7 @@ class SkillStep:
         out = state.out if state.skill == skill_dir and state.out else default_out(name)
         if self.flags.out is not None:
             out = Path(self.flags.out).resolve()
-        new = SetupState(skill_dir, task_path, out)
+        new = replace(state, skill=skill_dir, input=task_path, out=out)
         state_read = snapshot(state_path())
         actions = [
             write_file_action(
@@ -491,12 +616,31 @@ class SkillStep:
                 summary=f"skill {name}, its input, and the work dir {out}",
                 replaces=False,
                 file_mode=0o600,
-                command=f"rote setup --skill {skill_dir}",
+                command=None,
             )
         ]
         if marks:
             actions.append(self._mark_read_only(read, registry, marks))
         return Plan(f"Pick {name}", tuple(actions), tuple(notes))
+
+    @staticmethod
+    def _vouch(prompter: Prompter, server: str, host: str) -> bool:
+        """The user's word that ``server`` only reads. A person is asked
+        (default no). Nobody at the terminal stops for it, ``--yes`` too: a
+        default is not anyone's word."""
+        question = (
+            f"Let rote call any tool on {server} ({host}) without asking? Say yes only if "
+            "none of its tools can change anything."
+        )
+        flag = f"--read-only {server}"
+        if not prompter.interactive:
+            raise PromptRequired(
+                question,
+                flag,
+                "only the user can vouch for a server, so --yes does not answer this",
+                takes_value=False,
+            )
+        return prompter.confirm(question, flag=flag, default=False)
 
     @staticmethod
     def _mark_read_only(read: Any, registry: Any, servers: Sequence[str]) -> Action:
@@ -549,6 +693,8 @@ class Runner:
     reports: list[StepReport] = field(default_factory=list)
     current: Step | None = None
     index: int = 0
+    #: Steps whose ``--approve`` code was taken this run.
+    used: set[str] = field(default_factory=set)
 
     def one(self, step: Step, index: int) -> Stopped | None:
         self.current, self.index = step, index
@@ -563,11 +709,15 @@ class Runner:
             self.ctx,
             self.prompter,
             granted=self.flags.granted,
-            yes=self.mode.yes or step.id in self.flags.approve,
+            yes=self._approved,
             first=index,
             total=total,
         )
         self.reports.append(report)
+        if report.state in ("applied", "failed"):
+            self._count_used(step)
+        if report.state in ("applied", "declined"):
+            self._remember_passed_on(step)
         for outcome in report.outcomes:
             if outcome.status != "done":
                 self.out.say(f"  {outcome.status}: {outcome.action_id} ({outcome.error})")
@@ -583,6 +733,54 @@ class Runner:
             if pending or step.waiting:
                 raise AuthorizationPending(pending, step.waiting)
         return None
+
+    def _approved(self, step: Step, plan: Plan) -> bool:
+        """``--yes``, or an ``--approve`` whose code is this plan's. A used
+        approval is counted, which changes the next plan's code."""
+        if self.mode.yes:
+            return True
+        given = self.flags.approve.get(step.id)
+        if given is None or given != plan_code(step.id, plan):
+            return False
+        if any(f not in self.flags.granted for f in plan.needed_flags()):
+            # Not applied yet (a spend's flag is missing): the approval stays
+            # unused, and the stop asks for it again with the same code.
+            return False
+        # Counted once the plan ran (one() does it): counting here would
+        # change the state file under a plan that writes it.
+        self.used.add(step.id)
+        return True
+
+    def _count_used(self, step: Step) -> None:
+        if step.id not in self.used:
+            return
+        state = read_state()
+        used = dict(state.approvals)
+        used[step.id] = used.get(step.id, 0) + 1
+        save_state(replace(state, approvals=used))
+
+    def _remember_passed_on(self, step: Step) -> None:
+        """What the user saw at this step and did not take, so the next run
+        does not offer it again."""
+        from rote.mcp import load_registry
+        from rote.mcp._runtime_helper import normalize_server_url
+        from rote.setup.mcp_import import _url_key, candidate_key
+
+        if step.id == "mcp-import" and self.planners:
+            # Offered and not registered now: what the user passed on. A
+            # picked server is not in it, so removing it later offers it again.
+            registered = {normalize_server_url(c.url) for c in load_registry().servers.values()}
+            seen = [
+                candidate_key(c) for c in self.planners[-1].primary if _url_key(c) not in registered
+            ]
+        elif isinstance(step, LoginStep):
+            seen = [n.name for n in step.offered if n.name not in step.chosen]
+        else:
+            return
+        state = read_state()
+        passed = dict(state.passed_on)
+        passed[step.id] = tuple(dict.fromkeys((*passed.get(step.id, ()), *seen)))
+        save_state(replace(state, passed_on=passed))
 
     # ── the stops, as one JSON object each ──
 
@@ -612,11 +810,8 @@ class Runner:
         payload.update(self._context())
         labels = [str(c) for c in error.choices]
         if error.flag == "--skill" and "skills" in payload:
-            by_path = {s["path"]: s for s in payload["skills"]}
-            labels = [
-                f"{by_path[c]['name']} ({by_path[c]['where']})" if c in by_path else c
-                for c in error.choices
-            ]
+            by_key = {s["key"]: s for s in payload["skills"]}
+            labels = [f"{c} ({by_key[c]['where']})" if c in by_key else c for c in error.choices]
         choices = f" Choices: {'; '.join(labels)}." if labels else ""
         payload["ask"] = f"{error.question.rstrip()}{choices}"
         how = ANSWER_FORMAT.get(error.flag)
@@ -627,9 +822,11 @@ class Runner:
     def confirm(self, error: ConfirmationRequired) -> dict[str, Any]:
         step = self.current
         assert step is not None
-        # --yes would approve every later plan too; --approve <step> is this one.
+        # --yes would approve every later plan too. --approve <step>=<code>
+        # approves this plan, as shown, once.
         needs = [f for f in error.missing if f != YES_FLAG]
-        mine = [f"{APPROVE_FLAG} {step.id}"] if YES_FLAG in error.missing else []
+        code = plan_code(step.id, error.plan)
+        mine = [f"{APPROVE_FLAG} {step.id}={code}"] if YES_FLAG in error.missing else []
         approve = [w for f in (*mine, *needs) for w in f.split()]
         payload = action_required(error, self.argv)
         payload["missing"] = [*mine, *needs]
@@ -637,7 +834,10 @@ class Runner:
             f"{error.plan.title}: not applied. Ask the user; pass {' '.join(approve)} "
             "if they say yes (nothing was written, contacted or spent)"
         )
-        payload["ask"] = plain_plan(error.plan)
+        payload["ask"] = (
+            step.ask(error.plan) if isinstance(step, LoginStep) else plain_plan(error.plan)
+        )
+        payload["approval"] = {"step": step.id, "code": code}
         payload["next"] = [
             {"command": next_command(self.argv, approve), "when": "the user says yes"},
             {
@@ -702,6 +902,24 @@ class Runner:
         }
 
 
+def plan_code(step_id: str, plan: Plan) -> str:
+    """What ``--approve <step>=<code>`` must name: every action and effect of
+    the plan (paths, hosts, the spend range), the picked skill, and how many
+    approvals the step has used. A different plan, another skill or a replay
+    of a used approval has another code, so it stops to be asked again."""
+    import hashlib
+
+    state = read_state()
+    material = {
+        "step": step_id,
+        "plan": plan.to_dict(),
+        "skill": None if state.skill is None else str(state.skill),
+        "used": state.approvals.get(step_id, 0),
+    }
+    digest = hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode())
+    return digest.hexdigest()[:12]
+
+
 def plain_plan(plan: Plan) -> str:
     """The plan in two or three sentences, for an agent to put to its user:
     what each action does, the money and time, and the hosts it contacts.
@@ -711,7 +929,7 @@ def plain_plan(plan: Plan) -> str:
     did = "; ".join(a.title[0].lower() + a.title[1:] for a in plan.actions)
     spend = [e.describe() for e in plan.effects if isinstance(e, Spend)]
     hosts = sorted({e.host for e in plan.effects if isinstance(e, Contact)})
-    timing = [n for n in plan.notes if n.startswith(("in all", "takes"))]
+    timing = [n for n in plan.notes if n.startswith(("already spent", "in all", "takes"))]
     parts = [f"{plan.title}: {did}."]
     if spend:
         parts.append(f"It will {' and '.join(spend)}.")
@@ -739,6 +957,10 @@ def _client_line(mode: Mode) -> str:
             f"{label} to ask you; nothing is decided for you."
         )
     return f"In {label}'s terminal ({detected.var}): its MCP servers are offered first."
+
+
+def _passed_on(step_id: str) -> Callable[[], Collection[str]]:
+    return lambda: read_state().passed_on.get(step_id, ())
 
 
 def _import_step(mode: Mode, flags: SetupFlags, planners: list[ImportPlanner]) -> Step:
@@ -774,7 +996,7 @@ def _import_step(mode: Mode, flags: SetupFlags, planners: list[ImportPlanner]) -
         planners.append(planner)
         return planner
 
-    return McpImportStep(make)
+    return McpImportStep(make, passed_on=_passed_on("mcp-import"))
 
 
 def _work_domains() -> Sequence[str]:
@@ -795,6 +1017,27 @@ def _session(flags: SetupFlags, out: Output) -> Session:
         trials=flags.trials,
         log=out.say,
     )
+
+
+#: Why ``rote init``'s defaults are not a step here: each one it sets
+#: (runtime, deploy target, driver, model) is one ``rote try`` pins itself.
+INIT_SKIPPED = (
+    "rote init's defaults are not a step here: rote try pins its own runtime, driver "
+    "and model. rote init sets them for your later compiles."
+)
+
+
+def base_argv(args: Any) -> list[str]:
+    """The words every ``next`` command starts with: the run's mode, never
+    an answer (those are saved), so the command stays short."""
+    words = ["setup"]
+    if args.agent_mode is not None:
+        words += ["--agent-mode", args.agent_mode]
+    if args.json:
+        words.append("--json")
+    if args.from_client is not None:
+        words += ["--from", args.from_client]
+    return words
 
 
 def cmd_setup(args: Any) -> int:
@@ -818,21 +1061,27 @@ def cmd_setup(args: Any) -> int:
         return 2
     out = Output(mode)
     try:
-        flags = SetupFlags.from_args(args)
+        if args.reset:
+            state_path().unlink(missing_ok=True)
+            out.say("rote setup: forgot the saved answers and the picked skill")
+        state = read_state()
+        flags = SetupFlags.from_args(args, state.answers)
+        if flags.answers() != dict(state.answers):
+            save_state(replace(state, answers=flags.answers()))
     except SetupError as e:
         out.error(str(e))
         out.result({"ok": False, "error": str(e)})
         return 2
     prompter = prompter_for(mode)
-    argv: list[str] = list(getattr(args, "raw_argv", sys.argv[1:]))
-    runner = Runner(mode, out, prompter, flags, argv, SetupContext(mode, out))
+    runner = Runner(mode, out, prompter, flags, base_argv(args), SetupContext(mode, out))
     out.say(f"rote setup: {_client_line(mode)}")
+    out.say(f"  {INIT_SKIPPED}")
     session: Session | None = None
     stopped: Stopped | None = None
     try:
         first: list[Step] = [
             _import_step(mode, flags, runner.planners),
-            LoginStep(flags, _work_domains),
+            LoginStep(flags, _work_domains, passed_on=_passed_on("login")),
             SkillStep(flags),
         ]
         for index, step in enumerate(first, start=1):
@@ -900,7 +1149,7 @@ def cmd_setup(args: Any) -> int:
     if summary is None:
         out.error("the comparison finished but recorded no result. Fix: run rote setup again")
         return 1
-    follow = next_steps(session, summary)
+    follow = next_steps(session, summary, command="rote setup")
     out.say()
     for line in render(summary, name=session.name, next_steps=follow):
         out.say(line)

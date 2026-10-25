@@ -61,13 +61,14 @@ skills, then `rote try` on it (compile, install, compare). Every question and
 every consent stops with exit 2 and one `action_required` object. Relay its
 `ask` to the user in plain words, never answer it yourself, and run the
 `next` command that carries their answer (`answer_with` says how to write
-it). Finished steps are skipped on each run.
+it). rote remembers each answer, so `next` stays short. Finished steps are skipped.
 
 - `reason: missing_answer`: pass the flag in `missing` with the user's
   answer (`--only`, `--login`, `--skill`, `--read-only <server>`, ...).
-- `reason: confirmation_required`: `next[0]` adds `--approve <step>` (that
-  step only, and a paid step adds `--live` too) for a yes, `next[1]` adds
-  `--skip <step>` for a no. Never pass `--yes`: it approves every step.
+- `reason: confirmation_required`: `next[0]` adds `--approve <step>=<code>`
+  (that plan only, once, and a paid step adds `--live` too) for a yes,
+  `next[1]` adds `--skip <step>` for a no. Never pass `--yes`: it approves
+  every step. A replayed approval, or one for a plan that changed, stops again.
 - `reason: authorization_pending`: show the user each `logins[].authorization_url`.
   Once they approved, run the `rote mcp login --complete` commands, then setup.
 - `reason: person_required`: the user runs `next[0]` in their own terminal.
