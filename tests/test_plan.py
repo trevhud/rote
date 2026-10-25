@@ -15,7 +15,7 @@ from rote.plan import (
     PLAN_FORMAT,
     PlanError,
     build_plan,
-    gate_answer_schema,
+    declared_answer_schema,
     judge_references,
     plan_hash,
     plan_text,
@@ -86,20 +86,51 @@ def test_the_api_backend_runs_the_impl_of_a_bound_node() -> None:
     assert steps["search_microsoft_learn"]["module"] == "extracted.search_microsoft_learn"
 
 
-def test_an_mcp_only_node_has_nothing_to_run_on_the_api_backend() -> None:
+def test_an_mcp_only_node_is_the_agents_to_do_on_the_api_backend() -> None:
+    """Nothing runs it in code there, so the agent does it with its own tools."""
     pipeline = _mini(
         [
             {
                 "id": "fetch",
                 "kind": "external_call",
-                "description": "d",
+                "description": "Fetch the page.",
                 "mcp": {"server": "s", "tool": "t"},
+                "constants": {"page": 2},
+                "output": {"body": "str"},
             }
         ]
     )
     assert _steps(build_plan(pipeline, mcp="live"))["fetch"]["kind"] == "mcp"
-    with pytest.raises(PlanError, match="fetch: external_call has nothing to run on the api"):
-        build_plan(pipeline, mcp="live", backend="api")
+    step = _steps(build_plan(pipeline, mcp="live", backend="api"))["fetch"]
+    assert {k: step[k] for k in ("kind", "description", "constants", "fan_param")} == {
+        "kind": "do",
+        "description": "Fetch the page.",
+        "constants": {"page": 2},
+        "fan_param": None,
+    }
+    assert step["output_schema"]["required"] == ["body"]
+    assert step["output_schema"]["additionalProperties"] is False
+
+
+def test_an_unwritten_external_call_is_do_and_an_unwritten_pure_function_is_not() -> None:
+    """A stub external_call is agent work; an absent one (a re-export the AST
+    cannot see) is shipped code and stays a call. A pure_function stub stays
+    a call, refused at emit for its stub: a missing pure function is a compile
+    defect (and the IR requires a pure_function to name an impl at all)."""
+    call = {"id": "push", "kind": "external_call", "description": "d", "impl": "extracted/c.py:p"}
+    pipeline = _mini([call])
+    plan = build_plan(pipeline, mcp="live", implementations={"push": "stub"})
+    assert _steps(plan)["push"]["kind"] == "do"
+    plan = build_plan(pipeline, mcp="live", implementations={"push": "absent"})
+    assert _steps(plan)["push"]["kind"] == "call"
+    plan = build_plan(pipeline, mcp="live", implementations={"push": "implemented"})
+    assert _steps(plan)["push"]["kind"] == "call"
+    pure = {**call, "kind": "pure_function"}
+    plan = build_plan(_mini([pure]), mcp="live", implementations={"push": "stub"})
+    assert _steps(plan)["push"]["kind"] == "call"
+    # The prefix never asks the agent: a recorded plan skips the same node.
+    recorded = build_plan(pipeline, mcp="recorded", implementations={"push": "stub"})
+    assert _steps(recorded)["push"]["kind"] == "skip"
 
 
 def test_a_fanned_judge_carries_its_prompt_references_and_element() -> None:
@@ -178,13 +209,13 @@ def test_the_prefix_never_runs_vendor_code_even_when_written() -> None:
         ),
     ],
 )
-def test_gate_answer_schema_follows_the_declared_output(
+def test_a_gates_answer_schema_follows_the_declared_output(
     output: Any, schema: dict[str, Any]
 ) -> None:
     pipeline = _mini(
         [{"id": "ask", "kind": "hitl_gate", "description": "d", "signal": "go", "output": output}]
     )
-    assert gate_answer_schema(pipeline.nodes[0]) == schema
+    assert declared_answer_schema(pipeline.nodes[0]) == schema
 
 
 def test_an_agent_loop_carries_its_tools_cap_and_output_contract() -> None:
@@ -275,9 +306,9 @@ def test_a_single_type_gate_takes_its_output_schema_as_the_answer() -> None:
         "output": "list",
         "output_schema": evidence,
     }
-    assert gate_answer_schema(_mini([gate]).nodes[0]) == evidence
+    assert declared_answer_schema(_mini([gate]).nodes[0]) == evidence
     named = {k: v for k, v in gate.items() if k != "output_schema"}
-    assert gate_answer_schema(_mini([named]).nodes[0]) == {"type": "array"}
+    assert declared_answer_schema(_mini([named]).nodes[0]) == {"type": "array"}
 
 
 def test_a_legacy_judge_cannot_run_live_and_skips_in_the_prefix() -> None:

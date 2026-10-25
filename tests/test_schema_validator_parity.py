@@ -40,7 +40,7 @@ from rote.adapters._py_common import emit_signature_module
 from rote.adapters._ts_common import SCHEMA_ERRORS_TS
 from rote.inference._runtime_helper import project, schema_errors
 from rote.ir import Node, NodeKind, Pipeline
-from rote.plan import gate_answer_schema
+from rote.plan import declared_answer_schema
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -591,7 +591,7 @@ def _cross_corpus() -> list[tuple[str, Any, Any]]:
             if node.kind is NodeKind.AGENT_LOOP:
                 schema = agent_loop_output(node).schema
             elif node.kind is NodeKind.HITL_GATE:
-                schema = gate_answer_schema(node)
+                schema = declared_answer_schema(node)
             else:
                 continue
             if schema is not None:

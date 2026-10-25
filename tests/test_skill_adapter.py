@@ -444,14 +444,19 @@ def test_an_identity_rote_cannot_use_is_refused(tmp_path: Path, front: str, reas
 def test_a_pipeline_with_agent_loops_emits_and_is_refused_only_for_its_stubs(
     tmp_path: Path,
 ) -> None:
-    """An agent loop is a LOOP block now. bdr-outreach's vendor code is still
-    stubs, and that is the refusal, named; with --allow-stubs it emits."""
+    """An agent loop is a LOOP block now. bdr-outreach's pure functions are still
+    stubs, and that is the refusal, named; its vendor stubs are DO steps, the
+    agent's to do (zoominfo inside the loop, hubspot at the top level), so they
+    are not refused. With --allow-stubs it emits."""
     compiled = EXAMPLES / "bdr-outreach" / "expected"
     pipeline = load_pipeline(compiled / "pipeline.yaml")
     assert refusal(pipeline) is None
-    with pytest.raises(ValueError, match="would still be stubs") as e:
+    with pytest.raises(ValueError, match="2 extracted/ module\\(s\\) would still be stubs") as e:
         emit(compiled, tmp_path / "refused")
-    assert "scripts/extracted/zoominfo.py" in str(e.value) and "agent loop" not in str(e.value)
+    refused = str(e.value)
+    assert "exclusion_checks.py" in refused and "taxonomy.py" in refused
+    assert "zoominfo.py" not in refused and "hubspot.py" not in refused
+    assert "agent loop" not in refused
     emit(compiled, tmp_path / "out", allow_stubs=True)
     body = (tmp_path / "out" / "SKILL.md").read_text(encoding="utf-8")
     assert "- LOOP: yours to do. Do the task yourself with only the tools it lists" in body
@@ -507,20 +512,24 @@ def test_a_legacy_signature_judge_is_refused_naming_its_node(tmp_path: Path) -> 
 
 
 def test_stubs_are_refused_at_emit_unless_allowed(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match=r"4 extracted/ module\(s\) would still be stubs") as e:
+    with pytest.raises(ValueError, match=r"3 extracted/ module\(s\) would still be stubs") as e:
         emit(DEAL_MONITOR, tmp_path / "refused")
     assert "scripts/extracted/filtering.py" in str(e.value)
     assert "--allow-stubs" in str(e.value)
-    # mcp-bound modules (slack, gmail) are never called on the mcp backend.
+    # mcp-bound modules (slack, gmail) are never called on the mcp backend,
+    # and output.py's save_dashboard is an external_call stub: a DO step.
     assert "slack.py" not in str(e.value) and "gmail.py" not in str(e.value)
+    assert "output.py" not in str(e.value)
     assert list((tmp_path / "refused").iterdir()) == []  # nothing written
     emit(DEAL_MONITOR, tmp_path / "allowed", allow_stubs=True)
+    # `rote emit` reports only stubs a step calls: output.py's is the agent's (DO).
     assert sorted(p.name for p in unimplemented_stubs(tmp_path / "allowed")) == [
         "dashboard.py",
         "filtering.py",
         "matching.py",
-        "output.py",
     ]
+    plan = json.loads((tmp_path / "allowed" / "scripts" / "plan.json").read_text("utf-8"))
+    assert [s["id"] for s in plan["steps"] if s["kind"] == "do"] == ["save_dashboard"]
 
 
 def test_helper_judges_refuse_a_schema_structured_outputs_cannot_express(tmp_path: Path) -> None:

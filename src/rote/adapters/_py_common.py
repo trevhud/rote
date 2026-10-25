@@ -24,6 +24,7 @@ import keyword
 import math
 import re
 import textwrap
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -1507,6 +1508,7 @@ def require_constant_parameters(
     pipeline: Pipeline,
     writer: EmitWriter,
     source_dir: Path | None,
+    never_called: Collection[str] = (),
 ) -> None:
     """Refuse an emit whose impls cannot take their nodes' constants.
 
@@ -1519,7 +1521,8 @@ def require_constant_parameters(
     A module with no source becomes a stub, which takes ``**payload`` and
     always passes, so only its preserved user edit (if any) is read. Call
     it before writing
-    anything, so a refused emit leaves no new main.py behind.
+    anything, so a refused emit leaves no new main.py behind. ``never_called``
+    names nodes whose impl no step calls (see ``constants_not_accepted``).
     """
     from rote.contracts import constants_not_accepted
 
@@ -1534,7 +1537,7 @@ def require_constant_parameters(
             origins[module] = writer.output_dir / "extracted" / f"{module}.py"
         else:
             origins[module] = Path(source_dir) / "extracted" / f"{module}.py"
-    problems = constants_not_accepted(pipeline, landed, origins)
+    problems = constants_not_accepted(pipeline, landed, origins, never_called)
     if problems:
         detail = "; ".join(problems)
         raise ConstantsNotAccepted(

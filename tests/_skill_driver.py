@@ -33,12 +33,17 @@ SERVER_SCRIPT = Path(__file__).resolve().parent / "_skill_mcp_server.py"
 
 
 def make_skill(
-    root: Path, pipeline: dict[str, Any] | Pipeline, modules: dict[str, str] | None = None
+    root: Path,
+    pipeline: dict[str, Any] | Pipeline,
+    modules: dict[str, str] | None = None,
+    **plan_options: Any,
 ) -> Path:
-    """A scripts dir for ``pipeline``, with ``modules`` (``{"math.py": source}``) in extracted/."""
+    """A scripts dir for ``pipeline``, with ``modules`` (``{"math.py": source}``) in extracted/.
+
+    ``plan_options`` go to :func:`rote.plan.build_plan` (``implementations``, say)."""
     ir = pipeline if isinstance(pipeline, Pipeline) else Pipeline.model_validate(pipeline)
     scripts = root / "scripts"
-    write_scripts(scripts, build_plan(ir, mcp="live"))
+    write_scripts(scripts, build_plan(ir, mcp="live", **plan_options))
     extracted = scripts / "extracted"
     extracted.mkdir(exist_ok=True)
     (extracted / "__init__.py").write_text("", encoding="utf-8")

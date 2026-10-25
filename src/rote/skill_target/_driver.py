@@ -11,13 +11,14 @@ MCP, so a call that needs none starts in tens of milliseconds.
 
 Three tiers, one direction of escalation: this program does every tool call,
 pure function, retry and check it can; it escalates to the agent running the
-skill for model work (``DECIDE``, and ``LOOP`` for an agent loop); and it
-reaches a person only through that agent (``HUMAN``). Every byte printed
-lands in the agent's context, so each call prints one short block:
+skill for model work (``DECIDE``, and ``LOOP`` for an agent loop) and for an
+external call with no code yet (``DO``); and it reaches a person only through
+that agent (``HUMAN``). Every byte printed lands in the agent's context, so
+each call prints one short block:
 
     ROTE/1 <KIND> <skill> run=<id> [step=<id>] [...]
 
-``DECIDE``, ``LOOP`` and ``HUMAN`` exit 0 and say what to run next. ``DONE``
+``DECIDE``, ``DO``, ``LOOP`` and ``HUMAN`` exit 0 and say what to run next. ``DONE``
 exits 0, writes the result to ``result.json`` and prints it in full when it is
 at most :data:`DONE_INLINE_BYTES`, else a bounded summary and the path.
 ``ERROR`` exits 1 (2 for a malformed command) with the cause and the fix.
@@ -31,6 +32,17 @@ Commands (``argv`` after the script)::
     status [<run>]
     cancel <run>
     runs [--prune]
+
+A ``DO`` block is an external_call the compile left without code: the step's
+description, its bound inputs with its constants (what the impl would have
+been passed, nothing upstream it does not bind), and its declared output.
+The agent does the step with its own tools, the way the source skill had it
+do it, and answers; the answer is checked like a DECIDE answer and journaled
+``answered_by: agent``. The block grants nothing: this driver cannot see the
+agent's tool calls, so the agent's own client approves them, writes included,
+as it did for the source skill. ``--allow-writes`` is the consent for this
+driver's calls, which bypass that approval, so it neither covers nor gates a
+``DO`` step.
 
 An agent loop is a ``LOOP`` block: the task, the loop's inputs, the tools
 it may call, its call cap and the answer schema. The agent does the task
@@ -88,7 +100,9 @@ RUN_FORMAT = "rote-skill-run/1"
 
 #: The plan step kinds this driver runs. ``start`` refuses a plan with any
 #: other, and so does the emitter (``rote.adapters.skill``), which reads this.
-STEP_KINDS = ("call", "mcp", "judge", "gate", "loop")
+STEP_KINDS = ("call", "mcp", "judge", "gate", "loop", "do")
+#: The block an agent's answer goes to, by the kind of step it answers.
+AGENT_BLOCKS = {"judge": "DECIDE", "do": "DO", "loop": "LOOP"}
 #: The skill names a driver accepts (the agentskills.io ``name`` rule). The
 #: name is a directory under the run root and a word in a shell command.
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -618,7 +632,7 @@ class Driver:
                             step=step["id"],
                         )
                     )
-            elif step["kind"] in ("judge", "loop") and record.get("answered_by") != (
+            elif step["kind"] in AGENT_BLOCKS and record.get("answered_by") != (
                 "helper" if step["kind"] == "judge" and self.helper_judges else "agent"
             ):
                 raise Stop(
@@ -902,7 +916,7 @@ class Driver:
                 if attempts >= MAX_ANSWER_ATTEMPTS:
                     return self._too_many(path, state, step["id"], errors)
                 self._write(path, state)
-                kind = "LOOP" if step["kind"] == "loop" else "DECIDE"
+                kind = AGENT_BLOCKS[step["kind"]]
                 return self._reask(path.name, step["id"], attempts + 1, errors, [], pending, kind)
             if step["kind"] == "loop":
                 # As every runtime returns a loop's submission: the value as
@@ -934,12 +948,20 @@ class Driver:
                     path, state, step["id"], errors or [f"missing items: {', '.join(missing)}"]
                 )
             self._write(path, state)
-            return self._reask(path.name, step["id"], attempts + 1, errors, missing, pending)
+            return self._reask(
+                path.name,
+                step["id"],
+                attempts + 1,
+                errors,
+                missing,
+                pending,
+                AGENT_BLOCKS[step["kind"]],
+            )
         if pending["batch"] + 1 < len(pending["batches"]):
             pending["batch"] += 1
             state["attempts"][step["id"]] = 0
             self._write(path, state)
-            return self._decide_block(path.name, step, pending)
+            return self._pending_block(path.name, step, pending)
         ordered = [collected[str(i)] for i in range(pending["count"])]
         self._record_decision(path, state, step, ordered)
         return None
@@ -1043,7 +1065,7 @@ class Driver:
                     continue
                 if step["kind"] == "loop":
                     return self._ask_loop(path, step, results)
-                if step["kind"] in ("judge", "gate"):
+                if step["kind"] in ("judge", "gate", "do"):
                     with self._locked(path):
                         return self._ask(path, self._read(path), step, results)
         return self._finish(path, results)
@@ -1306,14 +1328,19 @@ class Driver:
                 "payload": payload,
             }
         else:
-            prepared = self._judge_items(step, payload)
+            prepared = (
+                self._do_items(step, payload)
+                if step["kind"] == "do"
+                else self._judge_items(step, payload)
+            )
             if isinstance(prepared, Block):
                 state["state"] = "error"
                 state["error"] = prepared.lines[0]
                 self._write(path, state)
                 prepared.header = self._head(run, f"step={step['id']}")
                 return prepared
-            pending = {"step": step["id"], "kind": "decide", **prepared}
+            kind = "do" if step["kind"] == "do" else "decide"
+            pending = {"step": step["id"], "kind": kind, **prepared}
         state["pending"] = pending
         state["state"] = "waiting"
         state["attempts"][step["id"]] = 0
@@ -1361,6 +1388,29 @@ class Driver:
             "items": items,
             "count": len(items),
             "batches": _batches(items, step["output_schema"]),
+            "batch": 0,
+            "collected": {},
+        }
+
+    def _do_items(self, step: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | Block:
+        """A ``do`` step's inputs: its bound payload with its constants merged last, as
+        its impl would have been called; for a fan_out step, one item per element."""
+        constants = step.get("constants") or {}
+        fan = step["fan_param"]
+        if fan is None:
+            return {"inputs": {**payload, **constants}}
+        try:
+            elements = _fan_list(payload.get(fan), step["id"], fan)
+        except TypeError as exc:
+            return self._error(
+                None, f"{exc}", "recompile the skill (rote compile)", step=step["id"]
+            )
+        shared = {**{k: v for k, v in payload.items() if k != fan}, **constants}
+        return {
+            "shared": shared,
+            "items": elements,
+            "count": len(elements),
+            "batches": _batches(elements, step["output_schema"]),
             "batch": 0,
             "collected": {},
         }
@@ -1536,6 +1586,17 @@ class Driver:
                     f"{rule['id']}: {_rule_text(rule['prompt'])}",
                     f"{rule['id']} gives: {_brief(rule['output_schema'])}",
                 ]
+        own = [b for b in step["body"] if b["kind"] == "do"]
+        if own:
+            lines.append(
+                "--- STEPS (do each yourself with your own tools where the task needs it; "
+                "not tools) ---"
+            )
+            for body in own:
+                lines += [
+                    f"{body['id']}: {body['description']}",
+                    f"{body['id']} gives: {_brief(body['output_schema'])}",
+                ]
         if pending["tools"]:
             lines += [
                 f"--- TOOLS (at most {cap} calls in all; {cap - calls} left) ---",
@@ -1696,7 +1757,53 @@ class Driver:
         if pending["kind"] == "loop":
             calls = int(((state or {}).get("tool_calls") or {}).get(step["id"], 0))
             return self._loop_block(run, step, pending, calls, note)
+        if pending["kind"] == "do":
+            return self._do_block(run, step, pending, note)
         return self._decide_block(run, step, pending, note)
+
+    def _do_block(
+        self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
+    ) -> Block:
+        """An external call with no code: the agent does it with its own tools.
+
+        Nothing here grants a tool or a write: the agent's own client decides
+        those, as it did when the source skill ran."""
+        fan = step["fan_param"]
+        lines = [note] if note else []
+        lines += [
+            "Do this step yourself with your own tools, the way the skill does it, then "
+            "answer. Do not ask the user for the answer."
+            if fan is None
+            else f"Do this step yourself for each item (its `{fan}` input) with your own "
+            "tools, the way the skill does it, then answer. Do not ask the user for the answer.",
+            "If it changes anything (sends, creates, updates, deletes), that is a write: "
+            "follow your client's approval for it. This block grants nothing.",
+            "--- STEP ---",
+            step["description"],
+        ]
+        extra = []
+        if fan is None:
+            lines += [
+                "--- INPUTS (json) ---",
+                _compact(pending["inputs"]),
+                "--- ANSWER SHAPE (key? = optional) ---",
+                _brief(step["output_schema"]),
+            ]
+        else:
+            ids = pending["batches"][pending["batch"]]
+            if pending["shared"]:
+                lines += ["--- SHARED (json) ---", _compact(pending["shared"])]
+            lines += [
+                "--- ITEMS (json, by id) ---",
+                _compact({i: pending["items"][int(i)] for i in ids}),
+                "--- ANSWER SHAPE (key? = optional; one per item) ---",
+                _brief(step["output_schema"]),
+                "Answer one JSON object mapping each item id to its answer.",
+            ]
+            if len(pending["batches"]) > 1:
+                extra.append(f"batch={pending['batch'] + 1}/{len(pending['batches'])}")
+        lines += self._next("answer", run, step["id"], "'<your JSON>'")
+        return Block("DO", self._head(run, f"step={step['id']}", *extra), lines)
 
     def _decide_block(
         self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
@@ -1923,7 +2030,7 @@ _TEXT_ANSWER = {
 
 
 def answer_schema(step: dict[str, Any]) -> Any:
-    """The schema an agent's answer to ``step`` (a judge or a loop) must fit."""
+    """The schema an agent's answer to ``step`` (a judge, a ``do`` step or a loop) must fit."""
     if step["kind"] == "loop":
         return step["output_schema"] or _TEXT_ANSWER
     return step["output_schema"]

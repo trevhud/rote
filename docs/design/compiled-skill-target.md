@@ -20,8 +20,8 @@ It escalates in one direction only: program, then agent, then human.
 
 | Tier | Does | Escalates when |
 | --- | --- | --- |
-| Program (the driver) | every tool call, every pure function, retries, validation | a step needs a model (`DECIDE`, `LOOP`) or a person (`HUMAN`) |
-| Agent (the session model) | judges and agent loops, answered by itself | a block is `HUMAN`. It never asks the user about a `DECIDE` or a `LOOP` |
+| Program (the driver) | every tool call, every pure function, retries, validation | a step needs a model (`DECIDE`, `LOOP`), an external call the compile wrote no code for (`DO`), or a person (`HUMAN`) |
+| Agent (the session model) | judges and agent loops, answered by itself; a `DO` step, done with its own tools | a block is `HUMAN`. It never asks the user about a `DECIDE`, a `DO` or a `LOOP` |
 | Human (through the agent) | gate approvals and logins | never |
 
 The program never talks to the person directly. The agent sits between them
@@ -41,7 +41,7 @@ and the journal records who answered (section 2).
 | --- | --- | --- |
 | 1 | How the skill runs its code | `rote skill run <name> <verb> ...`, not `python3 scripts/run.py`. The skill's own scripts still do the work. rote only finds them, checks them against the emit manifest, and runs them with an interpreter that has fastmcp. |
 | 2 | How input and answers reach the driver | One single-quoted JSON argument, or `--file <path>` for a large one or one already in a file. Never a heredoc or stdin: Claude Code's allow rules refused both heredoc forms in a probe. |
-| 3 | What the driver prints | One block per call. The first line is `ROTE/1 <KIND> ...`, where KIND is `DECIDE`, `LOOP`, `HUMAN`, `DONE` or `ERROR`. The kind names the tier that answers. A missing login is a `HUMAN kind=login`. |
+| 3 | What the driver prints | One block per call. The first line is `ROTE/1 <KIND> ...`, where KIND is `DECIDE`, `DO`, `LOOP`, `HUMAN`, `DONE` or `ERROR`. The kind names the tier that answers. A missing login is a `HUMAN kind=login`. |
 | 4 | Fanned judges | One `DECIDE` block holds a batch of items, chunked by a token budget. Items are validated one by one, and a bad item is asked again alone. Sending N separate blocks buys no isolation, because all N payloads stay in the same conversation. |
 | 5 | Agent loops | `LOOP`: the session's own model runs the bounded task. It can call only the loop's declared tools, through `rote skill run ... tool`, and the driver counts each call against `max_iterations`. The inference helper is an opt-in at emit time (`--judges helper`), never a silent fallback. |
 | 6 | Who pays | The session's model, by default. Nothing in the compiled skill bills anyone else unless `--judges helper` was chosen at emit. |
@@ -226,7 +226,7 @@ rote skill runs [--prune]                 # list runs, sweep expired ones
 ```
 
 A gate answer without `--said` or `--said-file` is refused, and so is
-`--said` on a `DECIDE` or `LOOP` answer. Both refusals are usage errors.
+`--said` on a `DECIDE`, `DO` or `LOOP` answer. Both refusals are usage errors.
 
 `<name>` resolves through the apps registry (`rote.app_registry`), where
 `rote emit --runtime skill` records the skill dir and `rote skill install
@@ -395,6 +395,27 @@ rote skill run ops-report answer 91c0d2b7aa43 approve_report '<JSON from their r
   commands: `rote mcp login <server>` for a person at a terminal, or `rote
   mcp login <server> --no-wait`, then `--complete` (PR #244), for an agent
   relaying a URL. After either one, `resume <run>`.
+- **DO.** An external_call the compile left without code: its impl is a
+  stub (read from the module the skill ships, so the dry emit
+  and the real one agree), or it has only a binding the backend does not
+  call. The agent does the step with its own tools, the way the source
+  skill had it, and answers. The block carries the description, the bound
+  inputs with the constants merged last (exactly what the impl would have
+  been called with, nothing upstream it does not bind), the declared output
+  as an answer shape, and the `answer` command. A fanned one batches items
+  like a fanned DECIDE. A loop's DO sub-node is listed in its LOOP block
+  under STEPS, never as a tool. The answer is checked by the one schema
+  validator, re-asked up to three times, and journaled `answered_by:
+  "agent"`; `--said` is refused. Writes: the driver cannot see the agent's
+  tool calls, and the block grants none. The agent's own client approves
+  them, writes included, as it did for the source skill. `--allow-writes`
+  exists because the driver's own calls bypass that approval (row 9), so it
+  neither covers nor gates a DO step. The IR marks no node as a write (the
+  structure pass decides `io: read|write`, but it does not reach
+  `pipeline.yaml`), so every DO block says what a write is and to follow
+  the client's approval. A pure_function stub is never a DO: a missing pure
+  function is a compile defect, refused at emit. The sample `post_note`
+  block in `tests/test_skill_do.py` is 574 bytes.
 - **LOOP.** The task (`_agent_task_prompt`, the same function the loop
   lanes use), the inputs, the tools as `tool` commands with each tool's
   input schema, the turn cap, and the declared output schema for `answer`.
@@ -615,12 +636,13 @@ dirs holding a `run.json` it can parse, so a stray path is never deleted.
 | No endpoint for a server (`RoteMcpConfigError`) | ERROR | `rote mcp add <server> <url>`, `ROTE_MCP_<SERVER>_URL` |
 | Login needed (`RoteMcpAuthNeeded`) | HUMAN kind=login | `rote mcp login <server>`, then `resume` |
 | A gate answer without `--said` | ERROR, exit 2, nothing recorded | ask the person, then `answer ... --said` |
-| `--said` on a `DECIDE` or `LOOP` answer | ERROR, exit 2, nothing recorded | answer without `--said` |
+| `--said` on a `DECIDE`, `DO` or `LOOP` answer | ERROR, exit 2, nothing recorded | answer without `--said` |
 | A write tool in a read-only skill | ERROR | `rote skill trust <name> --allow-writes` |
 | A server asks for input mid-call (`RoteMcpInputRequired`) | ERROR | none. A plain failure, as on every runtime |
 | A tool still failing after the IR's retries | ERROR | the tool's error text, `resume` to retry |
 | An extracted function raises | ERROR | file:line, as the prefix runner reports it |
-| A stub (`STUB_SENTINEL`) | refused at emit, like `rote run`'s preflight | `rote compile` again, or `--allow-stubs` |
+| A pure_function stub (`STUB_SENTINEL`) | refused at emit, like `rote run`'s preflight | `rote compile` again, or `--allow-stubs` |
+| An external_call stub | not refused: a `DO` step | none needed; implement it to run it in code |
 | Network disabled by the Codex sandbox | ERROR, before any call | rerun with escalation |
 | Another live call holds the wave (`run busy`) | ERROR, names the step | wait for that call, then `status` |
 
@@ -731,7 +753,7 @@ opens a browser, which keeps the helper's never-interactive rule.
 | --- | --- |
 | `pure_function` | code, `impl(**{**payload, <constants>})`, IR retries as visible loops |
 | `external_call` + `mcp:` | `call_mcp_tool` with `mcp_tool_arguments`, never retried on config, auth or input-required errors |
-| `external_call` + `impl` (`--backend api`) | the module's code. A stub is refused at emit |
+| `external_call` + `impl` | the module's code (`--backend api`, or no binding). A stub is `DO`; a function rote cannot read (a re-export) runs as code |
 | `llm_judge` | `DECIDE`, or the inference helper under `--judges helper` |
 | `agent_loop` | `LOOP` with the tool proxy |
 | `hitl_gate` | `HUMAN kind=gate`. The deadline comes from `timeout`, the answer is the gate's result, and `--said` is required |

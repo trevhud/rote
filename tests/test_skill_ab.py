@@ -152,6 +152,35 @@ def test_an_honest_run_has_no_problems(tmp_path: Path) -> None:
     assert (found.state, found.reported_checked, found.result["report"]["total"]) == ("done", 1, 7)
 
 
+def test_the_agents_steps_are_counted_by_block_and_held_to_the_agent_tier(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        "steps": [
+            *PLAN["steps"],
+            {"id": "post", "kind": "do"},
+            {"id": "push", "kind": "do"},
+            {"id": "grade", "kind": "judge"},
+        ]
+    }
+    folder = _run_folder(tmp_path, gate=HUMAN_GATE)
+    for step in ("post", "push", "grade"):
+        record = {"result": {}, "answered_by": "agent"}
+        (folder / "nodes" / f"{step}.json").write_text(json.dumps(record))
+    found = _evidence(tmp_path, plan=plan)
+    assert found.problems == ()
+    assert found.agent_steps == {"DO": 2, "DECIDE": 1}
+    assert found.to_dict()["agent_steps"] == {"DO": 2, "DECIDE": 1}
+    # A DO result nobody answered as the agent is a tier violation.
+    (folder / "nodes" / "push.json").write_text(json.dumps({"result": {}}))
+    found = _evidence(tmp_path, plan=plan)
+    assert found.problems == ("DO step push was not answered by the agent (None)",)
+    assert found.agent_steps == {"DO": 1, "DECIDE": 1}
+    # Under --judges helper the helper answers judges, so they are not the agent's.
+    found = _evidence(tmp_path, plan={**plan, "judges": "helper"})
+    assert found.agent_steps == {"DO": 1}
+
+
 def test_no_run_folder_is_a_bypass(tmp_path: Path) -> None:
     assert _evidence(tmp_path).problems == ("bypassed the driver: no run folder",)
 

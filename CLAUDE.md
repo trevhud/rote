@@ -225,8 +225,24 @@ the Anthropic SDK client (see
     and `extracted/`. One manifest covers every file, SKILL.md included.
     The identity comes from a SKILL.md rote can vouch for (`--skill`, or
     `source_skill` checked against `provenance.json`'s digest), never a
-    guess. Refuses stubs (`--allow-stubs`), agent loops (until the
-    driver's tool proxy) and PlanErrors before writing anything. See
+    guess. Three tiers: the driver runs what it can in code, escalates
+    model work to the agent (`DECIDE`, `LOOP`) and reaches a person only
+    through it (`HUMAN`). An external_call with no code (its impl a stub,
+    or no impl and no binding the backend calls; a symbol rote cannot
+    read, such as a re-export, is shipped code and stays a call) is a `do` step in the
+    plan and a `DO` block: the agent does it with its own tools, as the
+    source skill did, and answers (`answered_by: agent`, `--said`
+    refused, checked by the one schema validator). Which ones is decided
+    from the modules the skill ships (`rote.contracts.impl_status`), so a
+    compile's dry emit (`allow_stubs=True`) and the real one build the same
+    plan; before this, a vendor stub passed verification and failed the
+    real emit after a paid compile. A pure_function stub is still refused
+    at emit (a compile defect, not agent work), as are PlanErrors. A DO
+    block grants nothing: the agent's own client approves its tool calls,
+    writes included, so `--allow-writes` (consent for the driver's calls,
+    which bypass that approval) neither covers nor gates it. The IR marks
+    no step as a write, so every DO block says what a write is and to
+    follow the client's approval. See
     [`docs/design/compiled-skill-target.md`](docs/design/compiled-skill-target.md).
 - **What they do:** consume a validated `Pipeline` IR and write
   runtime-native code into an output directory
