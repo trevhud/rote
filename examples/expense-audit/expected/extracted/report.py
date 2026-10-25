@@ -38,15 +38,17 @@ def _decisions(
 
     approved = set(review.get("approved_ids") or [])
     rejected = set(review.get("rejected_ids") or [])
-    reviewable = {f["expense_id"] for f in queue if f["severity"] == "review"}
-    # The skill says to ask again rather than guess; in a workflow that
-    # means failing loudly with the ids the controller has to correct.
-    unknown = sorted((approved | rejected) - reviewable)
+    queued = {f["expense_id"] for f in queue}
+    # The skill says to ask again rather than guess when an id "isn't in
+    # the queue"; in a workflow that means failing loudly with the ids the
+    # controller has to correct. A decision on a block item is not that:
+    # block items are "for information only" and go back to the employee
+    # "no matter what", so the decision is ignored below.
+    unknown = sorted((approved | rejected) - queued)
     if unknown:
         raise ValueError(
-            f"controller decision names id(s) that are not review items: {', '.join(unknown)} "
-            f"(review items: {', '.join(sorted(reviewable)) or 'none'}). "
-            "Block items cannot be approved."
+            f"controller decision names id(s) that are not in the review queue: "
+            f"{', '.join(unknown)} (queue: {', '.join(sorted(queued)) or 'empty'})."
         )
     both = sorted(approved & rejected)
     if both:

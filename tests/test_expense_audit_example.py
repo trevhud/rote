@@ -11,10 +11,15 @@ Expected figures, worked by hand from input.json and the 2026-09 rates
 in references/fx-rates.md:
 
 - batch total $3,304.15 across 16 lines and 5 employees
-- review items EXP-2403 $130.39, EXP-2410 $249.00, EXP-2413 $18.75,
-  EXP-2420 $446.25 (sum $844.39)
-- block items EXP-2404 $25.97 (no receipt), EXP-2412 $38.20 (duplicate)
-  (sum $64.17)
+- one review item, EXP-2413 $18.75 (late)
+- block items EXP-2403 $130.39 (meals cap), EXP-2404 $25.97 (no receipt),
+  EXP-2410 $249.00 (software cap), EXP-2412 $38.20 (duplicate), and
+  EXP-2420 $446.25 (entertainment without pre-approval) (sum $889.81)
+
+Cap breaches and a missing pre-approval are blocks because the original
+skill, run as an agent, blocked them in 10 and 11 of 12 recorded runs;
+the policy names no severity for either (see the markers in
+expected/extracted/audit.py).
 """
 
 from __future__ import annotations
@@ -75,15 +80,18 @@ def _assert_final(result: dict[str, Any], report_dir: Path) -> None:
     assert result["status"] == "final"
     assert result["reviewer"] == "Priya Shah"
     assert result["batch_total_usd"] == 3304.15
-    # Approved review items are paid; the rejected one joins the blocks.
-    assert result["reimbursable_usd"] == 2990.98  # 2395.59 + 130.39 + 18.75 + 446.25
+    # The approved review item is paid. The decision also names three
+    # block items (the eval's journaled answer); they go back regardless.
+    assert result["reimbursable_usd"] == 2414.34  # 2395.59 + 18.75
     assert result["pending_usd"] == 0.0
-    assert result["returned_usd"] == 313.17  # 64.17 + 249.00
+    assert result["returned_usd"] == 889.81  # 64.17 + 130.39 + 249.00 + 446.25
     report = (report_dir / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert "Status: **final** (reviewed by Priya Shah)" in report
-    assert "| EXP-2410 | Ben Okafor | over_cap | review |" in report
-    assert report.count("| rejected |") == 1
-    assert report.count("| approved |") == 3
+    assert "| EXP-2410 | Ben Okafor | over_cap | block |" in report
+    assert "| EXP-2420 | Chloe Martin | preapproval_missing | block |" in report
+    assert report.count("| rejected |") == 0
+    assert report.count("| approved |") == 1
+    assert report.count("| returned |") == 5
     assert "| pending |" not in report
 
 
@@ -153,10 +161,10 @@ def test_free_first_run_on_python(
     assert result["reviewer"] is None
     assert result["batch_total_usd"] == 3304.15
     assert result["reimbursable_usd"] == 2395.59
-    assert result["pending_usd"] == 844.39
-    assert result["returned_usd"] == 64.17
+    assert result["pending_usd"] == 18.75
+    assert result["returned_usd"] == 889.81
     assert result["auto_approved"] == ["Dev Patel", "Emi Tanaka"]
-    assert (result["review_items"], result["blocked_items"]) == (4, 2)
+    assert (result["review_items"], result["blocked_items"]) == (1, 5)
 
     report = (report_dir / "2026-09-expense-audit.md").read_text(encoding="utf-8")
     assert result["report_path"] == str((report_dir / "2026-09-expense-audit.md").resolve())
@@ -169,8 +177,9 @@ def test_free_first_run_on_python(
     assert len(names) == EMPLOYEES
     assert "| EXP-2412 | Ben Okafor | duplicate | block |" in report
     assert "| EXP-2404 | Ana Ruiz | receipt_missing | block |" in report
-    assert report.count("| pending |") == 4
-    assert report.count("| returned |") == 2
+    assert "| EXP-2403 | Ana Ruiz | over_cap | block |" in report
+    assert report.count("| pending |") == 1
+    assert report.count("| returned |") == 5
 
 
 @pytest.fixture
@@ -196,10 +205,18 @@ def extracted() -> Any:
 
 
 @pytest.mark.usefixtures("extracted")
-def test_controller_cannot_approve_a_block_item() -> None:
-    """The skill's "ask again rather than guess" rule fails the step loudly."""
+def test_controller_cannot_approve_a_block_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Block items go back "no matter what": approving one returns it anyway.
+
+    The original skill does the same: given the eval's journaled answer,
+    which approves two block items and rejects a third, its runs listed
+    all three as returned and filed the report final.
+    """
     from extracted.report import file_report  # type: ignore[import-not-found]
 
+    monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(tmp_path))
     summary = {
         "batch_total_usd": 50.0,
         "employees": [],
@@ -215,8 +232,20 @@ def test_controller_cannot_approve_a_block_item() -> None:
         ],
         "expenses": [{"id": "EXP-1", "employee": "A", "amount_usd": 50.0}],
     }
-    with pytest.raises(ValueError, match="EXP-1"):
-        file_report("2026-09", summary, {"reviewer": "x", "approved_ids": ["EXP-1"]})
+    result = file_report("2026-09", summary, {"reviewer": "x", "approved_ids": ["EXP-1"]})
+    assert (result["status"], result["reimbursable_usd"], result["returned_usd"]) == (
+        "final",
+        0.0,
+        50.0,
+    )
+    report = (tmp_path / "2026-09-expense-audit.md").read_text(encoding="utf-8")
+    assert "| EXP-1 | A | duplicate | block |  | returned |" in report
+    assert "| approved |" not in report
+
+    # The skill's "ask again rather than guess" rule: an id that is not in
+    # the queue at all fails the step loudly.
+    with pytest.raises(ValueError, match="EXP-9"):
+        file_report("2026-09", summary, {"reviewer": "x", "approved_ids": ["EXP-9"]})
 
 
 @pytest.mark.usefixtures("extracted")

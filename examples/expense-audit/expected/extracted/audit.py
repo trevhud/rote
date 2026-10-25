@@ -64,16 +64,18 @@ def _line_findings(
         found.append(("unknown_category", "block", f"category {category!r} is not in the policy"))
     elif category in PREAPPROVAL_CATEGORIES:
         if not expense.get("preapproval_id"):
-            found.append(("preapproval_missing", "review", f"{category} without a pre-approval id"))
+            # rote: assumption: entertainment without a pre-approval id is a block. The policy says it "Always needs a pre-approval id" and names no severity; the original skill blocked it in 11 of 12 recorded runs (fidelity/reference.json and the 2026-10-24 A/B runs).
+            found.append(("preapproval_missing", "block", f"{category} without a pre-approval id"))
     else:
         cap = caps[category]
         if category == "lodging":
             cap *= int(expense.get("nights") or 1)
         if amount > cap:
+            # rote: assumption: a line over its category cap is a block. The policy names no severity for caps ("Anything above the cap needs a written exception.", "Above the cap goes through IT procurement instead."); the original skill blocked cap breaches in 10 of 12 recorded runs (fidelity/reference.json and the 2026-10-24 A/B runs).
             found.append(
                 (
                     "over_cap",
-                    "review",
+                    "block",
                     (
                         f"{_usd(amount)} exceeds the {_usd(cap)} {category} cap "
                         f"by {_usd(amount - cap)}"

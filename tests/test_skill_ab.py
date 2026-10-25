@@ -271,13 +271,11 @@ def test_a_paired_run_measures_both_sides_and_checks_the_compiled_one(
     )
     (pair,) = report.pairs
     assert pair.compared == len(expense.contract) == 13
-    # The fake's compiled result takes the four totals from the driver; two of
-    # them differ from the recorded original (the IR's own reading of the skill).
-    assert pair.reproduced == 11
-    assert sorted(f.spec.name for f in pair.fields if f.status != "matched") == [
-        "reimbursable_usd",
-        "returned_usd",
-    ]
+    # The fake's compiled result takes the four totals from the driver, and
+    # every one matches the recorded original: the IR grades cap breaches
+    # and a missing pre-approval as blocks, as the original does.
+    assert pair.reproduced == 13
+    assert [f.spec.name for f in pair.fields if f.status != "matched"] == []
     rendered = skill_ab.render_markdown([report], model="fake-model", spent=0.09)
     assert "### compute-heavy" in rendered and "| expense-audit/base | original | 1/1 |" in rendered
 
