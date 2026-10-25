@@ -6,6 +6,8 @@ import ipaddress
 import os
 import shutil
 import socket
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from rote import extras as rote_extras
 from rote import isolation
 from rote.ir import Pipeline, load_pipeline
+from tests import _inference_guard
 from tests import _node_trees as node_trees
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -55,6 +58,66 @@ def fingerprint_changes(before: dict[str, str], after: dict[str, str]) -> list[s
         f"modified: {p}" for p in sorted(before.keys() & after.keys()) if before[p] != after[p]
     ]
     return lines
+
+
+# ───────── No inference, no real per-user state: once, for the session ─────────
+#
+# Applied to os.environ itself before anything is collected, so neither a
+# per-test ``monkeypatch.undo()`` nor a child process escapes it (see
+# tests/_inference_guard.py for the two leaks that made this necessary, one
+# of which billed a real compile). Per-test fixtures below still move the
+# state paths under each test's own tmp_path; undoing them falls back here,
+# never to the developer's real files.
+
+#: The session's state dir. The environment from before the session is
+#: deliberately kept nowhere: a test that could read it back could restore
+#: the real PATH.
+SESSION_STATE = pytest.StashKey[Path]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    state = Path(tempfile.mkdtemp(prefix="rote-test-session-")).resolve()
+    config.stash[SESSION_STATE] = state
+    _inference_guard.isolate(os.environ, state)
+    reachable = _inference_guard.reachable_clis(os.environ)
+    if reachable:
+        pytest.exit(
+            "the suite could not take the subscription CLIs off PATH: " + "; ".join(reachable),
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    state = config.stash.get(SESSION_STATE, None)
+    if state is not None:
+        _inference_guard.release_mirrors(state)
+        shutil.rmtree(state)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
+    """Fail any test during which a bare ``claude`` or ``codex`` resolves.
+
+    Checked with the test's fixtures in place, before and after its body,
+    both in-process and from a child shell, because a child process is
+    where the $0.29 leak happened. A failure, never a skip: a skipped
+    check is how spending goes unnoticed.
+    """
+    _require_no_subscription_cli("before the test body ran")
+    result = yield
+    _require_no_subscription_cli("after the test body ran")
+    return result
+
+
+def _require_no_subscription_cli(when: str) -> None:
+    reachable = _inference_guard.reachable_clis(os.environ)
+    if reachable:
+        pytest.fail(
+            f"a subscription CLI is reachable {when} ({'; '.join(reachable)}). "
+            "A test may run a stub by absolute path, never a bare name on PATH.",
+            pytrace=False,
+        )
 
 
 # ───────── The suite needs the dev extra ─────────
@@ -145,16 +208,10 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # rote-cloud credential, which a developer's real login must never
     # satisfy or be clobbered by, and the layered config, which must not
     # change what any command resolves. Each points under tmp_path.
+    # The session already moved them all (and dropped the cloud credential
+    # and the config env twins); this gives each test its own copy.
     for key, value in isolation.isolated_env(tmp_path, base={}).items():
         monkeypatch.setenv(key, value)
-    for key in isolation.CLOUD_CREDENTIAL_ENV:
-        monkeypatch.delenv(key, raising=False)
-    # The config layers' env twins (ROTE_RUNTIME, ROTE_WORK_DOMAINS, ...):
-    # a developer's exported default must not change what a test resolves.
-    from rote.config import CONFIG_KEYS
-
-    for config_key in CONFIG_KEYS:
-        monkeypatch.delenv(config_key.env, raising=False)
     # `rote compile` now always constructs its JSONL progress sink (the
     # <out>/progress.jsonl sidecar), whose price enrichment does a live
     # catalog fetch. No unit test may touch the network for it — tests
@@ -199,31 +256,6 @@ def _offline_price_catalog() -> object:
     from rote.eval.pricing import PricingError
 
     raise PricingError("tests never fetch live prices")
-
-
-#: Credentials that would let a test reach a real model. Scrubbed from
-#: every test's environment — see :func:`_no_inference_in_tests`.
-_INFERENCE_CREDENTIAL_VARS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "ROTE_INFERENCE",
-    "ROTE_CLOUD_TOKEN",
-    # The decision models: with these set, the default decider (auto) would
-    # call Clef or Jev from any compile test.
-    "ROTE_CLEF_ACCOUNT_ID",
-    "ROTE_CLEF_API_TOKEN",
-    "TYPESAFE_API_KEY",
-)
-
-#: Subscription-auth CLIs. These are the dangerous ones: `claude -p`
-#: needs no API key at all, so a test that merely *finds* the binary
-#: spends the developer's subscription with nothing in the environment
-#: to scrub. Exactly how two DBOS e2e suites quietly burned real
-#: inference on every run until it was caught by timing.
-_SUBSCRIPTION_CLIS = frozenset({"claude", "codex"})
 
 
 class NetworkBlocked(RuntimeError):
@@ -279,49 +311,6 @@ def _no_network_in_fast_tests(
 
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
-
-
-@pytest.fixture(autouse=True)
-def _no_inference_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A test may never spend tokens.
-
-    The project's split: anything that does not require inference is a
-    **test** — automated, fast, run on every push. Anything that costs
-    tokens is an **eval** — run deliberately and periodically, never
-    from CI. This fixture makes the first half impossible to violate by
-    accident instead of merely documented.
-
-    Two independent leaks, both closed here:
-
-    1. **Credentials in the environment.** A developer running the suite
-       locally has real keys exported; a vendor SDK constructed without
-       an explicit key picks them up silently.
-    2. **A subscription CLI on PATH.** `claude -p` authenticates from an
-       OAuth session, so no env var gates it — the only defense is not
-       finding the binary. `shutil.which` is wrapped rather than
-       replaced so that lookups the e2e suites depend on (node, npm,
-       docker, wrangler) still resolve normally.
-
-    Only a *bare name* lookup is blocked, because only that consults
-    PATH and can reach the developer's real install. Several tests build
-    a fake `claude` script under tmp_path and pass its absolute path as
-    `executable=`; that is a stub, not a subscription, and it still
-    resolves.
-
-    A test that legitimately needs one of these monkeypatches it back:
-    this fixture runs first, so a test-local patch wins.
-    """
-    for var in _INFERENCE_CREDENTIAL_VARS:
-        monkeypatch.delenv(var, raising=False)
-
-    real_which = shutil.which
-
-    def _which_without_subscription_clis(cmd: str, *args: object, **kwargs: object):  # noqa: ANN202
-        if isinstance(cmd, str) and os.sep not in cmd and cmd in _SUBSCRIPTION_CLIS:
-            return None
-        return real_which(cmd, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(shutil, "which", _which_without_subscription_clis)
 
 
 #: rote.extras' real ``direct_url.json`` reader, before the fixture below

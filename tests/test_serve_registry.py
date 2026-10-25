@@ -9,6 +9,7 @@ test_serve_server.py.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ from rote.serve.registry import (
     DbosTrigger,
     Registry,
     RegistryEntry,
+    RegistryMoved,
     TemporalTrigger,
+    default_registry_path,
     entry_from_pipeline,
     input_schema_for,
     redact_url_password,
@@ -504,3 +507,78 @@ def test_register_missing_pipeline_yaml(tmp_path: Path, capsys: pytest.CaptureFi
     rc = cli_main(["register", str(tmp_path), "--registry", str(tmp_path / "r.json")])
     assert rc == 2
     assert "no pipeline.yaml found" in capsys.readouterr().err
+
+
+# ───────── The registry moved from ~/.rote to the XDG data dir ─────────
+
+
+@pytest.fixture
+def moved_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """``(old, new)`` default registry paths under a home of the test's own."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.delenv("ROTE_SERVE_REGISTRY_PATH")
+    return (
+        tmp_path / "home" / ".rote" / "registry.json",
+        tmp_path / "data" / "rote" / "serve-registry.json",
+    )
+
+
+def _write_registry(path: Path) -> None:
+    registry = Registry()
+    registry.upsert(_temporal_entry())
+    registry.save(path)
+
+
+def test_the_default_is_the_xdg_path_when_no_old_registry_exists(
+    moved_home: tuple[Path, Path],
+) -> None:
+    old, new = moved_home
+    assert default_registry_path() == new
+    _write_registry(new)
+    assert default_registry_path() == new
+
+
+def test_an_old_registry_alone_is_refused_with_the_move_command(
+    moved_home: tuple[Path, Path],
+) -> None:
+    """Never an empty registry beside it: `rote serve` would drop every tool."""
+    old, new = moved_home
+    _write_registry(old)
+    with pytest.raises(RegistryMoved) as raised:
+        default_registry_path()
+    message = str(raised.value)
+    assert f"mv {old} {new}" in message
+    # The command the error prints is the whole fix.
+    command = message.split("Move it: ", 1)[1]
+    subprocess.run(["/bin/sh", "-c", command], check=True)
+    assert default_registry_path() == new
+    assert [e.name for e in Registry.load(new).entries] == ["bdr-campaign"]
+
+
+def test_both_registries_is_refused_naming_the_one_rote_reads(
+    moved_home: tuple[Path, Path],
+) -> None:
+    old, new = moved_home
+    _write_registry(old)
+    _write_registry(new)
+    with pytest.raises(RegistryMoved) as raised:
+        default_registry_path()
+    message = str(raised.value)
+    assert f"{new}, the one rote reads" in message
+    assert message.endswith(f"rm {old}")
+
+
+@pytest.mark.parametrize("command", [["register", str(BDR_PIPELINE_YAML)], ["serve"]])
+def test_register_and_serve_stop_on_an_old_registry(
+    command: list[str],
+    moved_home: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old, new = moved_home
+    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://u:p@db:5432/rote")
+    _write_registry(old)
+    assert cli_main(command) == 2
+    assert f"mv {old} {new}" in capsys.readouterr().err
+    assert not new.exists()

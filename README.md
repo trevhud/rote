@@ -52,12 +52,12 @@ rote run (python): succeeded
     "status": "draft",
     "reviewer": null,
     "reimbursable_usd": 2395.59,
-    "pending_usd": 844.39,
-    "returned_usd": 64.17,
+    "pending_usd": 18.75,
+    "returned_usd": 889.81,
     "batch_total_usd": 3304.15,
     "auto_approved": ["Dev Patel", "Emi Tanaka"],
-    "review_items": 4,
-    "blocked_items": 2
+    "review_items": 1,
+    "blocked_items": 5
   }
 }
 ```
@@ -72,7 +72,7 @@ runtime:
 rote emit expense-audit/expected/pipeline.yaml --runtime dbos --out expense-audit/app-dbos
 rote run expense-audit/app-dbos --input expense-audit/input.json \
   --signal controller_review='{"reviewer": "Priya Shah", "approved_ids": ["EXP-2403", "EXP-2413", "EXP-2420"], "rejected_ids": ["EXP-2410"]}'
-# ... "status": "final", "reimbursable_usd": 2990.98, "returned_usd": 313.17
+# ... "status": "final", "reimbursable_usd": 2414.34, "returned_usd": 889.81
 ```
 
 What compiling it bought, measured: we ran the same batch twice each way
