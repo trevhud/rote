@@ -785,13 +785,14 @@ def next_steps(
 ) -> list[str]:
     """What to do with the result. ``command`` is the one that measures
     again (``rote setup`` inside setup)."""
+    from rote.skill_target.next_steps import compiled_skill_next_steps
+
     s = session
     steps = []
     if summary.get("ok"):
-        steps.append(
-            f"an agent runs the compiled skill with: rote skill run {s.name} start --file "
-            "<input.json>"
-        )
+        # The compile's own next steps from the swap on: it is installed
+        # already, and this run is the proof its last line points to.
+        steps += compiled_skill_next_steps(s.compiled_skill, s.skill_dir).swap
         steps.append(
             f"let Claude Code run it without asking: rote skill install {s.compiled_skill} "
             "--save-allow-rule"

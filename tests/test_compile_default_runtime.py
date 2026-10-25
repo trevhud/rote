@@ -361,17 +361,17 @@ def test_a_workflow_compile_keeps_its_rote_run_next_step(
 
 
 def _next_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[str]]:
-    from rote.cli import _compiled_skill_next_steps
+    from rote.skill_target.next_steps import compiled_skill_next_steps
 
     home = tmp_path / "home"
     (home / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ROTE_CLIENT_HOME_DIR", str(home))
     compiled = tmp_path / "out" / "runtime" / "skill" / "word-lookup"
     compiled.mkdir(parents=True, exist_ok=True)
-    install, lines = _compiled_skill_next_steps(compiled, Path("my-skill"))
-    assert install == f"rote skill install {compiled.resolve()}"
-    assert lines[-1] == "or see it give the original's answer first: rote try my-skill"
-    return compiled, lines[:-1]
+    steps = compiled_skill_next_steps(compiled, Path("my-skill"))
+    assert steps.install == f"rote skill install {compiled.resolve()}"
+    assert steps.proof == "or see it give the original's answer first: rote try my-skill"
+    return compiled, steps.swap
 
 
 def test_a_free_skills_slot_gets_the_plain_link(
@@ -379,7 +379,7 @@ def test_a_free_skills_slot_gets_the_plain_link(
 ) -> None:
     compiled, lines = _next_lines(tmp_path, monkeypatch)
     assert lines == [
-        "then swap it in for the original word-lookup skill (Claude Code: "
+        "swap it in for the original word-lookup skill (Claude Code: "
         f"ln -s {compiled.resolve()} ~/.claude/skills/word-lookup)"
     ]
 
@@ -403,14 +403,14 @@ def test_an_occupied_slot_moves_the_original_aside_first(
     compiled, lines = _next_lines(tmp_path, monkeypatch)
     target = compiled.resolve()
     assert lines == [
-        "then, for Claude Code: your original word-lookup skill is at "
+        "for Claude Code: your original word-lookup skill is at "
         "~/.claude/skills/word-lookup. To use the compiled one instead, move the original "
         "out of the skills folder (nothing is deleted): mv ~/.claude/skills/word-lookup "
         f"~/word-lookup.original && ln -s {target} ~/.claude/skills/word-lookup",
         "  undo: rm ~/.claude/skills/word-lookup && mv ~/word-lookup.original "
         "~/.claude/skills/word-lookup",
     ]
-    assert not any(line.startswith("then swap it in") for line in lines)
+    assert not any(line.startswith("swap it in") for line in lines)
     # Printing never touched the original.
     assert slot.exists() or slot.is_symlink()
 
@@ -424,7 +424,7 @@ def test_a_slot_already_linked_to_this_skill_says_so(
     slot.parent.mkdir(parents=True)
     slot.symlink_to(compiled, target_is_directory=True)
     _, lines = _next_lines(tmp_path, monkeypatch)
-    assert lines == ["then your agent has it: ~/.claude/skills/word-lookup already links to it"]
+    assert lines == ["your agent has it: ~/.claude/skills/word-lookup already links to it"]
 
 
 def test_a_moved_claude_config_dir_is_where_the_slot_is_checked(
@@ -432,7 +432,7 @@ def test_a_moved_claude_config_dir_is_where_the_slot_is_checked(
 ) -> None:
     """CLAUDE_CONFIG_DIR moves ~/.claude, skills included; the slot checked
     and printed is the moved one, as Claude Code loads it."""
-    from rote.cli import _compiled_skill_next_steps
+    from rote.skill_target.next_steps import compiled_skill_next_steps
 
     config = tmp_path / "claude config"
     (config / "skills" / "word-lookup").mkdir(parents=True)
@@ -440,11 +440,9 @@ def test_a_moved_claude_config_dir_is_where_the_slot_is_checked(
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     compiled = tmp_path / "out" / "runtime" / "skill" / "word-lookup"
     compiled.mkdir(parents=True)
-    _, lines = _compiled_skill_next_steps(compiled, Path("my-skill"))
+    lines = compiled_skill_next_steps(compiled, Path("my-skill")).swap
     quoted = f"'{config / 'skills' / 'word-lookup'}'"
-    assert lines[0].startswith(
-        f"then, for Claude Code: your original word-lookup skill is at {quoted}."
-    )
+    assert lines[0].startswith(f"for Claude Code: your original word-lookup skill is at {quoted}.")
     assert f"mv {quoted} ~/word-lookup.original && ln -s " in lines[0]
 
 
