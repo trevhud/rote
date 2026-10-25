@@ -654,10 +654,14 @@ grounded each server. Things to preserve:
   `rote.compiler.tool_grounding` lists the tools (`tools/list`, read-only,
   through the emitted pipelines' own non-interactive client, all servers
   concurrently) of the registered servers the skill names, before the
-  agent runs. Only those: a third-party skill must not trigger
-  authenticated requests, and silent token refreshes, against the user's
-  other servers (`--tool-discovery all` opts in, `none` opts out on any
-  driver). Schemas are server-supplied text, so the agent sees only
+  agent runs, plus the servers the user has logged in to, kept only when
+  the skill calls one of their tools (a code span or a call, never a
+  product name in prose: Atlassian's own skills say "Jira" and call
+  `getJiraIssue(...)` but never name `atlassian`). Only those: a
+  third-party skill must not trigger authenticated requests, and silent
+  token refreshes, against servers the user has not approved
+  (`--tool-discovery all` opts in, `none` opts out on any driver). Schemas
+  are server-supplied text, so the agent sees only
   identifier-shaped names and JSON type names, labeled as data.
   Verification checks each `mcp:` binding's arguments against a declared
   schema; one that is not a flat object schema (top-level `anyOf`,

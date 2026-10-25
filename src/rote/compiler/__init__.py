@@ -1092,18 +1092,35 @@ class Compiler:
         """
         from rote.mcp import load_registry
 
-        registered = sorted(load_registry().servers)
-        texts = [p.read_text(encoding="utf-8", errors="replace") for p in skill_dir.rglob("*.md")]
+        configs = load_registry().servers
+        registered = sorted(configs)
+        skill_text = "\n".join(
+            p.read_text(encoding="utf-8", errors="replace") for p in skill_dir.rglob("*.md")
+        )
         contact = tool_grounding.servers_to_contact(
             registered,
-            "\n".join(texts),
+            skill_text,
             self.tool_discovery,
             tool_grounding.skill_tool_table_servers(skill_dir),
+        )
+        # A server the user logged in to may be listed too, and is kept only
+        # if the skill calls one of its tools: the skill names tools, not
+        # always the server (Atlassian's say "Jira", never "atlassian").
+        logged_in = (
+            [s for s in tool_grounding.logged_in_servers(configs) if s not in contact]
+            if self.tool_discovery == "named"
+            else []
         )
         declared: tool_grounding.ToolSchemas = {}
         for server, why in contact.items():
             self._emit("log", f"tool schemas: listing {server!r} (the skill says: {why!r})")
-        left = [s for s in registered if s not in contact]
+        for server in logged_in:
+            self._emit(
+                "log",
+                f"tool schemas: listing {server!r} (you logged in to it; kept if the skill "
+                "calls one of its tools)",
+            )
+        left = [s for s in registered if s not in contact and s not in logged_in]
         unlisted = {
             s: f"the skill does not name it (--tool-discovery {self.tool_discovery})" for s in left
         }
@@ -1111,15 +1128,32 @@ class Compiler:
             self._emit(
                 "log",
                 f"tool schemas: not contacting {', '.join(left)} "
-                f"(not named in the skill; --tool-discovery {self.tool_discovery})",
+                f"(not named in the skill and not logged in; --tool-discovery "
+                f"{self.tool_discovery})",
             )
-        if contact:
+        if contact or logged_in:
 
             def _skip(server: str, reason: str) -> None:
                 unlisted[server] = reason
                 self._emit("log", f"tool schemas: skipped server {server!r}: {reason}")
 
-            declared = await tool_grounding.discover(contact, on_skip=_skip)
+            declared = await tool_grounding.discover([*contact, *logged_in], on_skip=_skip)
+            if logged_in:
+                listed = {k: v for k, v in declared.items() if k[0] in logged_in}
+                calls = tool_grounding.servers_whose_tools_the_skill_calls(listed, skill_text)
+                for server in logged_in:
+                    if server in calls:
+                        self._emit("log", f"tool schemas: using {server!r} ({calls[server]})")
+                    elif server not in unlisted:
+                        unlisted[server] = "the skill calls none of its tools"
+                        self._emit(
+                            "log",
+                            f"tool schemas: not using {server!r}: the skill calls none of its "
+                            "tools",
+                        )
+                declared = {
+                    k: v for k, v in declared.items() if k[0] not in logged_in or k[0] in calls
+                }
         if snapshot:
             servers = sorted({s for s, _ in snapshot} - {s for s, _ in declared})
             if servers:
