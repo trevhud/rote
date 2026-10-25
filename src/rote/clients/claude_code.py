@@ -100,6 +100,12 @@ LIMITS = (
 )
 
 
+def user_skills_dir(ctx: ClientContext) -> Path:
+    """Where Claude Code loads a user's own skills: ``skills/`` in its config
+    dir (``~/.claude``, or ``CLAUDE_CONFIG_DIR``)."""
+    return _paths(ctx).config_dir / "skills"
+
+
 def _paths(ctx: ClientContext) -> _Paths:
     override = ctx.env.get("CLAUDE_CONFIG_DIR", "").strip()
     if override:

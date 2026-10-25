@@ -28,7 +28,9 @@ def compiler_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 def _args(tmp_path: Path, command: str) -> list[str]:
     skill = tmp_path / "skill"
     skill.mkdir()
-    (skill / "SKILL.md").write_text("# Test skill\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\nname: skill\ndescription: A test skill.\n---\n# Test skill\n", encoding="utf-8"
+    )
     args = [command, str(skill)]
     if command == "compile":
         args += ["--local", "--out", str(tmp_path / "out")]

@@ -94,6 +94,20 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **A flagless `rote compile` emits a compiled skill (`--runtime skill`),
+  logged in or not.** It was dbos logged out, and rote cloud (cloudflare
+  plus auto-deploy) logged in. Measured on claude-sonnet-4-6, original
+  skill against compiled skill, with every compared field matching within
+  the original's own noise: expense-audit 154 s / $0.34 to 43 s / $0.13,
+  ops-report 55 s / $0.13 to 42 s / $0.12, docs-digest 17.9 s / $0.093 to
+  16.3 s / $0.049. The summary ends with the next step: `rote skill install
+  <dir>`, then swapping it in for the original skill, or `rote try <skill>`
+  for the side-by-side proof. rote cloud is now asked for, not assumed:
+  `--cloud`, a cloudflare runtime, or `deploy: rote-cloud` (which makes
+  cloudflare the built-in runtime). Every explicit flag, `ROTE_*` variable
+  and config value resolves as before. `rote config` reports the new
+  built-in, and `rote init` offers local hosting and `skill` first.
+
 - **The `rote register` / `rote serve` registry moved under the XDG data
   dir.** The default is now `$XDG_DATA_HOME/rote/serve-registry.json`
   (`~/.local/share/rote/serve-registry.json`), beside the app registry,
