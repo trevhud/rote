@@ -1,6 +1,7 @@
 """Server-side ("cloud") compilation client for ``rote compile``.
 
-When logged in to rote cloud, ``rote compile`` runs the compilation on
+When logged in to rote cloud, ``rote compile --cloud`` (or a compile whose
+runtime is cloudflare, or whose ``deploy`` is rote-cloud) runs the compilation on
 the platform instead of on the user's machine: the skill bundle is
 synced up, a compilation job is started, its live progress is streamed
 back (the same :class:`~rote.compiler.events.CompilationEvent` wire

@@ -93,7 +93,7 @@ def test_local_defaults_write_only_runtime_and_deploy(config_path: Path) -> None
     _run(_local_answers())
     # auto agent, blank model, haiku structure, auto decider, no tiebreak:
     # all are the built-in defaults, so none is written.
-    assert load_config_file(config_path) == {"runtime": "dbos", "deploy": "none"}
+    assert load_config_file(config_path) == {"runtime": "skill", "deploy": "none"}
 
 
 def test_local_path_picks_every_setting(config_path: Path) -> None:
@@ -265,7 +265,7 @@ def test_project_flag_plans_rote_yaml_in_cwd(tmp_path: Path) -> None:
     assert write["path"] == str(tmp_path / "rote.yaml")
     assert write["replaces"] is False
     apply_plan(plan)
-    assert load_config_file(tmp_path / "rote.yaml") == {"runtime": "dbos", "deploy": "none"}
+    assert load_config_file(tmp_path / "rote.yaml") == {"runtime": "skill", "deploy": "none"}
 
 
 def test_an_existing_config_is_planned_as_a_replacement(config_path: Path) -> None:
@@ -292,7 +292,7 @@ def test_cli_without_a_terminal_names_the_flag_and_writes_nothing(
 ) -> None:
     rc, out, err = _cli(["init", "--agent-mode", "no"], capsys)
     assert rc == 2
-    assert "pass --deploy <rote-cloud|none>" in err
+    assert "pass --deploy <none|rote-cloud>" in err
     assert "stdin is not a terminal" in err
     assert out == ""
     assert not config_path.exists()
@@ -304,7 +304,7 @@ def test_cli_yes_takes_the_defaults_and_applies(
     rc, out, err = _cli(["init", "--deploy", "none", "--yes"], capsys)
     assert rc == 0, err
     assert out == ""  # results go to stderr unless --json
-    assert load_config_file(config_path) == {"runtime": "dbos", "deploy": "none"}
+    assert load_config_file(config_path) == {"runtime": "skill", "deploy": "none"}
 
 
 def test_cli_json_missing_answer_is_one_action_required_object(
@@ -316,8 +316,8 @@ def test_cli_json_missing_answer_is_one_action_required_object(
     assert payload["status"] == "action_required"
     assert payload["reason"] == "missing_answer"
     assert payload["missing"] == ["--runtime"]
-    assert payload["choices"][0] == "dbos"
-    runtimes = "<dbos|temporal|cloudflare|dbos-ts|inngest|python>"
+    assert payload["choices"][0] == "skill"
+    runtimes = "<skill|dbos|temporal|cloudflare|dbos-ts|inngest|python>"
     assert payload["next"] == [{"command": f"rote init --deploy none --json --runtime {runtimes}"}]
     assert not config_path.exists()
 
@@ -338,7 +338,7 @@ def test_cli_replacing_needs_force_even_with_yes(
     rc, out, _ = _cli(["init", "--deploy", "none", "--yes", "--force", "--json"], capsys)
     assert rc == 0
     assert json.loads(out)["outcomes"] == [{"id": "write-config", "status": "done", "error": None}]
-    assert load_config_file(config_path) == {"runtime": "dbos", "deploy": "none"}
+    assert load_config_file(config_path) == {"runtime": "skill", "deploy": "none"}
 
 
 def test_cli_without_yes_stops_at_the_plan(
@@ -378,3 +378,23 @@ def test_piped_answers_never_reach_a_prompt(tmp_path: Path) -> None:
     assert "stdin is not a terminal" in proc.stderr
     assert "Input is not a terminal" not in proc.stderr  # prompt_toolkit never started
     assert not (tmp_path / "config.yaml").exists()
+
+
+def test_cli_yes_alone_takes_local_hosting_and_the_skill_runtime(
+    config_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The recommended path is the default answer: local hosting, then the
+    compiled skill. It was rote cloud before, which meant cloudflare."""
+    rc, _, err = _cli(["init", "--yes"], capsys)
+    assert rc == 0, err
+    assert load_config_file(config_path) == {"runtime": "skill", "deploy": "none"}
+
+
+def test_the_skill_runtime_is_offered_first_and_alone_recommended() -> None:
+    from rote.cli import DEFAULT_COMPILE_RUNTIME
+    from rote.init_wizard import RUNTIME_MENU
+
+    name, pitch = RUNTIME_MENU[0]
+    assert name == "skill" == DEFAULT_COMPILE_RUNTIME
+    assert "recommended" in pitch
+    assert not [n for n, p in RUNTIME_MENU[1:] if "recommended" in p or "default" in p]

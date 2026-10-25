@@ -346,22 +346,42 @@ def test_config_reports_effort_default_and_override(
     assert set_ == {"value": "high", "source": "env ROTE_EFFORT"}
 
 
-def test_config_json_reflects_login_derived_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("logged_in", [True, False])
+def test_config_json_reports_the_skill_default_logged_in_or_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    logged_in: bool,
 ) -> None:
+    """`rote config` shows what a flagless compile does: a compiled skill and
+    no deploy, whatever the login. Before, a login made it cloudflare plus
+    rote-cloud, and logged out it was dbos."""
     from rote.cloud_auth import CloudCredential, save_credential
 
     _layers(monkeypatch, tmp_path)
-    save_credential(CloudCredential(url="http://p", token="rote_k", user="t@x"))
+    if logged_in:
+        save_credential(CloudCredential(url="http://p", token="rote_k", user="t@x"))
     rc = cli_main(["config", "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
+    state = "logged in" if logged_in else "logged out"
     assert payload["settings"]["runtime"] == {
-        "value": "cloudflare",
-        "source": "built-in default (logged in)",
+        "value": "skill",
+        "source": f"built-in default ({state})",
     }
-    assert payload["settings"]["deploy"]["value"] == "rote-cloud"
-    assert payload["cloud"] == {"logged_in": True, "url": "http://p", "user": "t@x"}
+    assert payload["settings"]["deploy"]["value"] == "none"
+    assert payload["cloud"]["logged_in"] is logged_in
+
+
+def test_config_json_deploy_rote_cloud_makes_cloudflare_the_built_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _layers(monkeypatch, tmp_path, user="deploy: rote-cloud\n")
+    assert cli_main(["config", "--json"]) == 0
+    settings = json.loads(capsys.readouterr().out)["settings"]
+    assert settings["runtime"]["value"] == "cloudflare"
+    assert settings["runtime"]["source"].startswith("built-in default")
+    assert settings["deploy"]["value"] == "rote-cloud"
 
 
 def test_config_bad_file_exits_2(
@@ -424,8 +444,8 @@ def _skill(tmp_path: Path) -> Path:
 def test_compile_config_runtime_beats_login_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Logged in (built-in default would be cloudflare) but the user
-    config pins temporal — the config wins, and no upload happens."""
+    """Logged in, the user config pins temporal — the config wins, and no
+    upload happens."""
     from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="runtime: temporal\n")
@@ -433,8 +453,7 @@ def test_compile_config_runtime_beats_login_default(
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    # The config pins temporal (not cloudflare), which is itself a local
-    # opt-out — the logged-in cloud default steps aside, no --local needed.
+    # The config pins temporal (not cloudflare), so the run is local.
     out_dir = tmp_path / "out"
     rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval"])
     assert rc == 0
@@ -461,16 +480,16 @@ def test_compile_config_deploy_none_suppresses_upload(
 ) -> None:
     from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_compiler
 
-    _layers(monkeypatch, tmp_path, user="deploy: none\n")
+    _layers(monkeypatch, tmp_path, user="runtime: cloudflare\ndeploy: none\n")
     _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    # deploy: none is a local opt-out — the logged-in cloud default steps
-    # aside (no --local needed), and no upload happens.
+    # deploy: none keeps a logged-in cloudflare compile local (no --local
+    # needed), and no upload happens.
     rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(tmp_path / "out"), "--no-eval"])
     assert rc == 0
-    # Still emits cloudflare (the logged-in runtime default) — just no upload.
+    # Still emits cloudflare (the configured runtime) — just no upload.
     assert (tmp_path / "out" / "runtime" / "cloudflare").is_dir()
     assert calls == []
 

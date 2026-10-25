@@ -609,7 +609,7 @@ def _compile(skill_dir: Path, out_dir: Path, *extra: str) -> int:
     return cli_main(["compile", str(skill_dir), "--out", str(out_dir), "--no-eval", *extra])
 
 
-def test_compile_logged_in_defaults_to_cloudflare_and_deploys(
+def test_compile_logged_in_local_cloudflare_deploys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     skill_dir = tmp_path / "skill"
@@ -619,11 +619,12 @@ def test_compile_logged_in_defaults_to_cloudflare_and_deploys(
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    # --local keeps the compilation on this machine; logged in, it still
-    # emits cloudflare and uploads (the local auto-deploy leg). The no-flag
-    # logged-in default now runs the whole compilation on rote cloud instead
-    # (see tests/test_cloud_compile.py).
-    rc = _compile(skill_dir, tmp_path / "out", "--local")
+    # --local keeps a cloudflare compilation on this machine; logged in, it
+    # still uploads the emitted app (the local auto-deploy leg). Without
+    # --local the same compile runs on rote cloud (tests/test_cloud_compile.py),
+    # and with no runtime at all it is a compiled skill
+    # (tests/test_compile_default_runtime.py).
+    rc = _compile(skill_dir, tmp_path / "out", "--local", "--runtime", "cloudflare")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "cloudflare" / "src" / "workflow.ts").exists()
     assert len(calls) == 1
@@ -641,27 +642,10 @@ def test_compile_no_deploy_still_emits_cloudflare(
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    rc = _compile(skill_dir, tmp_path / "out", "--no-deploy")
+    rc = _compile(skill_dir, tmp_path / "out", "--no-deploy", "--runtime", "cloudflare")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "cloudflare").is_dir()
     assert calls == []
-
-
-def test_compile_logged_out_falls_back_to_local_with_hint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The silent local fallback: no prompt, dbos default, one tip line."""
-    skill_dir = tmp_path / "skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_compiler(monkeypatch)
-    calls = _fake_cloud_deploy(monkeypatch)
-
-    rc = _compile(skill_dir, tmp_path / "out")
-    assert rc == 0
-    assert (tmp_path / "out" / "runtime" / "dbos" / "main.py").exists()
-    assert calls == []
-    assert "`rote login` makes rote cloud the default host" in capsys.readouterr().err
 
 
 def test_compile_explicit_runtime_wins_over_login(
@@ -693,7 +677,7 @@ def test_compile_deploy_failure_keeps_artifacts_and_exits_1(
     _fake_cloud_deploy(monkeypatch, fail=True)
 
     out_dir = tmp_path / "out"
-    rc = _compile(skill_dir, out_dir, "--local")
+    rc = _compile(skill_dir, out_dir, "--local", "--runtime", "cloudflare")
     assert rc == 1
     err = capsys.readouterr().err
     assert "deploy to rote cloud failed" in err

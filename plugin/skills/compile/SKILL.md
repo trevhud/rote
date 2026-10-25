@@ -9,8 +9,9 @@ description: >-
   into code", "harden this skill for production", or complains that a skill
   is slow, expensive, or unreliable as a background job. Output: a
   pipeline.yaml IR, extracted code modules, typed LLM-judge signatures, and
-  runtime code for DBOS (Python or TypeScript), Temporal, Cloudflare
-  Workflows, Inngest, or a plain Python script.
+  a compiled skill (the default) or runtime code for DBOS (Python or
+  TypeScript), Temporal, Cloudflare Workflows, Inngest, or a plain Python
+  script.
 ---
 
 # Compile a skill
@@ -37,6 +38,7 @@ Ask the user which runtime, with these tradeoffs (one line each):
 
 | Runtime | Choose when | Emits |
 |---|---|---|
+| `skill` | The skill keeps running in the user's agent, with the same trigger and answer, its fixed steps in code (recommended) | A skill dir + Python driver |
 | `dbos` | No infra to run — durability lives in SQLite/Postgres, runs anywhere Python runs | Python |
 | `cloudflare` | You want serverless, fully managed execution on Cloudflare Workers | TypeScript |
 | `temporal` | You already operate (or want) a Temporal cluster | Python |
@@ -44,10 +46,12 @@ Ask the user which runtime, with these tradeoffs (one line each):
 | `inngest` | You want to mount the workflow into an existing Node or Next.js app | TypeScript |
 | `python` | You want one plain script with no durability. Refuses skills with human-approval gates | Python |
 
-If the user has no opinion and no existing infra, use `dbos`. It is
-the CLI's default when logged out of rote cloud and needs no standing
-infrastructure. Pass `--runtime dbos` explicitly, because a `rote login`
-or a `rote.yaml` can change the default.
+If the user has no opinion, use `skill`. It is the CLI's default,
+logged in or not, and measured runs gave the original's answer in less
+time and fewer tokens (expense-audit: 154 s / $0.34 to 43 s / $0.13 on
+Sonnet 4.6). Pick a workflow runtime when the skill must run in the
+background with no agent. Pass `--runtime` explicitly either way,
+because a `rote.yaml` or `ROTE_RUNTIME` can change the default.
 
 ## 3. Resolve the CLI (uv)
 
@@ -128,8 +132,12 @@ Read `<out-dir>/compiled/pipeline.yaml` and
    nodes, and what each HITL gate blocks on.
 3. **Where things landed** — `<out-dir>/compiled/` (IR, `extracted/`,
    `signatures/`, report) and `<out-dir>/runtime/<runtime>/` (the
-   deployable code).
-4. **Next steps** — the `extracted/*` modules are scaffolds that raise
+   deployable code; for `skill`, `runtime/skill/<name>/`).
+4. **Next steps** — for `skill`, relay the summary's `next:` lines: the
+   user runs `rote skill install <dir>` (it asks them to confirm), then
+   swaps the compiled skill in for the original in their skills folder,
+   or runs `rote try <skill>` first to see both answer the same input.
+   For a workflow runtime, the `extracted/*` modules are scaffolds that raise
    `NotImplementedError`; the user fills in real API client code, then
    deploys the runtime output. Once deployed, `rote register` +
    `rote serve` expose the pipeline as an MCP tool so Claude can

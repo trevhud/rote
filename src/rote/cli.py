@@ -204,6 +204,61 @@ def _print_stub_todo(
     print(f"{indent}next: fill those in, then {run}", file=out)
 
 
+def _compiled_skill_next_steps(runtime_dir: Path, skill_path: Path) -> tuple[str, list[str]]:
+    """What to do after a skill compile: the install command, then the lines
+    on how an agent gets it and where the proof is (``rote try``).
+
+    A Claude Code skill folder may be a symlink to a directory elsewhere
+    (https://code.claude.com/docs/en/skills), so the link points the agent
+    at the installed directory itself and ``rote skill run`` runs what the
+    install recorded. The compiled skill keeps the original's name, so it
+    goes in place of the original, never beside it.
+
+    The path is checked before the command is printed: with an entry already
+    at ``~/.claude/skills/<name>``, BSD ``ln -s`` exits 0 and puts the link
+    inside that folder, so the compiled skill would never load. Then the
+    lines move the original aside first (nothing deleted) and say how to
+    undo it. rote prints these commands and never runs them."""
+    import shlex
+
+    from rote.adapters.skill import emitted_skill
+    from rote.clients.base import ClientContext
+    from rote.clients.claude_code import user_skills_dir
+
+    skill = emitted_skill(runtime_dir)
+    name = skill["name"] if skill else runtime_dir.name
+    target = shlex.quote(str(runtime_dir.resolve()))
+    ctx = ClientContext.current()
+    slot = user_skills_dir(ctx) / name
+
+    # Printed as ~/... when under the home (the skill name is a safe
+    # identifier, so only an outside CLAUDE_CONFIG_DIR needs quoting).
+    shown = (
+        f"~/{slot.relative_to(ctx.home)}"
+        if slot.is_relative_to(ctx.home)
+        else shlex.quote(str(slot))
+    )
+    link = f"ln -s {target} {shown}"
+    proof = f"or see it give the original's answer first: rote try {shlex.quote(str(skill_path))}"
+    if slot.is_symlink() and slot.resolve() == runtime_dir.resolve():
+        swap = [f"then your agent has it: {shown} already links to it"]
+    elif slot.exists() or slot.is_symlink():
+        # A free name to move it to: mv onto an existing dir nests inside it.
+        aside = f"{name}.original"
+        n = 2
+        while (ctx.home / aside).exists() or (ctx.home / aside).is_symlink():
+            aside, n = f"{name}.original-{n}", n + 1
+        swap = [
+            f"then, for Claude Code: your original {name} skill is at {shown}. To use the "
+            f"compiled one instead, move the original out of the skills folder (nothing is "
+            f"deleted): mv {shown} ~/{aside} && {link}",
+            f"  undo: rm {shown} && mv ~/{aside} {shown}",
+        ]
+    else:
+        swap = [f"then swap it in for the original {name} skill (Claude Code: {link})"]
+    return f"rote skill install {target}", [*swap, proof]
+
+
 def _add_skill_runtime_args(parser: argparse.ArgumentParser, *, with_skill_dir: bool) -> None:
     """The ``--runtime skill`` options, shared by emit and compile."""
     from rote.plan import JUDGE_MODES
@@ -826,6 +881,26 @@ def _ensure_runtime_extra(
     return ensure_extra(extra, purpose, mode=mode, out=Output(mode), argv=argv)
 
 
+#: What ``rote compile`` emits when no flag, ``ROTE_RUNTIME`` or config
+#: file names a runtime, logged in or not: the compiled skill. It runs in
+#: the agent the user already has, on the MCP servers that agent already
+#: reaches, so the first compile is usable at once, and ``rote try`` shows
+#: it gives the original's answer (docs/design/compiled-skill-target.md §9,
+#: PR 10). rote cloud stays one flag away (``--cloud``) or one setting
+#: (``deploy: rote-cloud`` / ``runtime: cloudflare``).
+DEFAULT_COMPILE_RUNTIME = "skill"
+
+
+def builtin_compile_runtime(deploy: str | None) -> str:
+    """The built-in runtime layer for a compile, below flag, env and config.
+
+    ``deploy: rote-cloud`` hosts only the cloudflare runtime, so a resolved
+    rote-cloud deploy makes cloudflare the built-in; anything else gets
+    :data:`DEFAULT_COMPILE_RUNTIME`. ``rote config`` reports through this
+    same function, so it shows what a flagless compile does."""
+    return "cloudflare" if deploy == "rote-cloud" else DEFAULT_COMPILE_RUNTIME
+
+
 def _cmd_compile(args: argparse.Namespace) -> int:
     """Run the full one-shot compilation flow.
 
@@ -869,6 +944,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         layers = rote_config.load_layers()
         runtime_rv = rote_config.resolve("runtime", args.runtime, layers=layers)
         deploy_rv = rote_config.resolve("deploy", "none" if args.no_deploy else None, layers=layers)
+        # The deploy the files and env ask for, before --no-deploy forces
+        # none: `deploy: rote-cloud` makes cloudflare the built-in runtime,
+        # and --no-deploy only skips the upload, as it always has.
+        configured_deploy_rv = rote_config.resolve("deploy", None, layers=layers)
         agent_rv = rote_config.resolve("agent", args.agent, layers=layers)
         model_rv = rote_config.resolve("model", args.model, layers=layers)
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
@@ -879,26 +958,32 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    # ── Cloud vs local mode ── with a login the compilation runs server-side
-    # by default; --local / --no-deploy opt out, --cloud forces it. A
-    # resolved runtime that isn't cloudflare, or a disabled deploy, is an
-    # explicit choice for a local run — honor it silently (a config pin
-    # earns a one-line reason). --cloud overrides (it always emits
-    # cloudflare; an explicit --runtime FLAG + --cloud is rejected inside
-    # _cmd_compile_cloud).
-    config_prefers_local = runtime_rv.value not in (None, "cloudflare") or deploy_rv.value == "none"
+    # ── Cloud vs local mode ── nothing set compiles locally to a compiled
+    # skill (DEFAULT_COMPILE_RUNTIME), logged in or not. With a login, the
+    # compilation runs server-side when something asks for rote cloud: a
+    # cloudflare runtime or a `deploy: rote-cloud` (flag, env or config), or
+    # --cloud. --local / --no-deploy / a disabled deploy keep it local.
+    # --cloud overrides (it always emits cloudflare; an explicit --runtime
+    # FLAG + --cloud is rejected inside _cmd_compile_cloud).
+    # A runtime other than cloudflare is a local run whatever deploy says
+    # (the deploy check below warns about or refuses the contradiction).
+    asks_for_cloud = (
+        runtime_rv.value in (None, "cloudflare")
+        and deploy_rv.value != "none"
+        and (runtime_rv.value == "cloudflare" or deploy_rv.value == "rote-cloud")
+    )
     if args.cloud:
         use_cloud = True
     elif args.local or args.no_deploy or cloud_cred is None:
         # `args.no_deploy` here is redundant but deliberate: it already
         # forced `deploy_rv.value == "none"` above (it is that resolve's
-        # flag argument), so `config_prefers_local` covers it. Dropping
-        # it is an equivalent mutation — unobservable, not untested — and
-        # it stays because this is where a reader looks to learn what
-        # keeps a run local.
+        # flag argument), so `asks_for_cloud` covers it. Dropping it is an
+        # equivalent mutation — unobservable, not untested — and it stays
+        # because this is where a reader looks to learn what keeps a run
+        # local.
         use_cloud = False
     else:
-        use_cloud = not config_prefers_local
+        use_cloud = asks_for_cloud
     if use_cloud:
         # Cloud mode sees only per-run FLAG values — args is NOT yet
         # overwritten with config-resolved agent/model. Config `agent` /
@@ -929,35 +1014,21 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
-    if cloud_cred is not None and config_prefers_local and not args.local and not args.no_deploy:
-        # A config file (not a per-run flag/env) opted out of the cloud
-        # default — say why once, the way the logged-out path hints login.
-        pinned_runtime = runtime_rv.value not in (None, "cloudflare")
-        pin_rv = runtime_rv if pinned_runtime else deploy_rv
-        if pin_rv.source not in ("flag",) and not pin_rv.source.startswith("env "):
-            setting = "runtime" if pinned_runtime else "deploy"
-            print(
-                f"rote compile: your {setting} config opts out of the rote-cloud "
-                "default — running locally (pass --cloud to override)",
-                file=sys.stderr,
-            )
-
     if runtime_rv.value is not None:
         args.runtime = runtime_rv.value
-    elif cloud_cred is not None:
-        args.runtime = "cloudflare"
     else:
-        args.runtime = "dbos"
-        if layers.user or layers.project:
-            print(
-                "rote compile: tip — `rote login` makes rote cloud the default "
-                "host (compile + deploy in one step)",
-                file=sys.stderr,
+        args.runtime = builtin_compile_runtime(configured_deploy_rv.value)
+        if args.runtime == DEFAULT_COMPILE_RUNTIME:
+            # Say what nothing chose, once: the first-run default is the
+            # compiled skill, and a login no longer changes it.
+            hosted = (
+                "; --cloud compiles and hosts it on rote cloud instead"
+                if cloud_cred is not None
+                else ""
             )
-        else:
             print(
-                "rote compile: tip — `rote init` saves your defaults; `rote login` "
-                "makes rote cloud the default host (compile + deploy in one step)",
+                f"rote compile: runtime {args.runtime} (the default: a skill your agent "
+                f"runs, with its fixed steps in code; --runtime picks another{hosted})",
                 file=sys.stderr,
             )
 
@@ -1013,7 +1084,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         # a TypeScript runtime emits a stub for every external_call instead:
         # the paid docs research would be thrown away. Refused before the
         # agent runs.
-        why = runtime_rv.source if runtime_rv.value else "the logged-in default"
+        why = (
+            runtime_rv.source
+            if runtime_rv.value
+            else f"the built-in for deploy: rote-cloud, set by {configured_deploy_rv.source}"
+        )
         print(
             f"error: --backend api writes the vendor calls as Python modules, and the "
             f"{args.runtime} runtime ({why}) emits TypeScript, with a stub for every "
@@ -1041,7 +1116,13 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         try:
             runtime_dir = runtime_dir / read_identity(skill_path).name
         except SkillIdentityError as e:
-            print(f"error: --runtime skill: {e}", file=sys.stderr)
+            default = (
+                ""
+                if runtime_rv.value
+                else " (skill is the default runtime; --runtime dbos, or another, emits a "
+                "workflow instead)"
+            )
+            print(f"error: --runtime skill: {e}{default}", file=sys.stderr)
             return 2
 
     # ── Optional measured baseline (before the compiler spends money) ──
@@ -1370,12 +1451,18 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
     _print_written(written, indent="    ", stream=summary_stream)
+    skill_next = (
+        _compiled_skill_next_steps(runtime_dir, skill_path) if args.runtime == "skill" else None
+    )
     _print_stub_todo(
         _unimplemented_stubs(runtime_dir),
         runtime_dir,
         tracked=stubs_tracked(runtime_dir, pipeline),
         stream=summary_stream,
+        run_command=skill_next[0] if skill_next else None,
     )
+    for line in skill_next[1] if skill_next else []:
+        print(f"    {line}", file=summary_stream)
 
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
@@ -4552,7 +4639,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     # Mirror compile's built-in resolution so this report shows what a
     # flagless `rote compile` would actually do, not just raw file
     # contents.
-    runtime = resolved["runtime"].value or ("cloudflare" if cred is not None else "dbos")
+    runtime = resolved["runtime"].value or builtin_compile_runtime(resolved["deploy"].value)
     deploy = resolved["deploy"].value or (
         "rote-cloud" if cred is not None and runtime == "cloudflare" else "none"
     )
@@ -5645,10 +5732,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=available_runtimes,
         help=(
-            f"Target workflow runtime. Default: the configured `runtime` "
-            f"(see `rote config`), else cloudflare + auto-deploy to rote "
-            f"cloud when logged in (`rote login`), else dbos (durable "
-            f"execution as a library, no orchestrator to run). "
+            f"Target runtime. Default: the configured `runtime` (see `rote "
+            f"config`), else cloudflare when `deploy: rote-cloud` is set, else "
+            f"skill (a compiled skill your agent runs, logged in or not). "
             f"Available: {', '.join(available_runtimes)}"
         ),
     )
@@ -5656,16 +5742,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-deploy",
         action="store_true",
         help=(
-            "When logged in to rote cloud: run the compilation locally and "
-            "skip the auto-deploy (implies a local run; deploy later with "
-            "`rote deploy --target rote-cloud`)"
+            "Skip the rote-cloud deploy a cloudflare compile makes when logged in "
+            "(implies a local run; deploy later with `rote deploy --target rote-cloud`)"
         ),
     )
     cloud_mode = compile_p.add_mutually_exclusive_group()
     cloud_mode.add_argument(
         "--local",
         action="store_true",
-        help="Run the compilation on this machine even when logged in to rote cloud",
+        help="Run the compilation on this machine even when cloudflare or deploy: rote-cloud "
+        "would send it to rote cloud",
     )
     cloud_mode.add_argument(
         "--cloud",
@@ -6077,8 +6163,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "OAuth device-flow login: opens the browser to approve a "
             "one-time code (or prints code + URL over SSH with --device), "
             "then stores a tenant API key at ~/.local/share/rote/cloud.json. "
-            "Once logged in, `rote compile` defaults to hosting on rote "
-            "cloud and `rote deploy --target rote-cloud` needs no flags."
+            "Once logged in, `rote compile --cloud` (or a cloudflare / "
+            "`deploy: rote-cloud` compile) runs and hosts on rote cloud, and "
+            "`rote deploy --target rote-cloud` needs no flags."
         ),
     )
     login_p.add_argument(
@@ -6141,9 +6228,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         default="dbos",
         choices=["dbos", "temporal", "cloudflare"],
-        help=(
-            "Runtime the compiled pipeline is deployed on (default: dbos, matching `rote compile`)"
-        ),
+        help=("Runtime the compiled pipeline is deployed on (default: dbos)"),
     )
     register.add_argument(
         "--name",

@@ -110,17 +110,48 @@ pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
 
 # `rote compile` runs an LLM agent, so it needs a driver: Claude Code
 # (`claude`) or Codex (`codex`) installed and authed, or ANTHROPIC_API_KEY
-# for the in-process `api` driver. The BDR run below takes ~13 min and
-# ~$0.70 with Sonnet. (`rote emit` needs no LLM; see below.)
+# for the in-process `api` driver. (`rote emit` needs no LLM; see below.)
 
-# Default target is DBOS: durable execution as a plain Python library,
-# no orchestrator to run, SQLite for dev / Postgres for prod:
-rote compile ./examples/bdr-outreach/skill --out ./compiled/
+# Default target is a compiled skill: the same skill name and trigger,
+# with its fixed steps in code, run by the agent you already use:
+rote compile ./examples/docs-digest/skill --out ./compiled/
+# rote compile: ✓ docs-digest v...
+#   next: rote skill install .../compiled/runtime/skill/docs-digest
+#     then swap it in for the original docs-digest skill (Claude Code:
+#     ln -s .../runtime/skill/docs-digest ~/.claude/skills/docs-digest)
+#     or see it give the original's answer first: rote try ./examples/docs-digest/skill
+```
 
-# Or pick another runtime (see the table below):
-rote compile ./examples/bdr-outreach/skill --runtime temporal   --out ./compiled/
+rote checks `~/.claude/skills/<name>` before it prints the link. When your
+original skill is already there, `ln -s` would nest the link inside it
+(and exit 0), so rote prints the swap with the original moved aside
+instead, plus the undo. Nothing is deleted, and rote runs none of it:
+
+```
+    then, for Claude Code: your original docs-digest skill is at ~/.claude/skills/docs-digest.
+    To use the compiled one instead, move the original out of the skills folder (nothing is
+    deleted): mv ~/.claude/skills/docs-digest ~/docs-digest.original && ln -s .../runtime/skill/docs-digest ~/.claude/skills/docs-digest
+      undo: rm ~/.claude/skills/docs-digest && mv ~/docs-digest.original ~/.claude/skills/docs-digest
+```
+
+```sh
+# Or emit a background workflow instead (see the table below):
+rote compile ./examples/bdr-outreach/skill --runtime dbos       --out ./compiled/
 rote compile ./examples/bdr-outreach/skill --runtime cloudflare --out ./compiled/
 ```
+
+Measured on claude-sonnet-4-6, original skill against its compiled skill,
+with every compared field matching within the original's own run-to-run
+noise:
+
+| Skill | Original | Compiled skill |
+| --- | --- | --- |
+| expense-audit | 154 s, $0.34 | 43 s, $0.13 |
+| ops-report | 55 s, $0.13 | 42 s, $0.12 |
+| docs-digest | 17.9 s, $0.093 | 16.3 s, $0.049 |
+
+`rote try <skill>` runs that comparison on a skill of yours: it compiles,
+installs, and runs both sides on the same input, after showing the cost.
 
 The name comes from *rote learning*: doing something so many times, so
 reliably, that it becomes mechanical. That's what compilation does to a
@@ -276,16 +307,17 @@ pipelines up as MCP tools so Claude can trigger the deployed workflows
 Prefer a terminal? The same thing is one `uvx` command:
 
 ```sh
-uvx --from rote-cli rote compile ./my-skill --runtime dbos --out ./compiled
+uvx --from rote-cli rote compile ./my-skill --out ./compiled
 ```
 
 **Hosted platform:** [roteskills.com](https://roteskills.com) is the
 project site (concepts, benchmarks methodology, worked examples).
 [app.roteskills.com](https://app.roteskills.com) is Rote Cloud, a
 managed path for teams that would rather not operate a runtime: run
-`rote login` and `rote compile` then runs server-side, streams progress
-back, auto-deploys, and downloads the artifacts locally. Everything in
-this README still works logged out.
+`rote login`, then `rote compile --cloud` (or set `deploy: rote-cloud`
+with `rote init`) runs server-side, streams progress back, auto-deploys,
+and downloads the artifacts locally. Everything in this README still
+works logged out.
 
 > **Naming note:** the `rote` package on PyPI is an unrelated
 > memoization library that also installs `import rote`, so the two can't
@@ -378,20 +410,22 @@ through your API credentials.
   (over SSH, `--device` prints the code + URL instead), you click
   Approve, and the CLI stores a tenant API key at
   `~/.local/share/rote/cloud.json` (mode 0600). Once logged in,
-  `rote compile` runs **on rote cloud by default**: the skill bundle
+  `rote compile --cloud` runs **on rote cloud**, and so does a compile
+  whose runtime is `cloudflare` or whose `deploy` is `rote-cloud`
+  (flag, env or config). A flagless compile stays local and emits a
+  compiled skill, logged in or not. On rote cloud the skill bundle
   syncs up (sha-diffed, so unchanged files don't re-upload), the
   platform runs the compilation server-side, live progress streams back
   through the same renderer as a local run, the result auto-deploys,
   and the artifacts download into your `--out` directory in the exact
-  local layout. `--local` keeps the compilation on your machine (then
-  the cloudflare-emit + auto-deploy flow applies), `--no-deploy` or a
-  config opt-out (`runtime:` pinned to a local target, or
-  `deploy: none`) keeps everything local; `--cloud` forces the server
-  even where config says otherwise. Logged out, everything works
-  locally exactly as before. `rote whoami` shows the account (verified
+  local layout. `--local` keeps the compilation on your machine (a
+  cloudflare compile then emits locally and auto-deploys), `--no-deploy`
+  or `deploy: none` keeps everything local; `--cloud` forces the server
+  even where config says otherwise. `rote whoami` shows the account (verified
   live); `rote logout` revokes the key server-side and clears the store.
 - **`rote init`**: one-time onboarding: pick where compiled pipelines
-  run (rote cloud, with login offered, or a local runtime), which
+  run (locally, with `skill` first and recommended, or rote cloud, with
+  login offered), which
   compiler driver and model do the work, and who decides a local
   compile's structure. It shows what it will write and asks before
   writing. Answers are saved to `~/.config/rote/config.yaml`
@@ -458,7 +492,8 @@ see [`docs/mcp-client.md`](docs/mcp-client.md).
 
 | Runtime | `--runtime` | Language | Shape | Notes |
 | --- | --- | --- | --- | --- |
-| **DBOS** (default) | `dbos` | Python | `main.py` with `@DBOS.workflow` + `@DBOS.step` per node | No orchestrator to deploy; SQLite (dev) / Postgres (prod) |
+| **Compiled skill** (default) | `skill` | Python driver + SKILL.md | a skill dir: the original's name and description, `scripts/` runs the fixed steps, the agent answers only judges and gates | Install with `rote skill install`; runs in Claude Code, Codex and other skill clients through `rote skill run` |
+| DBOS | `dbos` | Python | `main.py` with `@DBOS.workflow` + `@DBOS.step` per node | No orchestrator to deploy; SQLite (dev) / Postgres (prod) |
 | Temporal | `temporal` | Python | `workflow.py` + `activities.py` | Signal handlers for HITL gates |
 | Plain Python | `python` | Python | single `main.py` script | Max legibility, stdlib only; refuses HITL-gate pipelines |
 | Cloudflare Workflows | `cloudflare` | TypeScript | `WorkflowEntrypoint` + `wrangler.jsonc` | `wrangler deploy`-ready |

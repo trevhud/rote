@@ -30,9 +30,14 @@ from rote.interact.prompter import Choice, Prompter
 from rote.setup.install_extra import missing_extra_note
 
 #: Runtime menu: (name, one-line pitch). Order = recommendation order,
-#: matching the compile default (dbos) first for the local path.
+#: the compile default (rote.cli.DEFAULT_COMPILE_RUNTIME, skill) first.
 RUNTIME_MENU: tuple[tuple[str, str], ...] = (
-    ("dbos", "durable Python, no orchestrator process to run (local default)"),
+    (
+        "skill",
+        "a skill your agent runs, its fixed steps in code: the original's answer "
+        "in fewer tokens (recommended)",
+    ),
+    ("dbos", "durable Python, no orchestrator process to run"),
     ("temporal", "workflow.py + activities.py for a Temporal cluster"),
     ("cloudflare", "TypeScript Workflows on Cloudflare Workers"),
     ("dbos-ts", "durable TypeScript for DBOS Transact (Postgres)"),
@@ -163,14 +168,18 @@ def build_plan(
 
     # ── Hosting ──
     hosting = [
-        Choice("rote-cloud", "rote cloud", "hosted; compile and deploy in one step (recommended)"),
-        Choice("none", "locally", "pick the workflow runtime rote emits"),
+        Choice("none", "locally", "a compiled skill or a workflow runtime (recommended)"),
+        Choice(
+            "rote-cloud",
+            "rote cloud",
+            "hosted Cloudflare Workflows; compile and deploy in one step",
+        ),
     ]
     runtimes = _menu(RUNTIME_MENU)
     _check_flag("--deploy", flags.deploy, hosting)
     _check_flag("--runtime", flags.runtime, runtimes)
     deploy = flags.deploy or prompter.select(
-        "Where should compiled pipelines run?", hosting, flag="--deploy", default="rote-cloud"
+        "Where should compiled pipelines run?", hosting, flag="--deploy", default="none"
     )
     values["deploy"] = deploy
     if deploy == "rote-cloud":
@@ -185,7 +194,7 @@ def build_plan(
             "Which runtime should rote emit by default?",
             runtimes,
             flag="--runtime",
-            default="dbos",
+            default=RUNTIME_MENU[0][0],
         )
 
     # ── Compiler driver and model ──

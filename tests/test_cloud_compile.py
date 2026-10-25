@@ -100,7 +100,9 @@ class _Router:
 def _skill_dir(tmp_path: Path, name: str = "word-lookup", extra: bool = True) -> Path:
     skill = tmp_path / "skill"
     (skill / "references").mkdir(parents=True)
-    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Look a word up.\n---\n# {name}\n", encoding="utf-8"
+    )
     if extra:
         (skill / "references" / "notes.md").write_text("hello", encoding="utf-8")
         (skill / ".hidden").write_text("ignored", encoding="utf-8")
@@ -113,7 +115,12 @@ def _skill_dir(tmp_path: Path, name: str = "word-lookup", extra: bool = True) ->
 
 
 class _LocalReached(Exception):
-    """Raised by the patched Compiler so a test can prove the local path ran."""
+    """Raised by the patched Compiler so a test can prove the local path ran,
+    carrying the runtime that local compile resolved."""
+
+    def __init__(self, runtime: str) -> None:
+        super().__init__(runtime)
+        self.runtime = runtime
 
 
 @pytest.fixture
@@ -121,8 +128,8 @@ def patch_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cloud dispatch returns sentinel 77; the local path raises _LocalReached."""
 
     class _FakeCompiler:
-        def __init__(self, **_kw: Any) -> None:
-            raise _LocalReached
+        def __init__(self, **kw: Any) -> None:
+            raise _LocalReached(kw["emit_target"].runtime)
 
     monkeypatch.setattr("rote.cli._cmd_compile_cloud", lambda _args: 77)
     monkeypatch.setattr("rote.cli.Compiler", _FakeCompiler)
@@ -134,12 +141,53 @@ def _login() -> None:
 
 def test_logged_out_runs_local(patch_dispatch: None, tmp_path: Path) -> None:
     skill = _skill_dir(tmp_path)
-    with pytest.raises(_LocalReached):
+    with pytest.raises(_LocalReached) as reached:
         cli_main(["compile", str(skill), "--out", str(tmp_path / "o")])
+    assert reached.value.runtime == "skill"
 
 
-def test_logged_in_runs_cloud(patch_dispatch: None, tmp_path: Path) -> None:
+def test_logged_in_flagless_compiles_a_skill_locally(patch_dispatch: None, tmp_path: Path) -> None:
+    """A login no longer sends a flagless compile to rote cloud (it returned
+    77 here before): the compiled skill is the default either way."""
     _login()
+    skill = _skill_dir(tmp_path)
+    with pytest.raises(_LocalReached) as reached:
+        cli_main(["compile", str(skill), "--out", str(tmp_path / "o")])
+    assert reached.value.runtime == "skill"
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        ["--cloud"],
+        ["--runtime", "cloudflare"],
+    ],
+)
+def test_asking_for_cloud_by_flag_runs_cloud_when_logged_in(
+    patch_dispatch: None, tmp_path: Path, ask: list[str]
+) -> None:
+    _login()
+    skill = _skill_dir(tmp_path)
+    assert cli_main(["compile", str(skill), "--out", str(tmp_path / "o"), *ask]) == 77
+
+
+@pytest.mark.parametrize(
+    ("env", "value"), [("ROTE_RUNTIME", "cloudflare"), ("ROTE_DEPLOY", "rote-cloud")]
+)
+def test_asking_for_cloud_by_env_runs_cloud_when_logged_in(
+    patch_dispatch: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str, value: str
+) -> None:
+    _login()
+    monkeypatch.setenv(env, value)
+    skill = _skill_dir(tmp_path)
+    assert cli_main(["compile", str(skill), "--out", str(tmp_path / "o")]) == 77
+
+
+def test_config_deploy_rote_cloud_runs_cloud_when_logged_in(
+    patch_dispatch: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _login()
+    _user_config(monkeypatch, tmp_path, "deploy: rote-cloud\n")
     skill = _skill_dir(tmp_path)
     assert cli_main(["compile", str(skill), "--out", str(tmp_path / "o")]) == 77
 
@@ -147,15 +195,37 @@ def test_logged_in_runs_cloud(patch_dispatch: None, tmp_path: Path) -> None:
 def test_local_flag_forces_local_when_logged_in(patch_dispatch: None, tmp_path: Path) -> None:
     _login()
     skill = _skill_dir(tmp_path)
-    with pytest.raises(_LocalReached):
-        cli_main(["compile", str(skill), "--out", str(tmp_path / "o"), "--local"])
+    with pytest.raises(_LocalReached) as reached:
+        cli_main(
+            [
+                "compile",
+                str(skill),
+                "--out",
+                str(tmp_path / "o"),
+                "--local",
+                "--runtime",
+                "cloudflare",
+            ]
+        )
+    assert reached.value.runtime == "cloudflare"
 
 
 def test_no_deploy_forces_local_when_logged_in(patch_dispatch: None, tmp_path: Path) -> None:
     _login()
     skill = _skill_dir(tmp_path)
-    with pytest.raises(_LocalReached):
-        cli_main(["compile", str(skill), "--out", str(tmp_path / "o"), "--no-deploy"])
+    with pytest.raises(_LocalReached) as reached:
+        cli_main(
+            [
+                "compile",
+                str(skill),
+                "--out",
+                str(tmp_path / "o"),
+                "--no-deploy",
+                "--runtime",
+                "cloudflare",
+            ]
+        )
+    assert reached.value.runtime == "cloudflare"
 
 
 def _user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str) -> None:
@@ -170,18 +240,20 @@ def test_config_noncloudflare_runtime_forces_local(
     _login()
     _user_config(monkeypatch, tmp_path, "runtime: temporal\n")
     skill = _skill_dir(tmp_path)
-    with pytest.raises(_LocalReached):  # config pin opts out of the cloud default
+    with pytest.raises(_LocalReached) as reached:  # a non-cloudflare pin stays local
         cli_main(["compile", str(skill), "--out", str(tmp_path / "o")])
+    assert reached.value.runtime == "temporal"
 
 
 def test_config_deploy_none_forces_local(
     patch_dispatch: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _login()
-    _user_config(monkeypatch, tmp_path, "deploy: none\n")
+    _user_config(monkeypatch, tmp_path, "runtime: cloudflare\ndeploy: none\n")
     skill = _skill_dir(tmp_path)
-    with pytest.raises(_LocalReached):
+    with pytest.raises(_LocalReached) as reached:
         cli_main(["compile", str(skill), "--out", str(tmp_path / "o")])
+    assert reached.value.runtime == "cloudflare"
 
 
 def test_cloud_flag_overrides_config_local_pin(
@@ -201,7 +273,7 @@ def test_config_cloudflare_runtime_stays_cloud(
     _login()
     _user_config(monkeypatch, tmp_path, "runtime: cloudflare\n")
     skill = _skill_dir(tmp_path)
-    # A cloudflare pin is not a local opt-out — the cloud default stands.
+    # A cloudflare pin asks for rote cloud when logged in.
     assert cli_main(["compile", str(skill), "--out", str(tmp_path / "o")]) == 77
 
 
@@ -720,10 +792,10 @@ def test_cli_cloud_run_json_and_progress(
 def test_config_agent_does_not_leak_into_cloud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A config-file `agent:` is a local pref — the logged-in default still
-    runs on cloud, with no spurious `--agent runs locally` rejection."""
+    """A config-file `agent:` is a local pref — a cloud run asked for by
+    `deploy: rote-cloud` gets no spurious `--agent runs locally` rejection."""
     _login()
-    _user_config(monkeypatch, tmp_path, "agent: claude\n")
+    _user_config(monkeypatch, tmp_path, "deploy: rote-cloud\nagent: claude\n")
     _full_run_router().install(monkeypatch)
     skill = _skill_dir(tmp_path)
     rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out")])
@@ -737,7 +809,7 @@ def test_config_model_does_not_leak_into_cloud(
     """A config-file `model:` the server doesn't offer must NOT reach
     resolve_model — the cloud run takes the server default, exit 0."""
     _login()
-    _user_config(monkeypatch, tmp_path, "model: claude-sonnet-4-6\n")
+    _user_config(monkeypatch, tmp_path, "deploy: rote-cloud\nmodel: claude-sonnet-4-6\n")
     router = _full_run_router().install(monkeypatch)
     skill = _skill_dir(tmp_path)
     rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out"), "--json"])
