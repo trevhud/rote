@@ -1091,6 +1091,86 @@ def _call_claude_cli(
     return payload, _cli_usage_rows(envelope, model)
 
 
+# ───────── passthrough: input data a judge returns unchanged ─────────
+
+
+def passthrough_answer_schema(
+    output_schema: Mapping[str, Any], passthrough: Mapping[str, str] | None
+) -> dict[str, Any]:
+    """The schema the model answers: ``output_schema`` without its passthrough fields.
+
+    Each passed-through property leaves ``properties`` and ``required``, and
+    a ``$defs`` entry only they reached leaves too, so the request carries
+    nothing the model is not asked to write. The IR guarantees the root
+    lists its properties directly (``rote.ir``'s passthrough check). The
+    TS runtimes bake this schema in at emit time; this is the one
+    implementation of it.
+    """
+    if not passthrough:
+        return dict(output_schema)
+    out = copy.deepcopy(dict(output_schema))
+    properties = out.get("properties") or {}
+    out["properties"] = {k: v for k, v in properties.items() if k not in passthrough}
+    if "required" in out:
+        out["required"] = [k for k in out["required"] if k not in passthrough]
+    defs = out.get("$defs")
+    if isinstance(defs, dict):
+        used: set[str] = set()
+        pending = [{k: v for k, v in out.items() if k != "$defs"}]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                ref = node.get("$ref")
+                if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                    name = ref[len("#/$defs/") :]
+                    if name not in used and name in defs:
+                        used.add(name)
+                        pending.append(defs[name])
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+        kept = {name: sub for name, sub in defs.items() if name in used}
+        if kept:
+            out["$defs"] = kept
+        else:
+            del out["$defs"]
+    return out
+
+
+def passthrough_values(inputs: Any, passthrough: Mapping[str, str]) -> dict[str, Any]:
+    """``{output field: a copy of the input value its source path names}``.
+
+    A source is a dotted path into the judge's input. A path that reaches
+    no value (an optional field left out, or null on the way) contributes
+    nothing, so the field is absent, as the model would have left it; the
+    output schema check that follows decides whether that is allowed.
+    """
+    values: dict[str, Any] = {}
+    for target, source in passthrough.items():
+        value: Any = inputs
+        for part in source.split("."):
+            if not isinstance(value, dict) or part not in value:
+                break
+            value = value[part]
+        else:
+            values[target] = copy.deepcopy(value)
+    return values
+
+
+def with_passthrough(answer: Any, inputs: Any, passthrough: Mapping[str, str]) -> Any:
+    """The model's ``answer`` with each passthrough field copied in from ``inputs``.
+
+    The copy wins over anything the model wrote under that name: those
+    fields are the input's, never the model's. An answer that is not an
+    object is returned as it is, for the schema check to name. The TS twin
+    is ``withPassthrough`` in ``_roteSchema.ts``, held to this one by
+    ``tests/test_judge_passthrough.py``.
+    """
+    if not isinstance(answer, dict):
+        return answer
+    return {**answer, **passthrough_values(inputs, passthrough)}
+
+
 # ───────── the one entry point emitted judges call ─────────
 
 
@@ -1108,6 +1188,8 @@ def call_judge(
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
     max_tokens: int | None = None,
+    passthrough: Mapping[str, str] | None = None,
+    inputs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one schema-locked judge call and return its raw output dict.
 
@@ -1117,7 +1199,15 @@ def call_judge(
     drops too. A violation fails the call naming each path, and the step's
     own retry asks again. The caller still validates with its model, which
     types the value.
+
+    ``passthrough`` (``signature_spec.passthrough``) names output fields
+    that are input data returned unchanged. The model is asked for the
+    rest only (:func:`passthrough_answer_schema`), and the copies are
+    merged in from ``inputs``, the judge's validated input, before the
+    whole output schema is checked (:func:`with_passthrough`).
     """
+    if passthrough and inputs is None:
+        raise RuntimeError(f"judge {node_id} passes fields through but was given no inputs")
     provider = select_provider(node_id, client, base_url=base_url)
     payload, rows = structured_call(
         node_id=node_id,
@@ -1125,13 +1215,15 @@ def call_judge(
         client=client,
         model=model,
         prompt=prompt,
-        output_schema=output_schema,
+        output_schema=passthrough_answer_schema(output_schema, passthrough),
         base_url=base_url,
         sampling=sampling,
         max_tokens=max_tokens,
     )
     for row_model, row_usage in rows:
         _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+    if passthrough:
+        payload = with_passthrough(payload, inputs or {}, passthrough)
     errors = schema_errors(output_schema, payload, "output")
     if errors:
         raise RuntimeError(

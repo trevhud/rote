@@ -213,12 +213,17 @@ def fan_out_width(node: Node, priors: Priors, sidecar: EvalEstimates | None) -> 
 
 
 def _judge_field_counts(node: Node) -> tuple[int, int]:
-    """(input fields, output fields) for an llm_judge node."""
+    """(input fields, output fields the model writes) for an llm_judge node.
+
+    Passthrough fields are copied from the input in code, so the model
+    writes none of them.
+    """
     if node.signature_spec is not None:
         in_props = node.signature_spec.input_schema.get("properties")
         out_props = node.signature_spec.output_schema.get("properties")
+        copied = node.signature_spec.passthrough or {}
         n_in = len(in_props) if isinstance(in_props, dict) else 1
-        n_out = len(out_props) if isinstance(out_props, dict) else 1
+        n_out = len(set(out_props) - set(copied)) if isinstance(out_props, dict) else 1
         return max(n_in, 1), max(n_out, 1)
     # Legacy path-based signature: fall back to the IR's documentary
     # input/output field maps.

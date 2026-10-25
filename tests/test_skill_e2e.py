@@ -495,7 +495,9 @@ TIERS = {"Corvid": "medium", "Fjord Supply": "high"}
 
 
 def classify(account: str) -> dict[str, Any]:
-    thread, step, label, attention = CLASSIFIED[account]
+    """The fields the model decides. account_name, thread_id and thread_url
+    are passthrough: code copies them from the thread on both sides."""
+    _, step, label, attention = CLASSIFIED[account]
     return {
         "step": step,
         "step_label": label,
@@ -504,22 +506,27 @@ def classify(account: str) -> dict[str, Any]:
         ],
         "needs_attention": attention,
         "classification_rationale": f"{account}: {label}",
-        "account_name": account,
-        "thread_id": thread,
-        "thread_url": f"https://mail.example.com/{thread}",
     }
 
 
-def score(opportunity: dict[str, Any]) -> dict[str, Any]:
-    tier = TIERS[opportunity["account_name"]]
+def score(account: str) -> dict[str, Any]:
+    """The fields the model decides; the opportunity itself is passthrough."""
+    tier = TIERS[account]
     return {
-        "opportunity": opportunity,
         "score_tier": tier,
         "score_value": {"high": 4.5, "medium": 3.0}[tier],
         "risk_flags": [],
-        "opportunity_summary": f"{opportunity['account_name']} scores {tier}.",
+        "opportunity_summary": f"{account} scores {tier}.",
         "scoring_rationale": "Per the rubric.",
     }
+
+
+def _answer_schema(block: str) -> dict[str, Any]:
+    """A fanned DECIDE block's answer schema."""
+    schema: dict[str, Any] = json.loads(
+        block.split("--- ANSWER SCHEMA (json, one per item) ---\n", 1)[1].split("\n", 1)[0]
+    )
+    return schema
 
 
 def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
@@ -550,6 +557,7 @@ def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
     def remember(step: str, block: str) -> dict[str, Any]:
         found = items(block)
         seen.setdefault(step, []).append(found)
+        seen.setdefault(f"{step} schema", []).append(_answer_schema(block))
         return found
 
     done, asked = drive_to_done(
@@ -562,7 +570,7 @@ def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
                 i: classify(item["account_name"]) for i, item in remember("classify", block).items()
             },
             "score_new_opportunities": lambda block: {
-                i: score(item) for i, item in remember("score", block).items()
+                i: score(item["account_name"]) for i, item in remember("score", block).items()
             },
         },
     )
@@ -575,6 +583,14 @@ def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
     assert [sorted(i["account_name"] for i in batch.values()) for batch in seen["score"]] == [
         ["Corvid", "Fjord Supply"]
     ]
+    # The agent is never asked for a passthrough field: code copies it.
+    (classify_schema,) = seen["classify schema"]
+    assert "step" in classify_schema["properties"]
+    assert not {"account_name", "thread_id", "thread_url"} & set(classify_schema["properties"])
+    (score_schema,) = seen["score schema"]
+    assert "score_tier" in score_schema["properties"]
+    assert "opportunity" not in score_schema["properties"]
+    assert "$defs" not in score_schema
     assert asked == [
         "DECIDE:parse_intake_messages",
         "DECIDE:classify_thread_step",
@@ -587,7 +603,7 @@ def test_deal_monitor_with_the_agents_judgments_matches_its_pipeline(
         if node == "classify_thread_step":
             return classify(prompt.split("Account name: ")[1].split("\n")[0])
         assert node == "score_new_opportunities", node
-        return score(json.loads(prompt.split("unchanged in your output:\n")[1].split("\n")[0]))
+        return score(prompt.split("- Account: ")[1].split("\n")[0])
 
     judge_stub.answer = answer
     skill_calls = fx.calls()

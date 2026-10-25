@@ -19,7 +19,7 @@
     "src/extracted/taxonomy_lookup.ts": "48ce7f78764fa710febb7cc0a64df3dfc1f151a8d62c299cd12116a02605f5bd",
     "src/index.ts": "e8160b22e60d5bf6bd17d1d2bad56bedddd36e71c6a66159c492e5184d781114",
     "src/signatures/_roteInference.ts": "790f29b716d13edce912be92bc3f5bcfa42560408ee49dbff83c2e182aa8811e",
-    "src/signatures/_roteSchema.ts": "b176eb2b1d3e854eb06d7e534343d8f965aca8d8c8fbedb9b5f9addc2c0d2f59",
+    "src/signatures/_roteSchema.ts": "22a91ce994eb8fb86641d935bbdbe1e9f1ae024460859125285552bcd45e8322",
     "src/signatures/personalize_email.ts": "eebe99c646e1b46e01d05e77bcbc2b49f7a3ae514468ee3155ac3cb9fba7043c",
     "src/signatures/vet_contact.ts": "13d5cebf1be307b8d306b0dac37235c5032b865f2c2b0fdbbf146165f01474a7",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",

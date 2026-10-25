@@ -280,3 +280,44 @@ function numberErrors(s: JsonSchema, value: number, path: string): string[] {
     }
     return errors;
 }
+
+/**
+ * `{output field: a copy of the input value its source path names}` for a
+ * judge's `signature_spec.passthrough`. A path that reaches no value
+ * contributes nothing, so the field is absent. The twin of the Python
+ * helper's passthrough_values.
+ */
+export function passthroughValues(
+    input: unknown,
+    passthrough: Record<string, string>,
+): Record<string, unknown> {
+    const values: Record<string, unknown> = {};
+    for (const [target, source] of Object.entries(passthrough)) {
+        let value: unknown = input;
+        let found = true;
+        for (const part of source.split(".")) {
+            if (!isJsonObject(value) || !Object.prototype.hasOwnProperty.call(value, part)) {
+                found = false;
+                break;
+            }
+            value = value[part];
+        }
+        if (found && value !== undefined) values[target] = JSON.parse(JSON.stringify(value));
+    }
+    return values;
+}
+
+/**
+ * The model's answer with each passthrough field copied in from the judge's
+ * validated input; the copy wins over anything the model wrote under that
+ * name. An answer that is not an object is returned as it is, for the
+ * schema check to name. The twin of the Python helper's with_passthrough.
+ */
+export function withPassthrough(
+    answer: unknown,
+    input: unknown,
+    passthrough: Record<string, string>,
+): unknown {
+    if (!isJsonObject(answer)) return answer;
+    return { ...answer, ...passthroughValues(input, passthrough) };
+}

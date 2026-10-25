@@ -11,6 +11,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Judge passthrough: input data a judge returns unchanged is copied in
+  code.** `signature_spec.passthrough: {<output field>: <input path>}`
+  takes those fields out of the model's request schema, and every runtime
+  (the six workflow runtimes and the compiled skill's driver, DECIDE
+  included) copies them from the validated input before the whole output
+  schema is checked, so the declared output is unchanged and the copy
+  cannot drift. The IR checks each target is a declared output property
+  and each source a bound input path of the same schema. deal-monitor's two
+  fanned judges use it: about 134 fewer output tokens per scoring call
+  (61%) and 36 per classify call (24%). System-1 offers the same-schema
+  candidates and the model picks the ones the skill returns unchanged.
+
 - **`rote try [<skill>]`: compile one of your skills and see it do the same
   thing.** It picks a skill (from `rote skills list`, best ranked first, or
   the one you name), then walks three confirmed steps: compile it to

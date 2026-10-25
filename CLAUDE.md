@@ -1900,6 +1900,27 @@ reason a parkable step leaves its parallel wave — `waitForEvent` inside
 a promise combinator is undocumented and its timeout *throws*, which
 would reject every other element.
 
+### A judge's passthrough fields are copied in code, never asked for
+
+`signature_spec.passthrough` (`{output field: input path}`) names output
+fields that are input data returned unchanged (deal-monitor's scored
+opportunity, a classified thread's ids). The request schema is
+`passthrough_answer_schema` (those properties, their `required` entries and
+any `$defs` only they used removed), and after the answer arrives
+`with_passthrough` copies each field from the judge's validated input, the
+copy winning over anything the model wrote, before the WHOLE output schema
+is checked. One implementation per language: the Python helper (every
+Python runtime, `call_judge(passthrough=, inputs=)`, and the skill driver,
+whose DECIDE shows the answer schema and merges from copies kept in the
+journal) and `withPassthrough` in `_roteSchema.ts` (the TS answer schema is
+computed at emit time by the Python function). The IR requires a declared
+top-level target, a source walking declared object properties from a bound
+`inputs:` key, identical schemas (refs inlined, annotations ignored), and at
+least one field left for the model. A source the input may omit is allowed:
+the target is then absent and a required one fails the output check by
+name. Before this, #264 had to make deal-monitor's prompt render the whole
+opportunity so the model could retype it.
+
 ### A judge's `inputs:` must satisfy its input schema, and a fan passes one element
 
 Every adapter builds a judge's payload from its `inputs:` keys and

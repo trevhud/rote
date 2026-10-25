@@ -143,9 +143,16 @@ def test_a_fanned_judge_carries_its_prompt_references_and_element() -> None:
     score = steps["score_new_opportunities"]
     assert score["fan_param"] == "opportunity"
     assert score["references"][0] == "scoring_rubric"
-    # Its fields first, then the whole object, which the judge passes through.
+    # The prompt reads the fields it scores on; the whole object is copied
+    # in code (passthrough), so the prompt no longer renders it.
     assert score["references"][1] == "opportunity.account_name"
-    assert score["references"][-1] == "opportunity"
+    assert "opportunity" not in score["references"]
+    assert score["passthrough"] == {"opportunity": "opportunity"}
+    assert classify["passthrough"] == {
+        "account_name": "thread.account_name",
+        "thread_id": "thread.thread_id",
+        "thread_url": "thread.thread_url",
+    }
 
 
 def test_judge_references_keep_first_use_order_once() -> None:

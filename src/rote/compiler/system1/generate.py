@@ -68,7 +68,13 @@ from rote.compiler.system1.skeleton import (
     TABLES_MODULE,
 )
 from rote.contracts import ContractFinding, _prompt_paths_in_schema
-from rote.ir import NodeKind, Pipeline, fan_out_element_param, parse_input_ref
+from rote.ir import (
+    NodeKind,
+    Pipeline,
+    fan_out_element_param,
+    parse_input_ref,
+    passthrough_candidates,
+)
 
 #: The rubric every call shares, inside the rote-compile bundle.
 GENERATE_RUBRIC = "GENERATE.md"
@@ -648,6 +654,20 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "test": {"type": "string"},
         "prompt": {"type": "string"},
         "client": {"enum": ["anthropic", "openai", "workers-ai"]},
+        # A judge's output fields that are input data returned unchanged,
+        # each one of the pairs the task offers (judge_request).
+        "passthrough": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "output_field": {"type": "string"},
+                    "input_path": {"type": "string"},
+                },
+                "required": ["output_field", "input_path"],
+                "additionalProperties": False,
+            },
+        },
         "edits": {
             "type": "array",
             "items": {
@@ -670,6 +690,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "test",
         "prompt",
         "client",
+        "passthrough",
         "edits",
     ],
     "additionalProperties": False,
@@ -677,7 +698,8 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text, [] for output_fields and edits, {"condition": "", "max_iterations": 0} '
+    '"" for text, [] for output_fields, passthrough and edits, '
+    '{"condition": "", "max_iterations": 0} '
     'for termination, and "anthropic" for client.'
 )
 
@@ -888,18 +910,34 @@ def module_request(
     )
 
 
+def judge_passthrough_candidates(ctx: Context, node: Any) -> dict[str, list[str]]:
+    """The output fields this judge could pass through: input paths of the same schema."""
+    return passthrough_candidates(ctx.judge_input_schema(node), ctx.output_schema(node.id))
+
+
 def judge_request(
     ctx: Context, node: Any, system: str, model: str, repair: str | None = None
 ) -> GenerationRequest:
     lines = [
         f'Task: the prompt for judge `{node.id}` (GENERATE.md, "A judge\'s prompt").',
-        f"Answer fields: prompt and client. {_ANSWER_FIELDS}",
+        f"Answer fields: prompt, client and passthrough. {_ANSWER_FIELDS}",
         "",
         "Its input schema (variables you may use):",
         _json(ctx.judge_input_schema(node)),
         "",
-        *_node_card(ctx, node),
     ]
+    candidates = judge_passthrough_candidates(ctx, node)
+    if candidates:
+        lines += [
+            "Output fields an input field of the same schema could fill (passthrough "
+            "candidates, GENERATE.md):",
+            *(
+                f"- `{target}` <- " + ", ".join(f"`{p}`" for p in paths)
+                for target, paths in candidates.items()
+            ),
+            "",
+        ]
+    lines += _node_card(ctx, node)
     if repair:
         lines += ["", repair]
     return GenerationRequest(
@@ -1094,16 +1132,42 @@ def _defined_names(tree: ast.Module) -> set[str]:
     return names
 
 
+def judge_passthrough(payload: dict[str, Any]) -> dict[str, str]:
+    """An answer's ``passthrough`` list as ``{output field: input path}``."""
+    return {
+        str(entry.get("output_field")): str(entry.get("input_path"))
+        for entry in payload.get("passthrough") or []
+        if isinstance(entry, dict)
+    }
+
+
 def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str]:
     prompt = str(payload.get("prompt") or "")
     if not prompt.strip():
         return ["the prompt is empty"]
     bad = _prompt_paths_in_schema(prompt, ctx.judge_input_schema(node))
-    return [
+    problems = [
         f"the prompt uses {{{{ {b} }}}}, which the input schema does not have "
         f"(it has: {', '.join(node.inputs or {}) or 'nothing'})"
         for b in bad
     ]
+    passthrough = payload.get("passthrough") or {}
+    candidates = judge_passthrough_candidates(ctx, node)
+    for target, path in passthrough.items():
+        if path not in candidates.get(target, []):
+            offered = ", ".join(candidates.get(target, [])) or "none"
+            problems.append(
+                f"passthrough `{target}` <- `{path}` is not a candidate: the input has no "
+                f"field there with exactly `{target}`'s schema (offered for `{target}`: "
+                f"{offered})"
+            )
+    props = ctx.output_schema(node.id).get("properties") or {}
+    if passthrough and set(props) <= set(passthrough):
+        problems.append(
+            "passthrough names every output field, so the judge would decide nothing; "
+            "pass through only the fields the skill returns unchanged"
+        )
+    return problems
 
 
 def piece_findings(
@@ -1238,6 +1302,8 @@ def text_entries(ctx: Context, judges: dict[str, dict[str, Any]]) -> dict[str, d
                 "prompt": judges[node.id]["prompt"],
                 "client": judges[node.id]["client"],
             }
+            if judges[node.id].get("passthrough"):
+                entry["signature_spec"]["passthrough"] = dict(judges[node.id]["passthrough"])
         if entry:
             out[node.id] = entry
     return out
@@ -1563,6 +1629,12 @@ class TextWriter:
                 self._emit("warning", f"generate: {node.id} gave no answer ({e})")
                 break
             answer, problems = apply_answer(prior, payload, keys)
+            if is_judge:
+                # An empty list keeps the prior choice: a repair returns only
+                # what it changes, like a file left empty.
+                answer["passthrough"] = judge_passthrough(payload) or dict(
+                    (prior or {}).get("passthrough") or {}
+                )
             problems += await self._checks(node, answer)
             if not problems:
                 break

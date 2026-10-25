@@ -28,7 +28,9 @@ Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
 - ``mcp``: ``server``, ``tool``, ``url``, ``args``, ``fan_param``,
   ``retry``; recorded plans add ``observed`` and ``probe_shapes``.
 - ``judge``: ``prompt``, ``references`` (the dotted paths the prompt
-  reads), ``input_schema``, ``output_schema``, ``fan_param``. A live plan
+  reads), ``input_schema``, ``output_schema``, ``passthrough`` (output
+  field -> input path, copied in code: ``signature_spec.passthrough``),
+  ``fan_param``. A live plan
   built with ``judges="helper"`` adds ``lane`` (``client``, ``model``,
   ``base_url``, ``temperature``: what the emitted Python judge passes the
   inference helper) and ``retry``; the driver then calls the helper itself
@@ -241,6 +243,7 @@ def build_plan(
                 "references": judge_references(spec.prompt),
                 "input_schema": spec.input_schema,
                 "output_schema": spec.output_schema,
+                "passthrough": spec.passthrough or {},
                 "fan_param": fan,
             }
             if live and judges == "helper":

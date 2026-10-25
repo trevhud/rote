@@ -627,7 +627,7 @@ class SkillAdapter:
                 "workflow runtime (--runtime dbos)"
             )
         if cfg.judges == "helper":
-            from rote.inference import structured_output_schema
+            from rote.inference import passthrough_answer_schema, structured_output_schema
 
             for node in spec_judges(pipeline):
                 assert node.signature_spec is not None
@@ -636,8 +636,12 @@ class SkillAdapter:
                     # Python runtime refuses it at emit. The helper raises a
                     # plain RuntimeError (it must pickle); an emit refusal is
                     # a ValueError, which `rote emit` reports as one.
+                    spec = node.signature_spec
                     try:
-                        structured_output_schema(node.signature_spec.output_schema, node_id=node.id)
+                        structured_output_schema(
+                            passthrough_answer_schema(spec.output_schema, spec.passthrough),
+                            node_id=node.id,
+                        )
                     except RuntimeError as e:
                         raise ValueError(f"{e} (--judges helper)") from e
         return plan

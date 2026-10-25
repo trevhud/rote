@@ -527,13 +527,16 @@ nodes:
         days, a warehouse asked questions the team hasn't answered, or there is an explicit
         deadline requiring action.
 
-        Copy thread.account_name, thread.thread_id and thread.thread_url into
-        account_name, thread_id and thread_url unchanged.
-
         Account name: {{ thread.account_name }}
         Thread: {{ thread }}
 
         Return your classification via the structured output tool.
+      # The thread's identity travels into the output unchanged: code copies
+      # it from the input, so the model neither retypes it nor can alter it.
+      passthrough:
+        account_name: thread.account_name
+        thread_id: thread.thread_id
+        thread_url: thread.thread_url
       client: anthropic
       model: claude-sonnet-4-6
     source:
@@ -684,10 +687,10 @@ nodes:
           - opportunity_summary
           - scoring_rationale
         additionalProperties: false
-        # Identical to the input's FilteredOpportunity — the judge passes the
-        # scored opportunity through unchanged (see the prompt), and signature
-        # emission requires a $defs name shared across both schemas to mean
-        # one definition.
+        # Identical to the input's FilteredOpportunity: the scored opportunity
+        # passes through unchanged (passthrough below), and signature emission
+        # requires a $defs name shared across both schemas to mean one
+        # definition.
         "$defs":
           FilteredOpportunity:
             type: object
@@ -779,10 +782,11 @@ nodes:
         - Go-Live Date: {{ opportunity.go_live_date }}
         - Product Context: {{ opportunity.product_item_context }}
 
-        Pass the full opportunity object through unchanged in your output:
-        {{ opportunity }}
-
         Return your scoring via the structured output tool.
+      # The skill returns the scored opportunity whole; code copies it from
+      # the input instead of the model retyping every field.
+      passthrough:
+        opportunity: opportunity
       client: anthropic
       model: claude-sonnet-4-6
     source:

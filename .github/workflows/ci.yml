@@ -192,6 +192,7 @@ jobs:
             tests/test_inngest_e2e.py \
             tests/test_ts_agent_loop_e2e.py \
             tests/test_ts_judge_e2e.py \
+            tests/test_judge_passthrough.py \
             tests/test_constants_parity_ts_e2e.py \
             tests/test_mcp_args_literal_parity_ts_e2e.py \
             tests/test_agent_loop_output_parity_ts_e2e.py \

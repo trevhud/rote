@@ -39,7 +39,7 @@ from rote.adapters._common import (
     py_str_literal,
     safe_docstring_line,
 )
-from rote.inference import structured_output_schema
+from rote.inference import passthrough_answer_schema, structured_output_schema
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
@@ -879,8 +879,11 @@ def emit_signature_module(
     if spec.client == "anthropic":
         # Raises at emit time, naming the node and the schema path, for an
         # output schema Anthropic structured outputs cannot express. The
-        # same call runs again per request inside the emitted helper.
-        structured_output_schema(spec.output_schema, node_id=node.id)
+        # same call runs again per request inside the emitted helper, on the
+        # schema the request carries: the output less its passthrough fields.
+        structured_output_schema(
+            passthrough_answer_schema(spec.output_schema, spec.passthrough), node_id=node.id
+        )
 
     converter = _SchemaToPydantic(reserved_names=(pascal, f"{pascal}Input", f"{pascal}Output"))
     converter.emit_root(f"{pascal}Input", spec.input_schema)
@@ -927,6 +930,13 @@ def emit_signature_module(
         f"{_chunked_call_arg(schema_json, indent='    ')}\n"
         ")"
     )
+    if spec.passthrough:
+        schema_block += (
+            "\n\n"
+            "# Output fields copied from the input, never asked of the model:\n"
+            "# {output field: input path}. See call_judge in _rote_inference.\n"
+            f"PASSTHROUGH: dict[str, str] = {_py_literal_block(spec.passthrough, '')}"
+        )
 
     # Operator knobs: the model and endpoint bake in defaults from the IR
     # but stay overridable per-node at runtime, so switching models (or
@@ -1052,6 +1062,15 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
     sampling_arg = (
         "            sampling=_sampling_kwargs(),\n" if spec.temperature is not None else ""
     )
+    if spec.passthrough:
+        # The copies come from the same dict the prompt is rendered from.
+        variables = "        variables = inputs.model_dump(by_alias=True)\n"
+        prompt_arg = "_interpolate(PROMPT, variables)"
+        passthrough_args = "            passthrough=PASSTHROUGH,\n            inputs=variables,\n"
+    else:
+        variables = ""
+        prompt_arg = "_interpolate(PROMPT, inputs.model_dump(by_alias=True))"
+        passthrough_args = ""
     return (
         f"class {pascal}:\n"
         f'    """Typed LLM judge for {node.id} ({kind} structured output)."""\n'
@@ -1061,13 +1080,15 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"        # is resolved at runtime; see signatures/_rote_inference.py.\n"
         f"        from signatures._rote_inference import call_judge\n"
         f"\n"
+        f"{variables}"
         f"        payload = call_judge(\n"
         f"            node_id={json.dumps(node.id)},\n"
         f"            client={json.dumps(spec.client)},\n"
         f"            model=MODEL,\n"
         f"            base_url=BASE_URL,\n"
-        f"            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n"
+        f"            prompt={prompt_arg},\n"
         f"            output_schema=OUTPUT_JSON_SCHEMA,\n"
+        f"{passthrough_args}"
         f"{sampling_arg}"
         f"        )\n"
         f"        return {pascal}Output.model_validate(payload)\n"

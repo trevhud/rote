@@ -340,11 +340,97 @@ class LLMSignature(BaseModel):
         description="Sampling temperature; None = vendor default.",
     )
 
+    passthrough: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Output fields that are input data returned unchanged: "
+            "{<output property>: <input path>}, the path dotted into the input "
+            "as a prompt placeholder reads it (`opportunity`, "
+            "`thread.account_name`). The model is never asked for these: the "
+            "request's output schema leaves them out, and code copies each one "
+            "from the validated input after the answer arrives, so the judge's "
+            "declared output is unchanged and the copy cannot drift. Each source "
+            "must have exactly the target's schema."
+        ),
+    )
+
     @field_validator("input_schema", "output_schema")
     @classmethod
     def _validate_patterns(cls, v: dict[str, Any]) -> dict[str, Any]:
         check_schema_patterns(v)
         return v
+
+    @field_validator("passthrough")
+    @classmethod
+    def _validate_passthrough_shape(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        """Targets and path segments reach emitted source as literals; keep them
+        identifier-shaped at the IR boundary (invariant #7)."""
+        if v is None:
+            return None
+        for target, source in v.items():
+            if not _IDENTIFIER_RE.fullmatch(target):
+                raise ValueError(f"passthrough target {target!r} must be an identifier")
+            if not isinstance(source, str) or not all(
+                _IDENTIFIER_RE.fullmatch(part) for part in source.split(".")
+            ):
+                raise ValueError(
+                    f"passthrough source {source!r} (for {target!r}) must be a dotted path "
+                    "of identifiers into the judge's input, e.g. thread.account_name"
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_passthrough(self) -> Self:
+        """Each passthrough target is a declared output property, and its source
+        a path the input schema declares, with exactly the target's schema.
+
+        Equal schemas are what make the copy the output the model was asked
+        for: a source whose schema differs (wider, narrower, nullable where the
+        target is not) would put a value in the output its own schema never
+        promised. A source the input may leave out is allowed: when a run's
+        input has no value there, the target is absent, and the whole output
+        schema check after the merge fails a required one by name, where a
+        model asked to copy it would have had to invent one.
+        """
+        if not self.passthrough:
+            return self
+        out_root = self.output_schema
+        out_props = out_root.get("properties")
+        if "$ref" in out_root or not isinstance(out_props, dict):
+            raise ValueError(
+                "passthrough needs an output_schema whose root object lists its properties "
+                "(no root $ref)"
+            )
+        problems: list[str] = []
+        unknown = sorted(t for t in self.passthrough if t not in out_props)
+        if unknown:
+            problems.append(
+                f"passthrough targets {unknown} are not output_schema properties "
+                f"(properties: {sorted(out_props)})"
+            )
+        if not unknown and set(self.passthrough) == set(out_props):
+            problems.append(
+                "passthrough covers every output property, so the model decides nothing: "
+                "this is not a judge"
+            )
+        for target, source in sorted(self.passthrough.items()):
+            if target not in out_props:
+                continue
+            found = _schema_at_path(self.input_schema, source)
+            if isinstance(found, str):
+                problems.append(f"passthrough {target}: {source}: {found}")
+                continue
+            if _comparable_schema(found, self.input_schema) != _comparable_schema(
+                out_props[target], out_root
+            ):
+                problems.append(
+                    f"passthrough {target}: the input's {source} has a different schema from "
+                    f"output property {target!r}; a field passed through unchanged must "
+                    "declare the same schema in both"
+                )
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
     @field_validator("client")
     @classmethod
@@ -1145,7 +1231,8 @@ class Pipeline(BaseModel):
             if node.kind is NodeKind.LLM_JUDGE
             and node.signature_spec is not None
             and node.id not in loop_body_ids
-            and (error := _judge_binding_error(node, self)) is not None
+            and (error := _judge_binding_error(node, self) or _passthrough_binding_error(node))
+            is not None
         ]
         if errors:
             raise ValueError("\n".join(errors))
@@ -1545,6 +1632,136 @@ def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"root $ref {ref!r} names no definition in this schema's $defs")
         root = defs[name]
     return root
+
+
+def _schema_at_path(schema: dict[str, Any], path: str) -> dict[str, Any] | str:
+    """The schema at a dotted ``path`` into ``schema``'s object, or why the
+    path does not resolve.
+
+    Walks declared object properties only, following ``#/$defs`` refs. A
+    step through anything else (an array, a union, a null) is refused: the
+    copy must be one value the input always has the shape of.
+    """
+    node: Any = schema
+    walked: list[str] = []
+    for part in path.split("."):
+        try:
+            node = _resolve_ref(node, schema)
+        except ValueError as e:
+            return str(e)
+        props = node.get("properties") if isinstance(node, dict) else None
+        where = ".".join(walked) or "the input"
+        if not isinstance(props, dict):
+            return f"{where} is not an object that declares properties"
+        if part not in props:
+            return f"{where} declares no property {part!r} (it has: {sorted(props)})"
+        node = props[part]
+        walked.append(part)
+    if not isinstance(node, dict):
+        return "its schema is not a JSON Schema object"
+    return node
+
+
+def passthrough_candidates(
+    input_schema: dict[str, Any], output_schema: dict[str, Any], max_depth: int = 4
+) -> dict[str, list[str]]:
+    """``{output property: [input paths with exactly its schema]}``, for each
+    top-level output property some input path matches.
+
+    The fields a judge *could* pass through, by shape alone: which of them
+    the skill means to return unchanged is a reading of the skill, made by
+    the compiler's model and checked here (``LLMSignature.passthrough``).
+    """
+    out_props = output_schema.get("properties")
+    if "$ref" in output_schema or not isinstance(out_props, dict):
+        return {}
+    paths: list[tuple[str, Any]] = []
+
+    def walk(node: Any, prefix: str, depth: int) -> None:
+        try:
+            node = _resolve_ref(node, input_schema)
+        except ValueError:
+            return
+        props = node.get("properties") if isinstance(node, dict) else None
+        if not isinstance(props, dict) or depth >= max_depth:
+            return
+        for name, sub in props.items():
+            if not _IDENTIFIER_RE.fullmatch(name):
+                continue
+            path = f"{prefix}.{name}" if prefix else name
+            try:
+                paths.append((path, _comparable_schema(sub, input_schema)))
+            except ValueError:
+                continue
+            walk(sub, path, depth + 1)
+
+    walk(input_schema, "", 0)
+    found: dict[str, list[str]] = {}
+    for target, schema in out_props.items():
+        try:
+            wanted = _comparable_schema(schema, output_schema)
+        except ValueError:
+            continue
+        matches = [path for path, candidate in paths if candidate == wanted]
+        if matches and _IDENTIFIER_RE.fullmatch(target):
+            found[target] = matches
+    return found
+
+
+def _resolve_ref(node: Any, root: dict[str, Any]) -> Any:
+    seen: set[str] = set()
+    while isinstance(node, dict) and "$ref" in node:
+        ref = node["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+            raise ValueError(f"unsupported $ref {ref!r} (only '#/$defs/<name>' resolves)")
+        name = ref[len("#/$defs/") :]
+        defs = root.get("$defs")
+        if name in seen or not isinstance(defs, dict) or not isinstance(defs.get(name), dict):
+            raise ValueError(f"$ref {ref!r} names no definition in this schema's $defs")
+        seen.add(name)
+        node = defs[name]
+    return node
+
+
+#: Keywords that annotate a schema without changing the values it accepts.
+_ANNOTATION_KEYWORDS = frozenset({"description", "title", "$comment", "examples"})
+
+
+def _comparable_schema(node: Any, root: dict[str, Any], depth: int = 0) -> Any:
+    """``node`` with every ``$ref`` inlined and annotations dropped, for equality.
+
+    A judge's input and output schemas each carry their own ``$defs``, so
+    two schemas compare by what they accept, not by where their
+    definitions live.
+    """
+    if depth > 32:
+        raise ValueError("schema nests too deeply (a recursive $ref?) to compare")
+    node = _resolve_ref(node, root)
+    if isinstance(node, dict):
+        return {
+            k: _comparable_schema(v, root, depth + 1)
+            for k, v in node.items()
+            if k not in _ANNOTATION_KEYWORDS and k != "$defs"
+        }
+    if isinstance(node, list):
+        return [_comparable_schema(v, root, depth + 1) for v in node]
+    return node
+
+
+def _passthrough_binding_error(node: Node) -> str | None:
+    """A passthrough source must start at an input ``inputs:`` binds, or it never has a value."""
+    assert node.signature_spec is not None
+    unbound = sorted(
+        f"{target} <- {source}"
+        for target, source in (node.signature_spec.passthrough or {}).items()
+        if source.split(".", 1)[0] not in (node.inputs or {})
+    )
+    if not unbound:
+        return None
+    return (
+        f"Node {node.id!r} (llm_judge): passthrough {unbound} reads an input `inputs:` does "
+        f"not bind (bound: {sorted(node.inputs or {})}), so the copy would never have a value"
+    )
 
 
 def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:

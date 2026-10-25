@@ -334,7 +334,10 @@ path; the Cloudflare adapter and any future non-Python target *require*
   config. This is the cross-language source of truth — adapters
   derive Pydantic / Zod / Go types from the schemas as needed. See
   [`llm-judge-extraction.md`](llm-judge-extraction.md) for the full
-  derivation procedure.
+  derivation procedure. Its optional `passthrough:` maps output fields
+  that are input data returned unchanged to the input path they copy
+  (`{contact_id: contact.id}`); code fills them, the model never writes
+  them ("Fields returned unchanged" there).
 
 ```yaml
 - id: vet_contact
