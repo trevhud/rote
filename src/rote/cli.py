@@ -204,28 +204,54 @@ def _print_stub_todo(
     print(f"{indent}next: fill those in, then {run}", file=out)
 
 
-def _compiled_skill_next_steps(runtime_dir: Path, skill_path: Path) -> tuple[str, str]:
-    """What to do after a skill compile: the install command, then one line
+def _compiled_skill_next_steps(runtime_dir: Path, skill_path: Path) -> tuple[str, list[str]]:
+    """What to do after a skill compile: the install command, then the lines
     on how an agent gets it and where the proof is (``rote try``).
 
     A Claude Code skill folder may be a symlink to a directory elsewhere
     (https://code.claude.com/docs/en/skills), so the link points the agent
     at the installed directory itself and ``rote skill run`` runs what the
     install recorded. The compiled skill keeps the original's name, so it
-    goes in place of the original, never beside it."""
+    goes in place of the original, never beside it.
+
+    The path is checked before the command is printed: with an entry already
+    at ``~/.claude/skills/<name>``, BSD ``ln -s`` exits 0 and puts the link
+    inside that folder, so the compiled skill would never load. Then the
+    lines move the original aside first (nothing deleted) and say how to
+    undo it. rote prints these commands and never runs them."""
     import shlex
 
     from rote.adapters.skill import emitted_skill
+    from rote.clients.base import ClientContext
+    from rote.clients.claude_code import user_skills_dir
 
     skill = emitted_skill(runtime_dir)
     name = skill["name"] if skill else runtime_dir.name
     target = shlex.quote(str(runtime_dir.resolve()))
-    return (
-        f"rote skill install {target}",
-        f"then swap it in for the original {name} skill (Claude Code: ln -s {target} "
-        f"~/.claude/skills/{name}), or see it give the original's answer first: "
-        f"rote try {shlex.quote(str(skill_path))}",
+    ctx = ClientContext.current()
+    slot = user_skills_dir(ctx) / name
+
+    # Printed as ~/... when under the home (the skill name is a safe
+    # identifier, so only an outside CLAUDE_CONFIG_DIR needs quoting).
+    shown = (
+        f"~/{slot.relative_to(ctx.home)}"
+        if slot.is_relative_to(ctx.home)
+        else shlex.quote(str(slot))
     )
+    link = f"ln -s {target} {shown}"
+    proof = f"or see it give the original's answer first: rote try {shlex.quote(str(skill_path))}"
+    if slot.is_symlink() and slot.resolve() == runtime_dir.resolve():
+        swap = [f"then your agent has it: {shown} already links to it"]
+    elif slot.exists() or slot.is_symlink():
+        swap = [
+            f"then, for Claude Code: your original {name} skill is at {shown}. To use the "
+            f"compiled one instead, move the original out of the skills folder (nothing is "
+            f"deleted): mv {shown} ~/{name}.original && {link}",
+            f"  undo: rm {shown} && mv ~/{name}.original {shown}",
+        ]
+    else:
+        swap = [f"then swap it in for the original {name} skill (Claude Code: {link})"]
+    return f"rote skill install {target}", [*swap, proof]
 
 
 def _add_skill_runtime_args(parser: argparse.ArgumentParser, *, with_skill_dir: bool) -> None:
@@ -913,6 +939,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         layers = rote_config.load_layers()
         runtime_rv = rote_config.resolve("runtime", args.runtime, layers=layers)
         deploy_rv = rote_config.resolve("deploy", "none" if args.no_deploy else None, layers=layers)
+        # The deploy the files and env ask for, before --no-deploy forces
+        # none: `deploy: rote-cloud` makes cloudflare the built-in runtime,
+        # and --no-deploy only skips the upload, as it always has.
+        configured_deploy_rv = rote_config.resolve("deploy", None, layers=layers)
         agent_rv = rote_config.resolve("agent", args.agent, layers=layers)
         model_rv = rote_config.resolve("model", args.model, layers=layers)
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
@@ -982,7 +1012,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     if runtime_rv.value is not None:
         args.runtime = runtime_rv.value
     else:
-        args.runtime = builtin_compile_runtime(deploy_rv.value)
+        args.runtime = builtin_compile_runtime(configured_deploy_rv.value)
         if args.runtime == DEFAULT_COMPILE_RUNTIME:
             # Say what nothing chose, once: the first-run default is the
             # compiled skill, and a login no longer changes it.
@@ -1052,7 +1082,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         why = (
             runtime_rv.source
             if runtime_rv.value
-            else f"the built-in for deploy: rote-cloud, set by {deploy_rv.source}"
+            else f"the built-in for deploy: rote-cloud, set by {configured_deploy_rv.source}"
         )
         print(
             f"error: --backend api writes the vendor calls as Python modules, and the "
@@ -1426,8 +1456,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         stream=summary_stream,
         run_command=skill_next[0] if skill_next else None,
     )
-    if skill_next:
-        print(f"    {skill_next[1]}", file=summary_stream)
+    for line in skill_next[1] if skill_next else []:
+        print(f"    {line}", file=summary_stream)
 
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the

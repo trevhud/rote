@@ -264,7 +264,8 @@ Consequences for automation:
   a deploy failure exits 1 but the local artifacts are complete — retry
   with `rote deploy <out-dir> --target rote-cloud`, don't re-compile.
 - `deploy: rote-cloud` with no runtime set makes `cloudflare` the default,
-  and logged out it exits 2 before any agent runs. There is never an
+  and logged out it exits 2 before any agent runs. `--no-deploy` on top of
+  it skips only the upload: the compile stays a local cloudflare one. There is never an
   interactive prompt on this path.
 - `rote whoami --json` → `{url, user, tenant}` (exit 1 when not logged
   in or the credential is rejected) is the cheap way to probe the state.

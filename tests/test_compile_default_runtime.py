@@ -223,6 +223,27 @@ def test_deploy_rote_cloud_logged_out_stops_before_the_agent(
     assert stop_at_compiler == []
 
 
+@pytest.mark.parametrize("logged_in", [True, False])
+def test_no_deploy_keeps_the_cloudflare_built_in_of_a_configured_rote_cloud_deploy(
+    tmp_path: Path,
+    layers: dict[str, Path],
+    stop_at_compiler: list[str],
+    capsys: pytest.CaptureFixture[str],
+    logged_in: bool,
+) -> None:
+    """--no-deploy skips the upload, never the runtime the config implies:
+    `deploy: rote-cloud` + --no-deploy is a local cloudflare compile, as on
+    main (logged in). Resolving the built-in after --no-deploy forced deploy
+    to none made it a skill, and the not-logged-in hint then named a
+    runtime nobody asked for."""
+    if logged_in:
+        _login()
+    layers["user"].write_text("deploy: rote-cloud\n", encoding="utf-8")
+    assert _resolved(tmp_path, "--no-deploy") == "cloudflare"
+    assert stop_at_compiler == []
+    assert "(the default:" not in capsys.readouterr().err
+
+
 # ───────── a default the skill cannot meet says how to pick another ─────────
 
 
@@ -282,6 +303,7 @@ def test_a_flagless_compile_emits_the_skill_and_prints_the_next_step(
 ) -> None:
     if logged_in:
         _login()
+    monkeypatch.setenv("ROTE_CLIENT_HOME_DIR", str(tmp_path / "home"))  # a free skills slot
     deploys: list[Any] = []
     monkeypatch.setattr(
         "rote.deploy_rote_cloud.deploy_rote_cloud", lambda *a, **k: deploys.append(a)
@@ -305,10 +327,13 @@ def test_a_flagless_compile_emits_the_skill_and_prints_the_next_step(
     lines = captured.out.splitlines()
     nxt = next(i for i, line in enumerate(lines) if line.strip().startswith("next:"))
     assert lines[nxt].strip() == f"next: rote skill install {compiled_skill.resolve()}"
-    then = lines[nxt + 1].strip()
-    assert then.startswith("then swap it in for the original docs-digest skill")
-    assert f"ln -s {compiled_skill.resolve()} ~/.claude/skills/docs-digest" in then
-    assert then.endswith(f"rote try {skill}")
+    assert lines[nxt + 1].strip() == (
+        "then swap it in for the original docs-digest skill (Claude Code: "
+        f"ln -s {compiled_skill.resolve()} ~/.claude/skills/docs-digest)"
+    )
+    assert lines[nxt + 2].strip() == (
+        f"or see it give the original's answer first: rote try {skill}"
+    )
     # The workflow hint is not printed for a skill.
     assert "rote run" not in captured.out
 
@@ -330,3 +355,94 @@ def test_a_workflow_compile_keeps_its_rote_run_next_step(
     assert f"next: fill those in, then rote run {out / 'runtime' / 'python'}" in captured.out
     assert "rote skill install" not in captured.out
     assert "rote try" not in captured.out
+
+
+# ───────── the swap command checks ~/.claude/skills/<name> first ─────────
+
+
+def _next_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[str]]:
+    from rote.cli import _compiled_skill_next_steps
+
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROTE_CLIENT_HOME_DIR", str(home))
+    compiled = tmp_path / "out" / "runtime" / "skill" / "word-lookup"
+    compiled.mkdir(parents=True, exist_ok=True)
+    install, lines = _compiled_skill_next_steps(compiled, Path("my-skill"))
+    assert install == f"rote skill install {compiled.resolve()}"
+    assert lines[-1] == "or see it give the original's answer first: rote try my-skill"
+    return compiled, lines[:-1]
+
+
+def test_a_free_skills_slot_gets_the_plain_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compiled, lines = _next_lines(tmp_path, monkeypatch)
+    assert lines == [
+        "then swap it in for the original word-lookup skill (Claude Code: "
+        f"ln -s {compiled.resolve()} ~/.claude/skills/word-lookup)"
+    ]
+
+
+@pytest.mark.parametrize("kind", ["dir", "foreign_link"])
+def test_an_occupied_slot_moves_the_original_aside_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """BSD ln -s into an existing dir exits 0 and nests the link inside the
+    original, so the compiled skill never loads: the plain command must not
+    be offered alone."""
+    slot = tmp_path / "home" / ".claude" / "skills" / "word-lookup"
+    slot.parent.mkdir(parents=True)
+    if kind == "dir":
+        slot.mkdir()
+        (slot / "SKILL.md").write_text("original\n", encoding="utf-8")
+    else:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        slot.symlink_to(elsewhere, target_is_directory=True)
+    compiled, lines = _next_lines(tmp_path, monkeypatch)
+    target = compiled.resolve()
+    assert lines == [
+        "then, for Claude Code: your original word-lookup skill is at "
+        "~/.claude/skills/word-lookup. To use the compiled one instead, move the original "
+        "out of the skills folder (nothing is deleted): mv ~/.claude/skills/word-lookup "
+        f"~/word-lookup.original && ln -s {target} ~/.claude/skills/word-lookup",
+        "  undo: rm ~/.claude/skills/word-lookup && mv ~/word-lookup.original "
+        "~/.claude/skills/word-lookup",
+    ]
+    assert not any(line.startswith("then swap it in") for line in lines)
+    # Printing never touched the original.
+    assert slot.exists() or slot.is_symlink()
+
+
+def test_a_slot_already_linked_to_this_skill_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compiled = tmp_path / "out" / "runtime" / "skill" / "word-lookup"
+    compiled.mkdir(parents=True)
+    slot = tmp_path / "home" / ".claude" / "skills" / "word-lookup"
+    slot.parent.mkdir(parents=True)
+    slot.symlink_to(compiled, target_is_directory=True)
+    _, lines = _next_lines(tmp_path, monkeypatch)
+    assert lines == ["then your agent has it: ~/.claude/skills/word-lookup already links to it"]
+
+
+def test_a_moved_claude_config_dir_is_where_the_slot_is_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE_CONFIG_DIR moves ~/.claude, skills included; the slot checked
+    and printed is the moved one, as Claude Code loads it."""
+    from rote.cli import _compiled_skill_next_steps
+
+    config = tmp_path / "claude config"
+    (config / "skills" / "word-lookup").mkdir(parents=True)
+    monkeypatch.delenv("ROTE_CLIENT_HOME_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    compiled = tmp_path / "out" / "runtime" / "skill" / "word-lookup"
+    compiled.mkdir(parents=True)
+    _, lines = _compiled_skill_next_steps(compiled, Path("my-skill"))
+    quoted = f"'{config / 'skills' / 'word-lookup'}'"
+    assert lines[0].startswith(
+        f"then, for Claude Code: your original word-lookup skill is at {quoted}."
+    )
+    assert f"mv {quoted} ~/word-lookup.original && ln -s " in lines[0]

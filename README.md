@@ -118,9 +118,23 @@ rote compile ./examples/docs-digest/skill --out ./compiled/
 # rote compile: ✓ docs-digest v...
 #   next: rote skill install .../compiled/runtime/skill/docs-digest
 #     then swap it in for the original docs-digest skill (Claude Code:
-#     ln -s .../runtime/skill/docs-digest ~/.claude/skills/docs-digest),
+#     ln -s .../runtime/skill/docs-digest ~/.claude/skills/docs-digest)
 #     or see it give the original's answer first: rote try ./examples/docs-digest/skill
+```
 
+rote checks `~/.claude/skills/<name>` before it prints the link. When your
+original skill is already there, `ln -s` would nest the link inside it
+(and exit 0), so rote prints the swap with the original moved aside
+instead, plus the undo. Nothing is deleted, and rote runs none of it:
+
+```
+    then, for Claude Code: your original docs-digest skill is at ~/.claude/skills/docs-digest.
+    To use the compiled one instead, move the original out of the skills folder (nothing is
+    deleted): mv ~/.claude/skills/docs-digest ~/docs-digest.original && ln -s .../runtime/skill/docs-digest ~/.claude/skills/docs-digest
+      undo: rm ~/.claude/skills/docs-digest && mv ~/docs-digest.original ~/.claude/skills/docs-digest
+```
+
+```sh
 # Or emit a background workflow instead (see the table below):
 rote compile ./examples/bdr-outreach/skill --runtime dbos       --out ./compiled/
 rote compile ./examples/bdr-outreach/skill --runtime cloudflare --out ./compiled/
