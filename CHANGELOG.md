@@ -11,6 +11,27 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`rote setup`: the guided first run, and `/rote:setup`.** One resumable
+  command chains the steps rote has: import the MCP servers from the client
+  you run in (`rote mcp import`'s planner), log in to the registered servers
+  that cannot connect yet (a browser login for a person, `rote mcp login
+  --no-wait` for an agent), pick one of your skills (ranked, the pick
+  explained in one line, rote's demo last), say which of its servers only
+  read, then `rote try`'s compile, install and paired eval, and the verdict.
+  Each step is a plan you confirm and can skip, and a re-run skips what is
+  done (read from the registry, the token store, `rote try`'s files, and the
+  pick in `$XDG_DATA_HOME/rote/setup.json`). Under an agent every question
+  and consent is one `action_required` object with `ask` (what to put to
+  the user) and `next`. `--approve <step>=<code>` approves the plan the user
+  saw, once (a replay or a changed plan asks again), a paid step also needs
+  `--live`, and `--skip <step>` is the user's no. The
+  plugin skill relays it. Answers are remembered in `setup.json` (with
+  `--reset` to forget them), so `next` carries only the new answer and never
+  a path, and servers the user was offered and passed on are not offered
+  again. Bare `rote` on a machine with nothing set up prints a short banner
+  that points to `rote setup`. `scripts/rehearse-setup` runs the whole flow
+  in a temp home, as an agent and on a pseudo-terminal, with no inference.
+
 - **Judge passthrough: input data a judge returns unchanged is copied in
   code.** `signature_spec.passthrough: {<output field>: <input path>}`
   takes those fields out of the model's request schema, and every runtime
@@ -149,6 +170,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   resolves.
 
 ### Fixed
+
+- **`rote try` refuses before the compile when the comparison could not
+  call a server the skill names.** The eval only calls servers registered
+  read-only, and it used to find out after the compile had been paid for.
 
 - **`rote skill run` starts faster on every block.** Measured on docs-digest
   against the real Microsoft Learn and DeepWiki servers, the median `start`

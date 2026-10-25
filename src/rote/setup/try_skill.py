@@ -45,7 +45,7 @@ from rote.interact.plan import Action, Contact, FileWrite, Launch, Plan, Spend
 if TYPE_CHECKING:
     from rote.eval import skill_ab
     from rote.interact.prompter import Prompter
-    from rote.setup import SetupContext, StepStatus
+    from rote.setup import SetupContext, Step, StepStatus
 
 #: The flag that lets a run with nobody at the terminal spend money.
 LIVE_FLAG = "--live"
@@ -323,6 +323,7 @@ class CompileStep:
         from rote import proof
 
         s = self.session
+        require_live_servers(s.skill_dir)
         e = s.estimates
         whole = e.compile.plus(e.eval(s.trials))
         effects = (
@@ -373,6 +374,26 @@ class CompileStep:
             {"format": STATE_FORMAT, "key": s.compile_key(), "compile": provenance},
         )
         return pipeline_yaml
+
+
+def require_live_servers(skill_dir: Path) -> dict[str, str]:
+    """``{server: url}`` the comparison will call, or :class:`TryError` before
+    anything is spent.
+
+    The eval calls only servers registered read-only
+    (:func:`rote.eval.skill_ab.subject_for`); a skill naming one that is not
+    would otherwise be compiled, paid for, and then refused at the eval. The
+    servers are the ones :func:`rote.compiler.tool_grounding.servers_named`
+    finds, which counts only explicit forms."""
+    from rote.compiler.tool_grounding import servers_named
+    from rote.eval.skill_ab import SkillAbError, _read_only_registered
+    from rote.mcp.registry import load_registry
+
+    named = servers_named(skill_dir, load_registry().servers.keys())
+    try:
+        return _read_only_registered(sorted(named))
+    except SkillAbError as e:
+        raise TryError(f"{e}. Checked before the compile: nothing was spent") from None
 
 
 # ───────── Step 2: install ─────────
@@ -486,6 +507,15 @@ class EvalStep:
             f"compared: {', '.join(f.name for f in subject.fields)}",
             f"takes {_minutes(cost.seconds)}",
         ]
+        spent = s.spent()
+        if spent:
+            # First, so a resumed eval says what an interrupted one cost
+            # before it asks for the whole estimate again.
+            notes.insert(
+                0,
+                f"already spent here: ${spent:.3f} (the compile, and any earlier runs that "
+                "were stopped); a yes runs the whole comparison again, at the estimate above",
+            )
         return Plan(
             f"rote try {s.name}: the paired eval",
             (Action("eval", self.title, tuple(effects), lambda: self._run(subject)),),
@@ -750,21 +780,29 @@ def render(summary: Mapping[str, Any], *, name: str, next_steps: Sequence[str]) 
     return lines
 
 
-def next_steps(session: Session, summary: Mapping[str, Any]) -> list[str]:
+def next_steps(
+    session: Session, summary: Mapping[str, Any], *, command: str = "rote try"
+) -> list[str]:
+    """What to do with the result. ``command`` is the one that measures
+    again (``rote setup`` inside setup)."""
+    from rote.skill_target.next_steps import compiled_skill_next_steps
+
     s = session
     steps = []
     if summary.get("ok"):
-        steps.append(
-            f"an agent runs the compiled skill with: rote skill run {s.name} start --file "
-            "<input.json>"
-        )
+        # The compile's own next steps from the swap on: it is installed
+        # already, and this run is the proof its last line points to.
+        steps += compiled_skill_next_steps(s.compiled_skill, s.skill_dir).swap
         steps.append(
             f"let Claude Code run it without asking: rote skill install {s.compiled_skill} "
             "--save-allow-rule"
         )
     else:
         steps.append(f"read the trials' transcripts under {s.out / 'eval'}")
-    steps.append(f"measure again: delete {s.out / RESULT_FILE} and run rote try again")
+    steps.append(
+        f"measure again: delete {s.out / RESULT_FILE} and run {command} again (it asks before "
+        "it spends again)"
+    )
     return steps
 
 
@@ -804,24 +842,26 @@ def choose_skill(target: str | None, prompter: Prompter) -> Path:
     return Path(picked)
 
 
-def read_task(skill_dir: Path, input_arg: str | None, prompter: Prompter) -> dict[str, Any]:
+def input_path(skill_dir: Path, input_arg: str | None, prompter: Prompter) -> Path:
     """``--input``, else the skill's own ``input.json``, else asked for."""
     if input_arg is not None:
-        path = Path(input_arg)
-    elif (skill_dir / "input.json").is_file():
-        path = skill_dir / "input.json"
-    else:
+        return Path(input_arg).resolve()
+    if (skill_dir / "input.json").is_file():
+        return skill_dir / "input.json"
 
-        def check(text: str) -> str | None:
-            return None if Path(text).is_file() else f"{text} is not a file"
+    def check(text: str) -> str | None:
+        return None if Path(text).is_file() else f"{text} is not a file"
 
-        path = Path(
-            prompter.text(
-                f"{skill_dir.name} has no input.json. Which JSON file should both sides run on?",
-                flag="--input",
-                validate=check,
-            )
+    return Path(
+        prompter.text(
+            f"{skill_dir.name} has no input.json. Which JSON file should both sides run on?",
+            flag="--input",
+            validate=check,
         )
+    ).resolve()
+
+
+def load_task(path: Path) -> dict[str, Any]:
     try:
         task = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -829,6 +869,49 @@ def read_task(skill_dir: Path, input_arg: str | None, prompter: Prompter) -> dic
     if not isinstance(task, dict):
         raise TryError(f"the input {path} must hold a JSON object")
     return task
+
+
+def read_task(skill_dir: Path, input_arg: str | None, prompter: Prompter) -> dict[str, Any]:
+    """``--input``, else the skill's own ``input.json``, else asked for."""
+    return load_task(input_path(skill_dir, input_arg, prompter))
+
+
+# ───────── The session and its steps (``rote try`` and ``rote setup``) ─────────
+
+
+def default_out(name: str) -> Path:
+    """Where a session works when no ``--out`` is given: ``./rote-try-<skill>``."""
+    return Path(f"rote-try-{name}").resolve()
+
+
+def session_for(
+    skill_dir: Path,
+    task: dict[str, Any],
+    *,
+    out: str | Path | None,
+    trials: int,
+    log: Callable[[str], None],
+) -> Session:
+    """The one way a session is made, so ``rote setup`` and ``rote try`` on
+    the same skill and out dir resume each other's work."""
+    from rote.adapters.skill import read_identity
+    from rote.compiler.drivers.claude import DEFAULT_MODEL
+
+    name = read_identity(skill_dir).name
+    return Session(
+        skill_dir=skill_dir,
+        name=name,
+        task=task,
+        out=Path(out).resolve() if out is not None else default_out(name),
+        trials=trials,
+        model=DEFAULT_MODEL,
+        estimates=estimate(skill_dir),
+        log=log,
+    )
+
+
+def try_steps(session: Session) -> list[Step]:
+    return [CompileStep(session), InstallStep(session), EvalStep(session)]
 
 
 # ───────── The command ─────────
@@ -839,8 +922,6 @@ def cmd_try(args: Any) -> int:
     expected to match exactly, in every pair. 1: it did not, nothing could be
     compared, or a step failed. 2: an answer or a consent is missing
     (``action_required``)."""
-    from rote.adapters.skill import read_identity
-    from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.interact.mode import Mode
     from rote.interact.output import Output
     from rote.interact.plan import FORCE_FLAG, ConfirmationRequired
@@ -851,7 +932,7 @@ def cmd_try(args: Any) -> int:
         action_required,
         person_required,
     )
-    from rote.setup import SetupContext, Step, run_steps
+    from rote.setup import SetupContext, run_steps
     from rote.skill_target.trust import SkillTrustError
 
     try:
@@ -872,20 +953,9 @@ def cmd_try(args: Any) -> int:
     try:
         skill_dir = choose_skill(args.skill or args.skill_flag, prompter)
         task = read_task(skill_dir, args.input, prompter)
-        name = read_identity(skill_dir).name
-        session = Session(
-            skill_dir=skill_dir,
-            name=name,
-            task=task,
-            out=Path(args.out or f"rote-try-{name}").resolve(),
-            trials=args.trials,
-            model=DEFAULT_MODEL,
-            estimates=estimate(skill_dir),
-            log=out.say,
-        )
-        out.say(f"rote try: {name} ({skill_dir}), working in {session.out}")
-        steps: list[Step] = [CompileStep(session), InstallStep(session), EvalStep(session)]
-        reports = run_steps(steps, SetupContext(mode, out), prompter, granted=granted)
+        session = session_for(skill_dir, task, out=args.out, trials=args.trials, log=out.say)
+        out.say(f"rote try: {session.name} ({skill_dir}), working in {session.out}")
+        reports = run_steps(try_steps(session), SetupContext(mode, out), prompter, granted=granted)
     except (PromptRequired, ConfirmationRequired) as e:
         out.error(str(e))
         out.result(action_required(e, argv))

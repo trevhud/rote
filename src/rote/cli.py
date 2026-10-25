@@ -204,61 +204,6 @@ def _print_stub_todo(
     print(f"{indent}next: fill those in, then {run}", file=out)
 
 
-def _compiled_skill_next_steps(runtime_dir: Path, skill_path: Path) -> tuple[str, list[str]]:
-    """What to do after a skill compile: the install command, then the lines
-    on how an agent gets it and where the proof is (``rote try``).
-
-    A Claude Code skill folder may be a symlink to a directory elsewhere
-    (https://code.claude.com/docs/en/skills), so the link points the agent
-    at the installed directory itself and ``rote skill run`` runs what the
-    install recorded. The compiled skill keeps the original's name, so it
-    goes in place of the original, never beside it.
-
-    The path is checked before the command is printed: with an entry already
-    at ``~/.claude/skills/<name>``, BSD ``ln -s`` exits 0 and puts the link
-    inside that folder, so the compiled skill would never load. Then the
-    lines move the original aside first (nothing deleted) and say how to
-    undo it. rote prints these commands and never runs them."""
-    import shlex
-
-    from rote.adapters.skill import emitted_skill
-    from rote.clients.base import ClientContext
-    from rote.clients.claude_code import user_skills_dir
-
-    skill = emitted_skill(runtime_dir)
-    name = skill["name"] if skill else runtime_dir.name
-    target = shlex.quote(str(runtime_dir.resolve()))
-    ctx = ClientContext.current()
-    slot = user_skills_dir(ctx) / name
-
-    # Printed as ~/... when under the home (the skill name is a safe
-    # identifier, so only an outside CLAUDE_CONFIG_DIR needs quoting).
-    shown = (
-        f"~/{slot.relative_to(ctx.home)}"
-        if slot.is_relative_to(ctx.home)
-        else shlex.quote(str(slot))
-    )
-    link = f"ln -s {target} {shown}"
-    proof = f"or see it give the original's answer first: rote try {shlex.quote(str(skill_path))}"
-    if slot.is_symlink() and slot.resolve() == runtime_dir.resolve():
-        swap = [f"then your agent has it: {shown} already links to it"]
-    elif slot.exists() or slot.is_symlink():
-        # A free name to move it to: mv onto an existing dir nests inside it.
-        aside = f"{name}.original"
-        n = 2
-        while (ctx.home / aside).exists() or (ctx.home / aside).is_symlink():
-            aside, n = f"{name}.original-{n}", n + 1
-        swap = [
-            f"then, for Claude Code: your original {name} skill is at {shown}. To use the "
-            f"compiled one instead, move the original out of the skills folder (nothing is "
-            f"deleted): mv {shown} ~/{aside} && {link}",
-            f"  undo: rm {shown} && mv ~/{aside} {shown}",
-        ]
-    else:
-        swap = [f"then swap it in for the original {name} skill (Claude Code: {link})"]
-    return f"rote skill install {target}", [*swap, proof]
-
-
 def _add_skill_runtime_args(parser: argparse.ArgumentParser, *, with_skill_dir: bool) -> None:
     """The ``--runtime skill`` options, shared by emit and compile."""
     from rote.plan import JUDGE_MODES
@@ -1451,18 +1396,22 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
     _print_written(written, indent="    ", stream=summary_stream)
+    from rote.skill_target.next_steps import compiled_skill_next_steps
+
     skill_next = (
-        _compiled_skill_next_steps(runtime_dir, skill_path) if args.runtime == "skill" else None
+        compiled_skill_next_steps(runtime_dir, skill_path) if args.runtime == "skill" else None
     )
     _print_stub_todo(
         _unimplemented_stubs(runtime_dir),
         runtime_dir,
         tracked=stubs_tracked(runtime_dir, pipeline),
         stream=summary_stream,
-        run_command=skill_next[0] if skill_next else None,
+        run_command=skill_next.install if skill_next else None,
     )
-    for line in skill_next[1] if skill_next else []:
-        print(f"    {line}", file=summary_stream)
+    if skill_next:
+        first, *rest = skill_next.swap
+        for line in [f"then {first}", *rest, skill_next.proof]:
+            print(f"    {line}", file=summary_stream)
 
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
@@ -2725,32 +2674,15 @@ def _report_mcp_login(server: str, summary: dict[str, Any], out: Any) -> None:
 
 def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: Any) -> int:
     """Start a login an agent can hand to its user, then exit (rote.mcp.pending_login)."""
-    import webbrowser
-    from urllib.parse import urlsplit
-
-    from rote.interact.plan import (
-        Action,
-        ConfirmationRequired,
-        Contact,
-        FileWrite,
-        Launch,
-        Plan,
-        apply_plan,
-        confirm_plan,
-    )
+    from rote.interact.plan import ConfirmationRequired, Plan, apply_plan, confirm_plan
     from rote.interact.prompter import PromptCancelled, prompter_for
     from rote.interact.report import (
         EXIT_ACTION_REQUIRED,
         action_required,
         authorization_pending,
     )
-    from rote.mcp.auth import CALLBACK_PORTS
-    from rote.mcp.pending_login import (
-        PENDING_TTL_SECONDS,
-        Started,
-        pending_dir,
-        start_pending_login,
-    )
+    from rote.mcp.pending_login import PENDING_TTL_SECONDS
+    from rote.setup.mcp_login import no_wait_actions
 
     server = args.name
     if args.callback_port is not None:
@@ -2765,55 +2697,8 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
             file=sys.stderr,
         )
         return 2
-    host = urlsplit(config.url).hostname or config.url
     minutes = PENDING_TTL_SECONDS // 60
-    ports = f"{CALLBACK_PORTS[0]}-{CALLBACK_PORTS[-1]}"
-    started: list[Started] = []
-
-    def start() -> str:
-        started.append(start_pending_login(server, config))
-        return started[0].kind
-
-    actions = [
-        Action(
-            id=f"start-login-{server}",
-            title=f"Start an OAuth login for {server!r} that waits in the background",
-            effects=(
-                Contact(
-                    host=host,
-                    purpose="find its authorization server, and register rote as a "
-                    "client there if it needs one",
-                ),
-                Launch(
-                    program=f"a rote callback listener on localhost (one of ports {ports})",
-                    purpose=f"receive the browser's return, for at most {minutes} minutes",
-                ),
-                FileWrite(
-                    path=pending_dir() / "<id>.json",
-                    summary="the pending login record, owner-only",
-                    file_mode=0o600,
-                ),
-            ),
-            run=start,
-            command=f"rote mcp login {server} --no-wait",
-        )
-    ]
-    if not args.no_browser:
-
-        def open_browser() -> bool:
-            if not started or started[0].authorization_url is None:
-                return False
-            return bool(webbrowser.open(started[0].authorization_url))
-
-        actions.append(
-            Action(
-                id="open-browser",
-                title="Open the authorization page",
-                effects=(Launch(program="your web browser", purpose="approve the login"),),
-                run=open_browser,
-                command=f"rote mcp login {server} --no-wait --no-browser",
-            )
-        )
+    actions, started = no_wait_actions(server, config, browser=not args.no_browser)
     plan = Plan(title=f"Log in to {server!r} without waiting", actions=tuple(actions))
     argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
     out.plan(plan)
@@ -2841,7 +2726,7 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
         return 0
     pending = begun.pending
     url = begun.authorization_url or ""
-    opened = any(o.action_id == "open-browser" and o.result is True for o in outcomes)
+    opened = any(o.action_id.startswith("open-browser") and o.result is True for o in outcomes)
     out.say(f"Authorize {server!r} in a browser on this machine:")
     out.say("")
     out.say(f"  {url}")
@@ -5579,6 +5464,133 @@ def _add_try_parser(subparsers: Any) -> None:
     try_p.set_defaults(func=_cmd_try)
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """``rote setup``: :func:`rote.setup.first_run.cmd_setup`, imported on use."""
+    from rote.setup.first_run import cmd_setup
+
+    return cmd_setup(args)
+
+
+def _add_setup_parser(subparsers: Any) -> None:
+    # rote.setup.first_run's STEP_IDS, spelled out so building the parser
+    # does not import rote.setup (rich); a test pins them.
+    steps = "mcp-import, login, skill, compile, install, eval"
+    setup_p = subparsers.add_parser(
+        "setup",
+        help="The guided first run: import your MCP servers, compile a skill, compare (asks first)",
+        description=(
+            "Walks you through rote, one step at a time: import the MCP servers from the AI "
+            "client you run rote in, log in to the ones that need it, pick one of your skills, "
+            "then rote try on it (compile it, install it, run the original and the compiled "
+            "skill on the same input and compare). Each step is a plan you confirm; the paid "
+            "ones show time and cost first. Interrupted? Run rote setup again: finished steps "
+            "are skipped, and the answers you gave as flags are remembered (--reset forgets "
+            "them). Nobody at the terminal (an agent): each question and each consent "
+            "stops with one action_required JSON object saying what to ask, and "
+            f"--approve <step>=<code> carries the user's yes for that plan only, once. "
+            f"Steps: {steps}."
+        ),
+    )
+    from rote.clients import SOURCES as _CLIENT_SOURCES
+
+    setup_p.add_argument(
+        "--from",
+        dest="from_client",
+        default=None,
+        metavar="CLIENT",
+        help="import from one client only (" + ", ".join(s.id for s in _CLIENT_SOURCES) + ")",
+    )
+    setup_p.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="import exactly these servers (default: asked)",
+    )
+    setup_p.add_argument(
+        "--work-domain",
+        action="append",
+        default=None,
+        metavar="DOMAIN",
+        help="a work domain whose servers are never preselected ('none' for none)",
+    )
+    setup_p.add_argument(
+        "--allow-url-secret",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="import NAME although its URL path looks like it carries a key",
+    )
+    setup_p.add_argument(
+        "--allow-untrusted",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="import NAME although rote could not check the client's trust in it",
+    )
+    setup_p.add_argument(
+        "--login",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="log in to these registered servers (default: asked)",
+    )
+    setup_p.add_argument(
+        "--skill",
+        default=None,
+        metavar="SKILL",
+        help="the skill to compile: a directory, or a name from rote skills list (default: asked)",
+    )
+    setup_p.add_argument(
+        "--input",
+        default=None,
+        metavar="FILE",
+        help="the JSON both sides run on (default: the skill's input.json, else asked)",
+    )
+    setup_p.add_argument(
+        "--read-only",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="your word that every tool on NAME only reads, so the comparison may call it",
+    )
+    setup_p.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="where rote try's work goes (default: ./rote-try-<skill>)",
+    )
+    setup_p.add_argument(
+        "--trials", type=int, default=None, help="paired trials for the comparison (default 2)"
+    )
+    setup_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="forget the answers and the skill earlier runs saved, and start over",
+    )
+    setup_p.add_argument(
+        "--approve",
+        action="append",
+        default=None,
+        metavar="STEP=CODE",
+        help="apply the plan whose code a stop printed for STEP, once (repeatable)",
+    )
+    setup_p.add_argument(
+        "--skip",
+        action="append",
+        default=None,
+        metavar="STEP",
+        help="skip STEP (after mcp-import or login setup goes on; after any other it ends)",
+    )
+    setup_p.add_argument(
+        "--live",
+        action="store_true",
+        help="allow the paid steps (compile, eval) when nobody is at the terminal",
+    )
+    _add_onboarding_mode_flags(setup_p)
+    setup_p.set_defaults(func=_cmd_setup)
+
+
 def _add_onboarding_mode_flags(parser: argparse.ArgumentParser, *, force: bool = True) -> None:
     """The flags every onboarding command shares (``rote.interact.mode``).
 
@@ -6807,6 +6819,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init_p.set_defaults(func=_cmd_init)
 
     _add_try_parser(subparsers)
+    _add_setup_parser(subparsers)
 
     # rote config
     config_p = subparsers.add_parser(
@@ -7096,6 +7109,24 @@ def _resolve_retired_command(argv: list[str]) -> list[str]:
     return argv
 
 
+#: Bare ``rote`` before anything is set up: the first line is the next step.
+FIRST_RUN_BANNER = (
+    "New to rote? Run: rote setup",
+    "  It imports your MCP servers, compiles one of your skills, and shows the compiled",
+    "  skill gives the same answer. It asks before each step and shows the cost first.",
+    f"rote {__version__}. Every command: rote --help",
+)
+
+
+def _first_run() -> bool:
+    """Nothing set up yet: no user config, no MCP registry, no ``rote setup`` state."""
+    from rote.config import user_config_path
+    from rote.mcp.registry import registry_path
+    from rote.setup.first_run import state_path
+
+    return not any(p.exists() for p in (user_config_path(), registry_path(), state_path()))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
     if raw[:1] == ["bench"]:
@@ -7113,6 +7144,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.raw_argv = raw
 
     if not getattr(args, "command", None):
+        if _first_run():
+            for line in FIRST_RUN_BANNER:
+                print(line)
+            return 0
         # No subcommand — print a helpful banner and usage.
         print(f"rote {__version__} — compile fuzzy AI skills into deterministic workflows")
         print()

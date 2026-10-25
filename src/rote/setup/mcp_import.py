@@ -37,10 +37,11 @@ any name is "already registered", not a second entry.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -795,25 +796,9 @@ class ImportPlanner:
         return [self._login_action(by_name[n]) for n in chosen]
 
     def _login_action(self, row: Row) -> Action:
-        name = row.name
         host = row.candidate.host
         assert host is not None
-        login = self.login if self.login is not None else _login_server
-
-        def run() -> str:
-            login(name)
-            return name
-
-        return Action(
-            id=f"login-{name}",
-            title=f"Log in to {name}",
-            effects=(
-                Contact(host=host.split(":", 1)[0], purpose="OAuth discovery and sign-in"),
-                Launch(program="your browser", purpose=f"approve rote's access to {name}"),
-            ),
-            run=run,
-            command=f"rote mcp login {name}",
-        )
+        return login_action(row.name, host, self.login)
 
     def _notes(
         self, rows: Sequence[Row], writes: Sequence[Row], actions: Sequence[Action]
@@ -872,6 +857,28 @@ def _login_server(name: str) -> None:
     login_server(name)
 
 
+def login_action(name: str, host: str, login: Callable[[str], object] | None = None) -> Action:
+    """The blocking browser login for one registered server, as an Action:
+    ``rote mcp import``'s and ``rote setup``'s login step's, for a person.
+    ``login`` is injected by tests; the default is ``rote mcp login``'s."""
+    run_login = login if login is not None else _login_server
+
+    def run() -> str:
+        run_login(name)
+        return name
+
+    return Action(
+        id=f"login-{name}",
+        title=f"Log in to {name}",
+        effects=(
+            Contact(host=host.split(":", 1)[0], purpose="OAuth discovery and sign-in"),
+            Launch(program="your browser", purpose=f"approve rote's access to {name}"),
+        ),
+        run=run,
+        command=f"rote mcp login {name}",
+    )
+
+
 def render_rows(rows: Sequence[Row]) -> list[str]:
     """The diff against rote's registry for a person: one line per server
     the plan adds, replaces, skips or keeps, and per server it cannot
@@ -917,15 +924,25 @@ class McpImportStep:
     title = "Import MCP servers from your AI clients"
     command = "rote mcp import"
 
-    def __init__(self, make_planner: Callable[[Prompter, Output], ImportPlanner]) -> None:
+    def __init__(
+        self,
+        make_planner: Callable[[Prompter, Output], ImportPlanner],
+        passed_on: Callable[[], Collection[str]] = frozenset,
+    ) -> None:
         self._make_planner = make_planner
+        #: :func:`candidate_key` of each server the user was offered and did
+        #: not pick (``rote setup`` remembers them), so a partial import is
+        #: not asked again on every run.
+        self._passed_on = passed_on
 
     def status(self, ctx: SetupContext) -> StepStatus:
         """Done when every server a client uses, with nothing to opt into and
         not on a work domain, is registered (by endpoint)."""
         from rote.interact.prompter import NonInteractivePrompter
 
-        planner = self._make_planner(NonInteractivePrompter(why="reading status"), ctx.out)
+        # Read quietly: plan() reads the clients again and says what it found.
+        quiet = Output(ctx.mode, stdout=io.StringIO(), stderr=io.StringIO())
+        planner = self._make_planner(NonInteractivePrompter(why="reading status"), quiet)
         planner._read()
         try:
             registry = parse_registry(snapshot(planner.registry_path).data)
@@ -940,9 +957,14 @@ class McpImportStep:
             and not is_work_host(c.host, domains)
             and _url_key(c) not in registered
         ]
+        passed_on = set(self._passed_on())
+        left = [c for c in missing if candidate_key(c) not in passed_on]
+        if left:
+            return StepStatus("pending", f"{len(left)} server(s) not in rote's registry yet")
+        detail = f"{len(registry.servers)} server(s) registered"
         if missing:
-            return StepStatus("pending", f"{len(missing)} server(s) not in rote's registry yet")
-        return StepStatus("done", f"{len(registry.servers)} server(s) registered")
+            detail += f"; {len(missing)} you did not pick (rote mcp import adds them)"
+        return StepStatus("done", detail)
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
         planned = self._make_planner(prompter, ctx.out).build()

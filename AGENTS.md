@@ -49,6 +49,32 @@ servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.
 
+## A user's first run: `rote setup`
+
+```sh
+uvx --from rote-cli rote setup --agent-mode yes --json
+```
+
+The whole first run, one step at a time: import the MCP servers from the
+client you run in, log in to the ones that need it, pick one of the user's
+skills, then `rote try` on it (compile, install, compare). Every question and
+every consent stops with exit 2 and one `action_required` object. Relay its
+`ask` to the user in plain words, never answer it yourself, and run the
+`next` command that carries their answer (`answer_with` says how to write
+it). rote remembers each answer, so `next` stays short. Finished steps are skipped.
+
+- `reason: missing_answer`: pass the flag in `missing` with the user's
+  answer (`--only`, `--login`, `--skill`, `--read-only <server>`, ...).
+- `reason: confirmation_required`: `next[0]` adds `--approve <step>=<code>`
+  (that plan only, once, and a paid step adds `--live` too) for a yes,
+  `next[1]` adds `--skip <step>` for a no. Never pass `--yes`: it approves
+  every step. A replayed approval, or one for a plan that changed, stops again.
+- `reason: authorization_pending`: show the user each `logins[].authorization_url`.
+  Once they approved, run the `rote mcp login --complete` commands, then setup.
+- `reason: person_required`: the user runs `next[0]` in their own terminal.
+
+The plugin skill `/rote:setup` does this.
+
 ## Showing a user what rote does: `rote try`
 
 ```sh

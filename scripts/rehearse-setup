@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Rehearse `rote setup` from a fresh install to the verdict, with no inference.
+
+    scripts/rehearse-setup [--mode agent|tty|both] [--keep]
+
+Everything runs in a throwaway directory: a fake home (HOME and every rote
+state path, rote.isolation's list), a fixture Claude Code config naming two
+MCP servers, both fixture servers on localhost (tests/_skill_mcp_server.py,
+one tool each), and a fixture skill in that home's ~/.claude/skills that
+calls them. Nothing reads or writes the developer's real ~/.claude or rote
+state.
+
+The compile is stubbed (it lays down examples/docs-digest's committed
+compile, emitted for the skill runtime) and `claude` is
+tests/fixtures/skill_ab/fake_claude.py, which runs the real `rote skill
+run` against the fixture servers. Everything else is the real CLI.
+
+- agent: `rote setup --agent-mode yes --json`, run the way an agent runs it:
+  each stop is an action_required object; a scripted user answers what it
+  asks, and the next run carries the answer. The install, which only a
+  person may approve, is run in "the user's own terminal" (a pty).
+- tty: `rote setup` on a pseudo-terminal, a scripted person answering the
+  questionary prompts with keystrokes.
+
+Prints a transcript per mode; exits nonzero when a mode does not reach a
+"Same answer" verdict.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+from typing import Any
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
+
+FAKE_CLAUDE = REPO / "tests" / "fixtures" / "skill_ab" / "fake_claude.py"
+DOCS = REPO / "examples" / "docs-digest"
+SKILL_NAME = "docs-digest"
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>]")
+
+
+# ───────── the child: rote's CLI with the compile and the model stubbed ─────────
+
+
+def stub_compile(
+    skill_dir: Path,
+    payload: dict[str, Any],
+    work: Path,
+    ledger: Any,
+    *,
+    model: str | None,
+    log: Any,
+    estimate_usd: float,
+    caller: str,
+) -> tuple[Path, dict[str, Any]]:
+    """docs-digest's committed compile, emitted for this skill, billed at $0.05."""
+    from rote.adapters.skill import SkillAdapter, SkillAdapterConfig, read_identity
+    from rote.eval import skill_ab
+    from rote.ir import load_pipeline
+
+    ledger.check("compile", estimate_usd)
+    argv = skill_ab.compile_argv(skill_dir, work, model=model)
+    compiled = work / "compile" / "compiled"
+    if compiled.exists():
+        shutil.rmtree(compiled)
+    shutil.copytree(DOCS / "compiled", compiled)
+    pipeline_yaml = compiled / "pipeline.yaml"
+    name = read_identity(skill_dir).name
+    SkillAdapter(SkillAdapterConfig(skill_dir=skill_dir, extracted_source_dir=compiled)).emit(
+        load_pipeline(pipeline_yaml), work / "compile" / "runtime" / "skill" / name
+    )
+    log("  (rehearsal: the compile is stubbed; no model ran)")
+    ledger.record("compile", "compile", 0.05, estimate_usd)
+    return pipeline_yaml, {"argv": ["rote", *argv], "cost_usd": 0.05}
+
+
+def child(argv: Sequence[str]) -> int:
+    from rote.cli import main
+    from rote.eval import skill_ab
+    from rote.setup import try_skill
+
+    try_skill.RUNNERS = lambda: try_skill.Runners(
+        compile=stub_compile,
+        run_subject=skill_ab.run_subject,
+        executable=lambda: str(FAKE_CLAUDE),
+    )
+    return main(list(argv))
+
+
+# ───────── the world ─────────
+
+
+class World:
+    def __init__(self, root: Path) -> None:
+        from rote import demo, isolation
+        from rote.interact.agents import SIGNALS
+
+        self.root = root
+        self.home = root / "home"
+        self.work = root / "work"
+        state = root / "state"
+        for d in (self.home, self.work, state):
+            d.mkdir(parents=True)
+        env = isolation.isolated_env(state)
+        for var in ("AI_AGENT", "ROTE_AGENT_MODE", "ROTE_PROMPT_DISABLED", "NO_COLOR"):
+            env.pop(var, None)
+        for s in SIGNALS:
+            env.pop(s.var, None)
+        for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"):
+            env.pop(var, None)
+        original = root / "original-output.json"
+        original.write_text(json.dumps(demo.load_reference().skill_output))
+        env.update(
+            HOME=str(self.home),
+            PATH=f"{Path(sys.executable).parent}{os.pathsep}{env.get('PATH', '')}",
+            FAKE_ORIGINAL_OUTPUT=str(original),
+            TERM="xterm-256color",
+            COLUMNS="120",
+        )
+        self.env = env
+        self.client_home = Path(env["ROTE_CLIENT_HOME_DIR"])
+        self.client_home.mkdir(parents=True)
+
+    @contextlib.contextmanager
+    def servers(self) -> Iterator[None]:
+        from tests._skill_driver import fixture_server
+
+        hits = self.root / "hits"
+        hits.mkdir()
+        with (
+            fixture_server(hits / "mslearn.jsonl", ["microsoft_docs_search"]) as mslearn,
+            fixture_server(hits / "deepwiki.jsonl", ["read_wiki_structure"]) as deepwiki,
+        ):
+            self.write_client_config({"mslearn": mslearn.url, "deepwiki": deepwiki.url})
+            yield
+
+    def write_client_config(self, urls: dict[str, str]) -> None:
+        """A Claude Code user config with the two servers, and the user's skill."""
+        servers = {name: {"type": "http", "url": url} for name, url in urls.items()}
+        (self.client_home / ".claude.json").write_text(json.dumps({"mcpServers": servers}))
+        # docs-digest's own text, so the stubbed compile's provenance matches it,
+        # in the user's skills dir: one of "their" skills, not rote's demo.
+        shutil.copytree(DOCS / "skill", self.client_home / ".claude" / "skills" / SKILL_NAME)
+
+    def command(self, *argv: str) -> list[str]:
+        return [sys.executable, str(Path(__file__).resolve()), "--child", *argv]
+
+
+# ───────── a pseudo-terminal, driven by a script ─────────
+
+
+class Pty:
+    def __init__(self, cmd: list[str], env: dict[str, str], cwd: Path) -> None:
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 120, 0, 0))
+        self.proc = subprocess.Popen(
+            cmd, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, close_fds=True
+        )
+        os.close(slave)
+        self.raw = ""
+        self.seen = 0
+
+    def _pump(self, timeout: float) -> bool:
+        ready, _, _ = select.select([self.master], [], [], timeout)
+        if not ready:
+            return False
+        try:
+            data = os.read(self.master, 65536).decode("utf-8", "replace")
+        except OSError:
+            return False
+        if not data:
+            return False
+        if "\x1b[6n" in data:  # prompt_toolkit asks where the cursor is
+            os.write(self.master, b"\x1b[1;1R")
+        self.raw += data
+        return True
+
+    def text(self) -> str:
+        return ANSI.sub("", self.raw).replace("\r", "")
+
+    def expect(self, pattern: str, timeout: float = 120) -> None:
+        deadline = time.monotonic() + timeout
+        regex = re.compile(pattern)
+        while time.monotonic() < deadline:
+            match = regex.search(self.text(), self.seen)
+            if match:
+                self.seen = match.end()
+                return
+            if not self._pump(0.2) and self.proc.poll() is not None:
+                break
+        raise RuntimeError(f"never saw {pattern!r}; the terminal shows:\n{self.text()[-3000:]}")
+
+    def send(self, *keys: str) -> None:
+        for key in keys:
+            time.sleep(0.15)
+            os.write(self.master, key.encode())
+
+    def wait(self, timeout: float = 300) -> int:
+        deadline = time.monotonic() + timeout
+        while self.proc.poll() is None and time.monotonic() < deadline:
+            self._pump(0.2)
+        while self._pump(0.1):
+            pass
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGINT)
+            raise RuntimeError("the terminal session did not finish")
+        return self.proc.returncode
+
+
+DOWN, ENTER, SPACE = "\x1b[B", "\r", " "
+
+
+def run_tty(world: World) -> tuple[int, str]:
+    env = {**world.env, "CLAUDECODE": "1"}  # Claude Code's terminal: a host, a person types
+    term = Pty(world.command("setup"), env, world.work)
+    script: list[tuple[str, tuple[str, ...], str]] = [
+        (r"Your work domains", (ENTER,), "no work domains"),
+        (r"Which servers should rote import\?", (SPACE, DOWN, SPACE, ENTER), "both"),
+        (r"Apply this plan\?", ("y",), "yes"),
+        (r"Log in to which servers", (ENTER,), "both (the default)"),
+        (r"Apply this plan\?", ("y",), "yes"),
+        (r"Which skill should rote compile and compare\?", (ENTER,), "the recommended one"),
+        (r"Let rote call any tool on deepwiki", ("y",), "yes"),
+        (r"Let rote call any tool on mslearn", ("y",), "yes"),
+        (r"Apply this plan\?", ("y",), "yes"),
+        (r"Plan: rote try docs-digest: compile[\s\S]*Apply this plan\?", ("y",), "yes"),
+        (r"Plan: install[\s\S]*Apply this plan\?", ("y",), "yes"),
+        (r"Plan: rote try docs-digest: the paired eval[\s\S]*Apply this plan\?", ("y",), "yes"),
+    ]
+    transcript = []
+    for pattern, keys, said in script:
+        before = term.seen
+        term.expect(pattern)
+        shown = [ln.strip() for ln in term.text()[before : term.seen].splitlines() if ln.strip()]
+        transcript += [f"  | {ln}" for ln in shown if not ln.startswith(("?", "»", "●", "○"))]
+        question = next((ln for ln in reversed(shown) if ln.startswith("?")), pattern)
+        transcript.append(f"  {question}  ->  person: {said}")
+        term.send(*keys)
+    status = term.wait()
+    tail = [ln.strip() for ln in term.text()[term.seen :].splitlines() if ln.strip()]
+    transcript += [f"  | {ln}" for ln in tail]
+    return status, "\n".join(transcript)
+
+
+# ───────── an agent in the middle ─────────
+
+
+class User:
+    """What the person tells the agent, for each thing rote asks, as the
+    ``next`` command the agent then runs (its placeholder filled in)."""
+
+    def answer(self, stop: dict[str, Any]) -> tuple[str, str]:
+        reason = stop["reason"]
+        command: str = stop["next"][0]["command"]
+        if reason == "missing_answer":
+            flag = stop["missing"][0]
+            if flag == "--skill":
+                mine = next(s for s in stop["skills"] if not s["demo"])
+                said, value = f"mine, {mine['name']}", mine["key"]
+            elif flag in ("--only", "--login"):
+                said, value = "all of them", ",".join(stop["choices"])
+            elif flag.startswith("--read-only"):
+                return "yes, it only reads", command
+            else:
+                raise RuntimeError(f"the scripted user has no answer for {flag}")
+            return said, re.sub(r"<[^>]*>$", value, command)
+        if reason == "confirmation_required":
+            return "yes", command
+        raise RuntimeError(f"the scripted user cannot answer {reason}")
+
+
+def run_agent(world: World) -> tuple[int, str]:
+    env = {**world.env, "CLAUDE_CODE_CHILD_SESSION": "1"}
+    command = "rote setup --agent-mode yes --json"
+    user = User()
+    transcript: list[str] = []
+    for _round in range(25):
+        transcript.append(f"$ {command}")
+        proc = subprocess.run(
+            world.command(*command.split()[1:]),
+            env=env,
+            cwd=world.work,
+            capture_output=True,
+            text=True,
+        )
+        stop = json.loads(proc.stdout)
+        if proc.returncode != 2:
+            last = proc.stderr.strip().splitlines()
+            verdict = next((line for line in last if "answer" in line.lower()), "")
+            transcript.append(f"  exit {proc.returncode}: {verdict}")
+            for line in last[-12:]:
+                transcript.append(f"  | {line}")
+            return proc.returncode, "\n".join(transcript)
+        transcript.append(
+            f"  rote asks ({stop['reason']}, step {stop['step']['id']}): {stop['ask']}"
+        )
+        if stop["reason"] == "person_required":
+            install = stop["next"][0]["command"]
+            transcript.append(f"  the user runs, in their own terminal: {install}")
+            term = Pty(world.command(*install.split()[1:]), world.env, world.work)
+            term.expect(r"Apply this plan\?")
+            term.send("y")
+            term.expect(r"allow rule")
+            term.send("n")
+            transcript.append(f"    (exit {term.wait()})")
+            command = stop["next"][-1]["command"]
+            continue
+        said, command = user.answer(stop)
+        transcript.append(f"  user: {said}")
+    raise RuntimeError("setup did not finish in 25 rounds:\n" + "\n".join(transcript))
+
+
+# ───────── main ─────────
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--child":
+        return child(sys.argv[2:])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--mode", choices=("agent", "tty", "both"), default="both")
+    parser.add_argument("--keep", action="store_true", help="keep the temp dir")
+    args = parser.parse_args()
+    failed = False
+    for mode in ("agent", "tty") if args.mode == "both" else (args.mode,):
+        root = Path(tempfile.mkdtemp(prefix=f"rote-rehearse-{mode}-"))
+        try:
+            world = World(root)
+            with world.servers():
+                status, transcript = run_agent(world) if mode == "agent" else run_tty(world)
+            print(f"===== {mode} mode (exit {status}) =====")
+            print(transcript)
+            if status != 0 or "Same answer" not in transcript:
+                failed = True
+        finally:
+            if args.keep:
+                print(f"(kept {root})")
+            else:
+                shutil.rmtree(root, ignore_errors=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
