@@ -84,16 +84,24 @@ Expected results on `input.json`:
 
 | | Draft (python) | Final (dbos, temporal) |
 | --- | --- | --- |
-| Reimbursable | $2,395.59 | $2,990.98 |
-| Pending review | $844.39 | $0.00 |
-| Returned to employee | $64.17 | $313.17 |
+| Reimbursable | $2,395.59 | $2,414.34 |
+| Pending review | $18.75 | $0.00 |
+| Returned to employee | $889.81 | $889.81 |
 | Batch total | $3,304.15 | $3,304.15 |
 
-The review queue holds four review items (a meal over the cap, software
-over the cap, a late line, entertainment without pre-approval) and two
-blocks (a $25.97 ride with no receipt, a duplicate Lyft charge filed as
-"lyft"). Blocks go back to the employee whatever the controller says. A
-decision that names a block item fails the step with the ids to fix.
+The review queue holds one review item (a late line) and five blocks (a
+meal over the cap, software over the cap, entertainment without
+pre-approval, a $25.97 ride with no receipt, a duplicate Lyft charge
+filed as "lyft"). Blocks go back to the employee whatever the controller
+says, so the decision above approving two of them and rejecting a third
+changes nothing for those lines. A decision that names an id not in the
+queue fails the step with the ids to fix.
+
+The policy gives no severity for a cap breach or a missing pre-approval.
+They are blocks because the skill, run as an agent, blocked cap breaches
+in 10 of 12 recorded runs and a missing pre-approval in 8 of 9 (the runs
+whose input has one), and the compiled pipeline should do what the skill
+does. `expected/extracted/audit.py` marks both as assumptions.
 
 ## Layout
 

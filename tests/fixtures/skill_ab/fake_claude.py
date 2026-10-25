@@ -7,7 +7,8 @@ as the executable. It reads the argv the harness built and acts on it:
 - the control prompt: one request, no tool;
 - the original side (no ``Bash(rote skill run ...)`` rule): asks the person
   through the ``rote_gates`` server when the run has one, then writes
-  ``$FAKE_ORIGINAL_OUTPUT`` (a JSON file) as its result.json;
+  ``$FAKE_ORIGINAL_OUTPUT`` (a JSON file) as its result.json, or the next
+  of ``$FAKE_ORIGINAL_OUTPUTS``;
 - the compiled side: runs ``rote skill run <name> start '<input>'`` the way
   the compiled SKILL.md says, relays each HUMAN block to the person (the
   gate server) and answers with ``--said``, then copies the driver's
@@ -77,6 +78,19 @@ def header(block: str) -> dict[str, str]:
     return fields
 
 
+def original_output_path() -> str:
+    """``$FAKE_ORIGINAL_OUTPUT``, or with ``$FAKE_ORIGINAL_OUTPUTS`` (paths
+    joined by ``os.pathsep``) the next one each original trial, counted in
+    ``$FAKE_COUNTER``."""
+    many = os.environ.get("FAKE_ORIGINAL_OUTPUTS")
+    if not many:
+        return os.environ["FAKE_ORIGINAL_OUTPUT"]
+    counter = Path(os.environ["FAKE_COUNTER"])
+    index = int(counter.read_text()) if counter.is_file() else 0
+    counter.write_text(str(index + 1))
+    return many.split(os.pathsep)[index]
+
+
 def main() -> None:
     global requests
     mode = os.environ.get("FAKE_MODE", "honest")
@@ -87,7 +101,7 @@ def main() -> None:
         if "rote_gates" in mcp:
             ask_person("Approve?")
             requests += 1
-        output = json.loads(Path(os.environ["FAKE_ORIGINAL_OUTPUT"]).read_text())
+        output = json.loads(Path(original_output_path()).read_text())
         Path("result.json").write_text(json.dumps(output))
         requests += 1
     else:

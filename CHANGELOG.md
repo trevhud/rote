@@ -11,6 +11,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`rote try [<skill>]`: compile one of your skills and see it do the same
+  thing.** It picks a skill (from `rote skills list`, best ranked first, or
+  the one you name), then walks three confirmed steps: compile it to
+  `--runtime skill` (the pinned argv, `--local` and `--decider rules`
+  included, printed in the plan), install it (`rote skill install`'s plan
+  and person check), and run the paired eval (`rote eval --run --runtime
+  skill`'s harness) on the skill's `input.json` or `--input`. The result is
+  the fields matched per pair, each difference with both values, the
+  original against itself as the noise floor, and wall time, turns, tokens
+  and cost per side. No same-result claim is made from zero exact fields.
+  Each paid step shows its estimate (docs-digest's recorded runs, scaled by
+  skill size) and needs a person's yes or `--yes --live`. The approved
+  high end caps the ledger. Re-running the same command resumes: done
+  steps are read from `<out>/try.json`, the apps registry and
+  `<out>/try-result.json`, and cost nothing. Under an agent, each consent
+  point returns `action_required` (exit 2).
+
 - **`rote eval <compiled> --run --runtime skill`: the paired eval of a
   skill and its compiled skill.** Each side runs as a `claude -p` subagent
   under the same isolation flags, on the same input, with Bash loaded on

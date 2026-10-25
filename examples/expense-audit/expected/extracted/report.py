@@ -26,27 +26,33 @@ def _usd(value: Decimal) -> str:
 
 def _decisions(
     summary: dict[str, Any], review: dict[str, Any] | None
-) -> tuple[dict[int, str], str, str | None]:
-    """Decision per queue row, the report status, and the reviewer."""
+) -> tuple[dict[int, str], str, str | None, list[str]]:
+    """Decision per queue row, the report status, the reviewer, and the
+    block ids the decision tried to approve or reject (it cannot)."""
     queue = summary["review_queue"]
     if review is None:
         return (
             {i: "returned" if f["severity"] == "block" else "pending" for i, f in enumerate(queue)},
             "draft",
             None,
+            [],
         )
 
     approved = set(review.get("approved_ids") or [])
     rejected = set(review.get("rejected_ids") or [])
-    reviewable = {f["expense_id"] for f in queue if f["severity"] == "review"}
-    # The skill says to ask again rather than guess; in a workflow that
-    # means failing loudly with the ids the controller has to correct.
-    unknown = sorted((approved | rejected) - reviewable)
+    queued = {f["expense_id"] for f in queue}
+    # The skill says to ask again rather than guess when an id "isn't in
+    # the queue"; in a workflow that means failing loudly with the ids the
+    # controller has to correct. A decision on a block item is not that:
+    # block items are "for information only" and go back to the employee
+    # "no matter what", so the decision is ignored below and the id is
+    # reported back as overridden, as the skill run as an agent tells the
+    # controller.
+    unknown = sorted((approved | rejected) - queued)
     if unknown:
         raise ValueError(
-            f"controller decision names id(s) that are not review items: {', '.join(unknown)} "
-            f"(review items: {', '.join(sorted(reviewable)) or 'none'}). "
-            "Block items cannot be approved."
+            f"controller decision names id(s) that are not in the review queue: "
+            f"{', '.join(unknown)} (queue: {', '.join(sorted(queued)) or 'empty'})."
         )
     both = sorted(approved & rejected)
     if both:
@@ -63,7 +69,9 @@ def _decisions(
         else:
             decisions[i] = "pending"
     status = "draft" if "pending" in decisions.values() else "final"
-    return decisions, status, review.get("reviewer")
+    blocked = {f["expense_id"] for f in queue if f["severity"] == "block"}
+    overridden = sorted((approved | rejected) & blocked)
+    return decisions, status, review.get("reviewer"), overridden
 
 
 def _line_outcomes(summary: dict[str, Any], decisions: dict[int, str]) -> dict[str, str]:
@@ -155,8 +163,10 @@ def file_report(
     ``review`` is the controller's resume payload
     (``{"reviewer", "approved_ids", "rejected_ids"}``). Without one the
     report is filed as a draft with every review item pending.
+    ``overridden_ids`` lists the block items the decision approved or
+    rejected: they are returned anyway, and the caller should say so.
     """
-    decisions, status, reviewer = _decisions(summary, review)
+    decisions, status, reviewer, overridden = _decisions(summary, review)
     outcomes = _line_outcomes(summary, decisions)
 
     totals = {"reimbursable": Decimal(0), "pending": Decimal(0), "returned": Decimal(0)}
@@ -183,4 +193,5 @@ def file_report(
         "auto_approved": summary["auto_approved"],
         "review_items": sum(1 for f in summary["review_queue"] if f["severity"] == "review"),
         "blocked_items": sum(1 for f in summary["review_queue"] if f["severity"] == "block"),
+        "overridden_ids": overridden,
     }

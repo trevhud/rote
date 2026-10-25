@@ -5432,6 +5432,66 @@ def _add_skill_parser(subparsers: Any) -> None:
     runs_p.set_defaults(func=_skill_command("cmd_runs"))
 
 
+def _cmd_try(args: argparse.Namespace) -> int:
+    """``rote try``: :func:`rote.setup.try_skill.cmd_try`, imported on use."""
+    from rote.setup.try_skill import cmd_try
+
+    return cmd_try(args)
+
+
+def _add_try_parser(subparsers: Any) -> None:
+    # rote.setup.try_skill's LIVE_FLAG and DEFAULT_TRIALS, spelled out so
+    # building the parser does not import rote.setup (rich); a test pins them.
+    LIVE_FLAG, DEFAULT_TRIALS = "--live", 2  # noqa: N806
+    try_p = subparsers.add_parser(
+        "try",
+        help="Compile one of your skills and show it does the same thing (paid; asks first)",
+        description=(
+            "Pick a skill (or name one), compile it to a compiled skill, install it, then run "
+            "the original and the compiled skill as claude -p agents on the same input and "
+            "compare their results field by field, with time and tokens on each side. Each "
+            "step is a plan you confirm; the paid ones show their estimate and need "
+            f"{LIVE_FLAG} when nobody is at the terminal (--yes alone never spends). "
+            "Interrupted? Run the same command again: finished steps are skipped."
+        ),
+    )
+    try_p.add_argument(
+        "skill",
+        nargs="?",
+        default=None,
+        help="a skill directory, or a name from `rote skills list` (default: asked)",
+    )
+    try_p.add_argument(
+        "--skill", dest="skill_flag", default=None, metavar="SKILL", help="the same as SKILL"
+    )
+    try_p.add_argument(
+        "--input",
+        default=None,
+        metavar="FILE",
+        help='the JSON both sides run on (default: the skill\'s input.json); {"input", '
+        '"signals"} answers its gates',
+    )
+    try_p.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="where the compile, the trials and the result go (default: ./rote-try-<skill>)",
+    )
+    try_p.add_argument(
+        "--trials",
+        type=int,
+        default=DEFAULT_TRIALS,
+        help=f"paired trials (default {DEFAULT_TRIALS}: two give the original's noise floor)",
+    )
+    try_p.add_argument(
+        LIVE_FLAG,
+        action="store_true",
+        help="allow the paid steps when nobody is at the terminal (with --yes)",
+    )
+    _add_onboarding_mode_flags(try_p)
+    try_p.set_defaults(func=_cmd_try)
+
+
 def _add_onboarding_mode_flags(parser: argparse.ArgumentParser, *, force: bool = True) -> None:
     """The flags every onboarding command shares (``rote.interact.mode``).
 
@@ -6660,6 +6720,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_onboarding_mode_flags(init_p)
     init_p.set_defaults(func=_cmd_init)
+
+    _add_try_parser(subparsers)
 
     # rote config
     config_p = subparsers.add_parser(

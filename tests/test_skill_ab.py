@@ -271,13 +271,11 @@ def test_a_paired_run_measures_both_sides_and_checks_the_compiled_one(
     )
     (pair,) = report.pairs
     assert pair.compared == len(expense.contract) == 13
-    # The fake's compiled result takes the four totals from the driver; two of
-    # them differ from the recorded original (the IR's own reading of the skill).
-    assert pair.reproduced == 11
-    assert sorted(f.spec.name for f in pair.fields if f.status != "matched") == [
-        "reimbursable_usd",
-        "returned_usd",
-    ]
+    # The fake's compiled result takes the four totals from the driver, and
+    # every one matches the recorded original: the IR grades cap breaches
+    # and a missing pre-approval as blocks, as the original does.
+    assert pair.reproduced == 13
+    assert [f.spec.name for f in pair.fields if f.status != "matched"] == []
     rendered = skill_ab.render_markdown([report], model="fake-model", spent=0.09)
     assert "### compute-heavy" in rendered and "| expense-audit/base | original | 1/1 |" in rendered
 
@@ -400,3 +398,25 @@ def test_the_compile_estimate_covers_a_measured_compile() -> None:
     # CLAUDE.md: Sonnet 4.6 compiles ran up to $5.14; an estimate below that
     # lets a first compile overshoot --budget by a multiple.
     assert skill_ab.DEFAULT_COMPILE_ESTIMATE_USD >= 5.14
+
+
+def test_an_interrupted_compile_is_recorded_at_its_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(*args: Any, **kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(skill_ab.subprocess, "run", interrupted)
+    ledger = skill_ab.Ledger(tmp_path / "ledger.json", 1.0)
+    with pytest.raises(KeyboardInterrupt):
+        skill_ab.compile_for_eval(
+            EXPENSE / "skill",
+            {},
+            tmp_path,
+            ledger,
+            model=None,
+            log=lambda _: None,
+            estimate_usd=0.3,
+        )
+    (run,) = skill_ab.Ledger(tmp_path / "ledger.json", 1.0).runs
+    assert (run["kind"], run["cost_usd"], run["estimated"]) == ("compile", 0.3, True)
