@@ -655,7 +655,8 @@ class SkillAdapter:
     def _implementations(self, pipeline: Pipeline, scripts: EmitWriter) -> dict[str, ImplStatus]:
         """Each external_call whose impl a step would call, by whether that function,
         in the module this emit ships, does real work (:mod:`rote.plan` makes a
-        ``stub`` or ``absent`` one a ``do`` step)."""
+        ``stub`` one a ``do`` step; an ``absent`` one is shipped code
+        it cannot read, such as a re-export, and stays a call)."""
         backend = self.config.external_backend
         found: dict[str, ImplStatus] = {}
         for module, nodes in _extracted_layout(pipeline).items():

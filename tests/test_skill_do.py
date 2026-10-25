@@ -225,6 +225,40 @@ def test_a_written_external_call_still_runs_in_code(tmp_path: Path) -> None:
     assert "- DO:" not in (out / "SKILL.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "modules",
+    [
+        {
+            "crm.py": "from ._crm_impl import post_note  # noqa: F401\n",
+            "_crm_impl.py": "def post_note(name, channel):\n    return {'note_id': channel}\n",
+        },
+        {
+            "crm.py": "if True:\n\n    def post_note(name, channel):\n"
+            "        return {'note_id': channel}\n"
+        },
+    ],
+    ids=["re-export", "conditional-def"],
+)
+def test_shipped_code_rote_cannot_read_runs_as_code_not_as_a_do_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], modules: dict[str, str]
+) -> None:
+    """The AST sees no top-level def (status ``absent``), but the module ships
+    and works: handing it to the agent would replace working vendor code."""
+    out = _emit(tmp_path, {"text.py": TEXT, **modules})
+    plan = json.loads((out / "scripts" / "plan.json").read_text(encoding="utf-8"))
+    assert {s["id"]: s["kind"] for s in plan["steps"]}["post_note"] == "call"
+    assert _cli(capsys, "skill", "install", str(out), "--yes")[0] == 0
+    status, done = _start(capsys)
+    assert status == 0 and header(done)["kind"] == "DONE", done
+    assert result_of(done) == {"summary": {"line": "Acme Corp: note sales"}}
+
+
+def test_a_stub_beside_shipped_code_is_still_a_do_step(tmp_path: Path) -> None:
+    out = _emit(tmp_path, {"text.py": TEXT, "crm.py": CRM})
+    plan = json.loads((out / "scripts" / "plan.json").read_text(encoding="utf-8"))
+    assert {s["id"]: s["kind"] for s in plan["steps"]}["post_note"] == "do"
+
+
 # ───────── fan_out, and inside an agent loop ─────────
 
 
@@ -312,7 +346,7 @@ def test_a_loop_lists_its_do_sub_node_as_a_step_never_a_tool(
 ) -> None:
     from tests._skill_driver import fixture_server
 
-    scripts = make_skill(tmp_path, LOOPED, implementations={"lookup": "absent"})
+    scripts = make_skill(tmp_path, LOOPED, implementations={"lookup": "stub"})
     server = fixture_server(tmp_path / "hits.jsonl")
     with server as fx:
         monkeypatch.setenv("ROTE_MCP_FX_URL", fx.url)

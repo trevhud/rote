@@ -113,14 +113,16 @@ def test_an_mcp_only_node_is_the_agents_to_do_on_the_api_backend() -> None:
 
 
 def test_an_unwritten_external_call_is_do_and_an_unwritten_pure_function_is_not() -> None:
-    """A stub or absent external_call is agent work. A pure_function stub stays
+    """A stub external_call is agent work; an absent one (a re-export the AST
+    cannot see) is shipped code and stays a call. A pure_function stub stays
     a call, refused at emit for its stub: a missing pure function is a compile
     defect (and the IR requires a pure_function to name an impl at all)."""
     call = {"id": "push", "kind": "external_call", "description": "d", "impl": "extracted/c.py:p"}
     pipeline = _mini([call])
-    for status in ("stub", "absent"):
-        plan = build_plan(pipeline, mcp="live", implementations={"push": status})
-        assert _steps(plan)["push"]["kind"] == "do", status
+    plan = build_plan(pipeline, mcp="live", implementations={"push": "stub"})
+    assert _steps(plan)["push"]["kind"] == "do"
+    plan = build_plan(pipeline, mcp="live", implementations={"push": "absent"})
+    assert _steps(plan)["push"]["kind"] == "call"
     plan = build_plan(pipeline, mcp="live", implementations={"push": "implemented"})
     assert _steps(plan)["push"]["kind"] == "call"
     pure = {**call, "kind": "pure_function"}

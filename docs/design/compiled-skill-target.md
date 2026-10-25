@@ -396,7 +396,7 @@ rote skill run ops-report answer 91c0d2b7aa43 approve_report '<JSON from their r
   mcp login <server> --no-wait`, then `--complete` (PR #244), for an agent
   relaying a URL. After either one, `resume <run>`.
 - **DO.** An external_call the compile left without code: its impl is a
-  stub or absent (read from the module the skill ships, so the dry emit
+  stub (read from the module the skill ships, so the dry emit
   and the real one agree), or it has only a binding the backend does not
   call. The agent does the step with its own tools, the way the source
   skill had it, and answers. The block carries the description, the bound
@@ -753,7 +753,7 @@ opens a browser, which keeps the helper's never-interactive rule.
 | --- | --- |
 | `pure_function` | code, `impl(**{**payload, <constants>})`, IR retries as visible loops |
 | `external_call` + `mcp:` | `call_mcp_tool` with `mcp_tool_arguments`, never retried on config, auth or input-required errors |
-| `external_call` + `impl` | the module's code (`--backend api`, or no binding). A stub or absent function is `DO` |
+| `external_call` + `impl` | the module's code (`--backend api`, or no binding). A stub is `DO`; a function rote cannot read (a re-export) runs as code |
 | `llm_judge` | `DECIDE`, or the inference helper under `--judges helper` |
 | `agent_loop` | `LOOP` with the tool proxy |
 | `hitl_gate` | `HUMAN kind=gate`. The deadline comes from `timeout`, the answer is the gate's result, and `--said` is required |

@@ -227,8 +227,9 @@ the Anthropic SDK client (see
     `source_skill` checked against `provenance.json`'s digest), never a
     guess. Three tiers: the driver runs what it can in code, escalates
     model work to the agent (`DECIDE`, `LOOP`) and reaches a person only
-    through it (`HUMAN`). An external_call with no code (its impl a stub
-    or absent, and no binding the backend calls) is a `do` step in the
+    through it (`HUMAN`). An external_call with no code (its impl a stub,
+    or no impl and no binding the backend calls; a symbol rote cannot
+    read, such as a re-export, is shipped code and stays a call) is a `do` step in the
     plan and a `DO` block: the agent does it with its own tools, as the
     source skill did, and answers (`answered_by: agent`, `--said`
     refused, checked by the one schema validator). Which ones is decided

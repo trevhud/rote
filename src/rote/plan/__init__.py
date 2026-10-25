@@ -166,7 +166,7 @@ def build_plan(
     resolve, a pure_function with no impl) raises :class:`PlanError`. There
     ``implementations`` (``rote.contracts.ImplStatus`` by node id, read from
     the modules the skill ships) turns an external_call whose impl is a
-    ``stub`` or ``absent`` into a ``do`` step, as is one with no impl and no
+    ``stub`` into a ``do`` step, as is one with no impl and no
     binding the backend calls. A pure_function stub stays a ``call``: a
     missing pure function is a compile defect, refused at emit, not agent work.
     ``judges`` says who answers a live plan's judges (:data:`JudgeMode`).
@@ -476,8 +476,11 @@ def _step_kind(
         return "mcp"
     if node.kind in CONSTANT_ARGUMENT_KINDS and node.impl is not None:
         if live:
-            unwritten = implementations.get(node.id) in ("stub", "absent")
-            return "do" if node.kind is NodeKind.EXTERNAL_CALL and unwritten else "call"
+            # Only a function read as a stub. ``absent`` (a re-export, a def
+            # under an ``if``) is shipped code that runs: it stays a call, and
+            # a symbol that is really missing fails there with an ERROR.
+            stub = implementations.get(node.id) == "stub"
+            return "do" if node.kind is NodeKind.EXTERNAL_CALL and stub else "call"
         # The prefix runs written pure functions only: an external_call's
         # impl is vendor code, and the sandbox has no network.
         ready = implementations.get(node.id) == "implemented"
