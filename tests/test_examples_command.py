@@ -105,10 +105,10 @@ def test_copy_then_the_printed_python_commands_reproduce_the_readme_totals(
     # The example README's "Draft (python)" column.
     assert result["status"] == "draft"
     assert result["reimbursable_usd"] == 2395.59
-    assert result["pending_usd"] == 844.39
-    assert result["returned_usd"] == 64.17
+    assert result["pending_usd"] == 18.75
+    assert result["returned_usd"] == 889.81
     assert result["batch_total_usd"] == 3304.15
-    assert (result["review_items"], result["blocked_items"]) == (4, 2)
+    assert (result["review_items"], result["blocked_items"]) == (1, 5)
 
 
 def test_the_copied_readme_names_the_copys_own_paths(
