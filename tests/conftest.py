@@ -69,16 +69,16 @@ def fingerprint_changes(before: dict[str, str], after: dict[str, str]) -> list[s
 # state paths under each test's own tmp_path; undoing them falls back here,
 # never to the developer's real files.
 
-#: The session's state dir, and the environment before the session changed it.
+#: The session's state dir. The environment from before the session is
+#: deliberately kept nowhere: a test that could read it back could restore
+#: the real PATH.
 SESSION_STATE = pytest.StashKey[Path]()
-_ENVIRON_BEFORE = pytest.StashKey[dict[str, str]]()
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
     state = Path(tempfile.mkdtemp(prefix="rote-test-session-")).resolve()
     config.stash[SESSION_STATE] = state
-    config.stash[_ENVIRON_BEFORE] = dict(os.environ)
     _inference_guard.isolate(os.environ, state)
     reachable = _inference_guard.reachable_clis(os.environ)
     if reachable:
@@ -89,12 +89,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    before = config.stash.get(_ENVIRON_BEFORE, None)
-    if before is not None:
-        os.environ.clear()
-        os.environ.update(before)
     state = config.stash.get(SESSION_STATE, None)
     if state is not None:
+        _inference_guard.release_mirrors(state)
         shutil.rmtree(state)
 
 

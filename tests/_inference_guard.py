@@ -15,6 +15,8 @@ wrapped, state paths set per test), and both leaked:
 So the PATH itself no longer leads to a subscription CLI. Each PATH entry
 that holds ``claude`` or ``codex`` is replaced by a session-owned mirror of
 that directory: a symlink to every other entry, and nothing for the two CLIs.
+The mirrors are read-only, so a test cannot drop a ``claude`` link into one
+and reach every test after it.
 A mirror rather than dropping the entry, because on a developer machine the
 same directory (``~/.local/bin``) holds other tools; and not a failing stub,
 because a stub makes ``which("claude")`` succeed, and rote's own code reads
@@ -56,6 +58,16 @@ INFERENCE_CREDENTIAL_VARS = (
     "TYPESAFE_API_KEY",
 )
 
+#: The XDG base dirs, relative to the session state dir. HOME stays: npm
+#: and docker keep their caches and logins under it, and every rote path
+#: that read the home directly now goes through an XDG dir.
+XDG_DIRS = {
+    "XDG_CONFIG_HOME": "xdg/config",
+    "XDG_DATA_HOME": "xdg/data",
+    "XDG_CACHE_HOME": "xdg/cache",
+    "XDG_STATE_HOME": "xdg/state",
+}
+
 #: The real lookup, captured before any test can patch it. The per-test
 #: check must ask the filesystem, not whatever a test put in its place.
 _REAL_WHICH = shutil.which
@@ -66,6 +78,10 @@ def _holds_subscription_cli(directory: Path) -> bool:
         (directory / name).is_file() and os.access(directory / name, os.X_OK)
         for name in SUBSCRIPTION_CLIS
     )
+
+
+_READ_ONLY_DIR = 0o555
+_MIRRORS = "path-mirrors"
 
 
 def scrub_path(path: str, mirror_root: Path) -> str:
@@ -88,6 +104,7 @@ def scrub_path(path: str, mirror_root: Path) -> str:
             for child in sorted(real.iterdir()):
                 if child.name not in SUBSCRIPTION_CLIS:
                     (mirror / child.name).symlink_to(child)
+            mirror.chmod(_READ_ONLY_DIR)
             mirrors[real] = mirror
         entries.append(str(mirrors[real]))
     return os.pathsep.join(entries)
@@ -107,7 +124,44 @@ def isolate(environ: MutableMapping[str, str], state_dir: Path) -> None:
         *(config_key.env for config_key in CONFIG_KEYS),
     ):
         environ.pop(key, None)
-    environ["PATH"] = scrub_path(environ.get("PATH", ""), state_dir / "path-mirrors")
+    # The XDG dirs too: every rote default path (and the TS helpers' and a
+    # compiled skill's driver's own copies of that rule) falls back to them
+    # when a ROTE_* override is missing, as it is after a test deletes one
+    # or in a child process that drops the ROTE_* variables.
+    # uv keeps its Python installs and cache under XDG_DATA_HOME and
+    # XDG_CACHE_HOME, so pin those to where uv finds them now, first: an
+    # installed Python 3.10 vanishing turned test_helper_on_oldest_python
+    # into a skip. Toolchain state, not rote state, so it stays shared.
+    environ.update(_uv_dirs(environ))
+    for var, rel in XDG_DIRS.items():
+        environ[var] = str(state_dir / rel)
+    environ["PATH"] = scrub_path(environ.get("PATH", ""), state_dir / _MIRRORS)
+
+
+#: uv's own overrides, and the ``uv`` subcommand that prints each one's value.
+_UV_DIRS = {"UV_PYTHON_INSTALL_DIR": ("python", "dir"), "UV_CACHE_DIR": ("cache", "dir")}
+
+
+def _uv_dirs(environ: Mapping[str, str]) -> dict[str, str]:
+    """``{UV_*: dir}`` for each uv dir the environment does not already pin."""
+    uv = _REAL_WHICH("uv", path=environ.get("PATH", ""))
+    if uv is None:
+        return {}
+    return {
+        var: subprocess.run(
+            [uv, *argv], env=dict(environ), capture_output=True, text=True, check=True
+        ).stdout.strip()
+        for var, argv in _UV_DIRS.items()
+        if not environ.get(var)
+    }
+
+
+def release_mirrors(state_dir: Path) -> None:
+    """Make the read-only mirrors writable again, so the session dir can be removed."""
+    root = state_dir / _MIRRORS
+    if root.is_dir():
+        for mirror in root.iterdir():
+            mirror.chmod(0o755)
 
 
 def found_in_process(env: Mapping[str, str]) -> list[str]:

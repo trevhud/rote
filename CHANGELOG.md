@@ -65,6 +65,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **The `rote register` / `rote serve` registry moved under the XDG data
+  dir.** The default is now `$XDG_DATA_HOME/rote/serve-registry.json`
+  (`~/.local/share/rote/serve-registry.json`), beside the app registry,
+  instead of `~/.rote/registry.json`, the one per-user file outside the XDG
+  dirs. `ROTE_SERVE_REGISTRY_PATH` still overrides it. To keep existing
+  registrations, move the old file:
+  `mv ~/.rote/registry.json ~/.local/share/rote/serve-registry.json`.
+
 - **The base install carries only the MCP client; the workflow runtimes are
   extras installed when you pick one.** `pip install rote-cli` now brings
   `fastmcp-slim[client]` (the client half of fastmcp: `Client`,

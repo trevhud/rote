@@ -237,7 +237,11 @@ def test_the_wrapper_passes_rotes_exit_status(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("env_var", "resolve", "home_default"),
     [
-        ("ROTE_SERVE_REGISTRY_PATH", default_registry_path, ".rote/registry.json"),
+        (
+            "ROTE_SERVE_REGISTRY_PATH",
+            default_registry_path,
+            ".local/share/rote/serve-registry.json",
+        ),
         ("ROTE_EVAL_CORPUS_PATH", default_corpus_path, ".local/share/rote/eval-corpus.jsonl"),
         ("ROTE_PRICING_CACHE_DIR", default_cache_dir, ".cache/rote"),
     ],

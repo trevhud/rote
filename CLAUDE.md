@@ -2447,10 +2447,14 @@ halves of the split are enforced, not just documented:
 
 - `tests/conftest.py::pytest_configure` changes `os.environ` once, before
   collection (`tests/_inference_guard.py`): every vendor credential
-  scrubbed, every `rote.isolation.STATE_PATHS` entry moved under a
-  session temp dir, and each PATH entry holding `claude` / `codex`
-  replaced by a mirror of that dir without them (so `node`, `uv` or
-  `rote` beside them still resolve). The PATH half is the one that
+  scrubbed, every `rote.isolation.STATE_PATHS` entry and the four XDG
+  base dirs moved under a session temp dir (so a deleted override or a
+  child process that drops `ROTE_*` still misses the real files; uv's
+  Python and cache dirs are pinned first so they stay shared), and each
+  PATH entry holding `claude` / `codex` replaced by a read-only mirror of
+  that dir without them (so `node`, `uv` or `rote` beside them still
+  resolve). HOME is not moved: npm and docker keep their state there,
+  and no rote path reads the home except through an XDG dir. The PATH half is the one that
   matters: `claude -p` authenticates from an OAuth session, so having
   no API key is *not* protection. Not finding the binary is. Two DBOS
   e2e suites burned real subscription inference on every run until it

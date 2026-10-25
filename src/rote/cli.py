@@ -2102,7 +2102,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
 
     Reads the pipeline.yaml from a compile run, derives the MCP tool
     name / description / inputSchema from it, attaches the runtime
-    trigger config from the flags, and upserts ``~/.rote/registry.json``
+    trigger config from the flags, and upserts ``~/.local/share/rote/serve-registry.json``
     (or ``--registry``). ``rote serve`` picks the change up live.
     """
     import os
@@ -6047,7 +6047,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Register a compiled pipeline as an MCP tool for `rote serve`",
         description=(
             "Append or update an entry in the serve registry "
-            "(~/.rote/registry.json by default) from a compile run's "
+            "(~/.local/share/rote/serve-registry.json by default) from a compile run's "
             "pipeline.yaml. Tool name comes from pipeline.name, description "
             "from pipeline.description, inputSchema from the pipeline input "
             "contract. A running `rote serve` picks the change up live."
@@ -6063,7 +6063,10 @@ def _build_parser() -> argparse.ArgumentParser:
     register.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
+        help=(
+            "Registry file (default: $ROTE_SERVE_REGISTRY_PATH, "
+            "else ~/.local/share/rote/serve-registry.json)"
+        ),
     )
     register.add_argument(
         "--runtime",
@@ -6153,7 +6156,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
+        help=(
+            "Registry file (default: $ROTE_SERVE_REGISTRY_PATH, "
+            "else ~/.local/share/rote/serve-registry.json)"
+        ),
     )
     serve.add_argument(
         "--http",

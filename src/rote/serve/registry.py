@@ -1,6 +1,6 @@
 """Manifest registry for compiled pipelines served over MCP.
 
-The registry is a single JSON file (default ``~/.rote/registry.json``)
+The registry is a single JSON file (default ``$XDG_DATA_HOME/rote/serve-registry.json``)
 listing every compiled pipeline the user wants exposed as an MCP tool:
 tool name, description, the pipeline.yaml it came from, a JSON Schema
 for the tool's input, and the runtime trigger config (Temporal address /
@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rote.ir import Pipeline, PipelineInput
+from rote.xdg import data_home
 
 REGISTRY_SCHEMA_VERSION = 1
 
@@ -59,10 +60,13 @@ def redact_url_password(value: str) -> str:
 def default_registry_path() -> Path:
     """The registry location used when ``--registry`` is not given.
 
-    ``ROTE_SERVE_REGISTRY_PATH`` overrides ``~/.rote/registry.json``.
+    ``$ROTE_SERVE_REGISTRY_PATH`` > ``$XDG_DATA_HOME/rote/serve-registry.json`` >
+    ``~/.local/share/rote/serve-registry.json``, beside the app registry. It
+    used to be ``~/.rote/registry.json``, the one per-user file outside the
+    XDG dirs, so redirecting them (as the test suite does) did not move it.
     """
     override = os.environ.get("ROTE_SERVE_REGISTRY_PATH")
-    return Path(override) if override else Path.home() / ".rote" / "registry.json"
+    return Path(override) if override else data_home() / "rote" / "serve-registry.json"
 
 
 class TemporalTrigger(BaseModel):

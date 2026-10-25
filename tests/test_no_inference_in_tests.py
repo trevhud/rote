@@ -29,8 +29,12 @@ from pathlib import Path
 import pytest
 
 from rote import isolation
+from rote.app_registry import apps_path
+from rote.serve.registry import default_registry_path
 from tests import _inference_guard
-from tests.conftest import SESSION_STATE
+from tests.conftest import REPO_ROOT, SESSION_STATE
+
+pytest_plugins = ("pytester",)
 
 
 def _shell_finds(name: str) -> str:
@@ -86,6 +90,74 @@ def test_monkeypatch_undo_cannot_remove_the_guard(
         value = os.environ.get(key)
         assert value is not None, f"{key} is unset after monkeypatch.undo()"
         assert Path(value) == session / rel, f"{key} left the session state dir: {value}"
+    for key, rel in _inference_guard.XDG_DIRS.items():
+        assert os.environ.get(key) == str(session / rel), f"{key} left the session state dir"
+
+
+def test_a_deleted_override_falls_back_under_the_session(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a ROTE_* override gone, a default path is still not the real one.
+
+    Every default goes through an XDG dir, and those point under the
+    session, so neither a test that deletes an override nor a child process
+    that drops the ROTE_* variables reaches ~/.local/share/rote.
+    """
+    session = request.config.stash[SESSION_STATE]
+    monkeypatch.delenv("ROTE_APPS_PATH")
+    monkeypatch.delenv("ROTE_SERVE_REGISTRY_PATH")
+    assert apps_path().is_relative_to(session)
+    assert default_registry_path().is_relative_to(session)
+    assert not apps_path().is_relative_to(Path.home())
+
+
+def test_a_path_mirror_is_read_only(tmp_path: Path) -> None:
+    """A test cannot drop a `claude` link into a mirror for later tests to find."""
+    shared = tmp_path / "shared-bin"
+    shared.mkdir()
+    for name in ("claude", "node"):
+        (shared / name).write_text("#!/bin/sh\n", encoding="utf-8")
+        (shared / name).chmod(0o755)
+    state = tmp_path / "state"
+    mirror = Path(_inference_guard.scrub_path(str(shared), state / "path-mirrors"))
+
+    assert mirror.stat().st_mode & 0o777 == 0o555
+    with pytest.raises(PermissionError):
+        (mirror / "claude").symlink_to(shared / "claude")
+    # And the session can still delete it afterwards.
+    _inference_guard.release_mirrors(state)
+    shutil.rmtree(state)
+    assert not state.exists()
+
+
+def test_the_per_test_check_fails_a_test_that_puts_a_cli_on_path(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conftest hook, run for real on an inner session, fails such a test.
+
+    Its negative half is the inner test that leaves PATH alone and passes,
+    so the failure is the check and not the inner session breaking.
+    """
+    pytester.makepyfile(
+        test_inner="""
+        import os
+
+        def test_leaves_path_alone():
+            pass
+
+        def test_puts_a_stub_claude_on_path(tmp_path, monkeypatch):
+            stub = tmp_path / "claude"
+            stub.write_text("#!/bin/sh\\n", encoding="utf-8")
+            stub.chmod(0o755)
+            monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+        """
+    )
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
+    result = pytester.runpytest_subprocess("-p", "tests.conftest", "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(
+        ["*test_puts_a_stub_claude_on_path*", "*a subscription CLI is reachable after*"]
+    )
 
 
 def test_real_vendor_credentials_are_invisible_to_a_test() -> None:

@@ -55,7 +55,7 @@ rote register ./my-skill-out \
   --url https://my-pipeline.example.workers.dev
 ```
 
-This upserts an entry in `~/.rote/registry.json` (override with
+This upserts an entry in `~/.local/share/rote/serve-registry.json` (override with
 `--registry` or `ROTE_SERVE_REGISTRY_PATH`): tool name from `pipeline.name`, description from
 `pipeline.description`, `inputSchema` from the pipeline's input
 contract, plus the trigger config. Registering the same pipeline again
@@ -226,7 +226,7 @@ the connector). No restart of `rote serve` is ever needed.
 
 ## The registry file
 
-`~/.rote/registry.json`, schema version 1. One entry per tool:
+`~/.local/share/rote/serve-registry.json`, schema version 1. One entry per tool:
 
 ```json
 {

@@ -2,7 +2,7 @@
 
 Three modules:
 
-* :mod:`rote.serve.registry` — the manifest registry (``~/.rote/registry.json``)
+* :mod:`rote.serve.registry` — the manifest registry (``~/.local/share/rote/serve-registry.json``)
   mapping tool names to compiled pipelines and their runtime trigger config.
 * :mod:`rote.serve.backends` — runtime trigger backends (Temporal, Cloudflare)
   that start a compiled workflow and poll its status.
