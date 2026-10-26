@@ -902,14 +902,18 @@ def install_compiled(
     servers: Mapping[str, str],
     gated: Collection[str] = (),
 ) -> None:
-    """Register ``servers`` read-only and install the compiled skill, in the
-    trial's own state (``env``'s rote paths, a dir this eval created).
+    """Register ``servers`` and install the compiled skill, in the trial's own
+    state (``env``'s rote paths, a dir this eval created).
+
+    Each server is registered read-only, except the ``gated`` ones: those
+    stay unmarked, so the driver calls only the tools each one marks
+    ``readOnlyHint`` itself.
 
     This is ``rote skill install``'s plan, applied without its person check.
     That check guards the user's registry against an agent widening trust
-    there; here the registry, the servers in it (local fixtures, or ones the
-    user registered read-only) and the install record all live in a
-    throwaway dir, and nothing of the user's is touched."""
+    there; here the registry, the servers in it (local fixtures, ones the
+    user registered read-only, or gated ones) and the install record all live
+    in a throwaway dir, and nothing of the user's is touched."""
     from rote.interact.plan import apply_plan
     from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
     from rote.skill_target import commands, trust
