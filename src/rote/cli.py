@@ -1178,6 +1178,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         # Tool schemas come from a read-only tools/list; --no-mcp means the
         # compile touches no MCP server at all.
         tool_discovery="none" if args.no_mcp else args.tool_discovery,
+        compile_anyway=args.compile_anyway,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
@@ -1845,6 +1846,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--baseline-input", args.baseline_input is not None),
         ("--sample-input", args.sample_input is not None),
         ("--tool-discovery", args.tool_discovery != "named"),
+        ("--compile-anyway", args.compile_anyway),
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
         ("--no-mcp", args.no_mcp),
@@ -5879,6 +5881,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Task payload for --baseline as a JSON object file. Omit to have "
             "one derived from SKILL.md and confirmed before spending."
+        ),
+    )
+    compile_p.add_argument(
+        "--compile-anyway",
+        action="store_true",
+        help=(
+            "Compile to the skill runtime even when the plan stops for the model more than "
+            "twice per run. Such a skill is mostly judgment, and compiled it runs slower "
+            "and costs more than the original, so rote stops before generating it."
         ),
     )
     compile_p.add_argument(

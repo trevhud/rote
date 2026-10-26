@@ -953,6 +953,22 @@ change, same API version). Regression, the floor and the newest release
 against a stub that refuses sampling under 2026-10-21:
 `tests/test_judge_sampling_sdk.py`.
 
+### Not every skill should become a compiled skill
+
+A compiled skill stops for the agent at each judge and agent loop, and every
+stop is a round trip that re-reads the conversation. Measured 2026-10-26 on
+Sonnet 4.6: expense-audit (no model stops) ran 3.6x faster and 62% cheaper
+compiled; Atlassian's search-company-knowledge (4 judges) ran 4x slower and
+3x costlier, with the same substance. So a `--runtime skill` compile checks
+its plan right after the structure pass (cents) and stops before generation
+when it has more than `rote.compiler.worth.MAX_MODEL_STOPS` (2) judges and
+loops. Gates are not counted (the original asks the person too), nor
+`--judges helper` judges (API calls, not round trips), nor loop-body
+sub-nodes. `--compile-anyway` overrides it. `rote try` and `rote setup`
+compile through it, so they inherit the check. Workflow runtimes are not
+checked: there a judge is an API call. Move the line only with a measured
+eval behind it.
+
 ### First-run output: three contracts that live in one place each
 
 Found by a fresh-install run of the published wheel, where every one of
