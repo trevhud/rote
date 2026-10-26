@@ -449,3 +449,83 @@ def test_an_interrupted_compile_is_recorded_at_its_estimate(
         )
     (run,) = skill_ab.Ledger(tmp_path / "ledger.json", 1.0).runs
     assert (run["kind"], run["cost_usd"], run["estimated"]) == ("compile", 0.3, True)
+
+
+# ───────── a server gated per tool, by its own readOnlyHint ─────────
+
+
+def _registered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, read_only: bool) -> None:
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+    from rote.mcp.tokens import write_token_file
+
+    url = "https://mcp.atlassian.example/v1/mcp"
+    save_registry(McpRegistry(servers={"atlassian": McpServerConfig(url=url, read_only=read_only)}))
+    write_token_file("atlassian", {"server_url": url, "tokens": {"access_token": "SECRET-TOKEN"}})
+
+    async def _listed(names: list[str]) -> tuple[list[str], list[str], dict[str, str]]:
+        return (
+            ["mcp__atlassian__getJiraIssue", "mcp__atlassian__search"],
+            ["mcp__atlassian__createJiraIssue"],
+            {},
+        )
+
+    monkeypatch.setattr("rote.eval.baseline.read_only_allowlist", _listed)
+
+
+def test_a_server_not_registered_read_only_is_gated_to_the_tools_it_marks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.skill_ab import live_servers
+    from rote.mcp.tokens import token_file
+
+    _registered(tmp_path, monkeypatch, read_only=False)
+    found, gated = live_servers(["atlassian"], {"atlassian": {"getJiraIssue", "search"}})
+    assert found == {"atlassian": "https://mcp.atlassian.example/v1/mcp"}
+    assert gated["atlassian"].allowed == (
+        "mcp__atlassian__getJiraIssue",
+        "mcp__atlassian__search",
+    )
+    assert gated["atlassian"].denied == ("mcp__atlassian__createJiraIssue",)
+    assert gated["atlassian"].token == token_file("atlassian")
+
+
+def test_a_pipeline_that_calls_a_write_tool_is_refused_naming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.skill_ab import SkillAbError, live_servers
+
+    _registered(tmp_path, monkeypatch, read_only=False)
+    with pytest.raises(SkillAbError, match="calls createJiraIssue on atlassian"):
+        live_servers(["atlassian"], {"atlassian": {"search", "createJiraIssue"}})
+
+
+def test_a_server_registered_read_only_is_not_gated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.skill_ab import live_servers
+
+    _registered(tmp_path, monkeypatch, read_only=True)
+    found, gated = live_servers(["atlassian"], {"atlassian": {"createJiraIssue"}})
+    assert found == {"atlassian": "https://mcp.atlassian.example/v1/mcp"} and gated == {}
+
+
+def test_a_gated_login_reaches_the_trial_owner_only_and_through_rote_mcp_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.skill_ab import _copy_logins, _mcp_entry, live_servers
+
+    _registered(tmp_path, monkeypatch, read_only=False)
+    _, gated = live_servers(["atlassian"], {"atlassian": {"search"}})
+    tokens = tmp_path / "trial" / "tokens"
+    _copy_logins(gated, {"ROTE_MCP_TOKEN_DIR": str(tokens)})
+    copied = tokens / "atlassian.json"
+    assert copied.read_bytes() == gated["atlassian"].token.read_bytes()  # type: ignore[union-attr]
+    assert copied.stat().st_mode & 0o777 == 0o600
+    entry = _mcp_entry("atlassian", "https://mcp.atlassian.example/v1/mcp", gated)
+    assert entry["headersHelper"].endswith("-m rote mcp headers atlassian")
+    assert "SECRET-TOKEN" not in json.dumps(entry)
+    # A server that is not gated gets the plain entry and no login.
+    assert _mcp_entry("deepwiki", "https://x.example/mcp", gated) == {
+        "type": "http",
+        "url": "https://x.example/mcp",
+    }

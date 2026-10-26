@@ -55,7 +55,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import combinations
@@ -337,8 +337,12 @@ class Subject:
     case: Case | None = None
     #: The bundled demo's reference (docs-digest), scored against the same way.
     reference: demo.Reference | None = None
-    #: Live servers both sides call: ``{name: url}``, registered read-only.
+    #: Live servers both sides call: ``{name: url}``, registered read-only,
+    #: or gated per tool (``gated``).
     live_servers: Mapping[str, str] = field(default_factory=dict)
+    #: The live servers not registered read-only, whose own ``readOnlyHint``
+    #: annotations decide which tools both sides may call.
+    gated: Mapping[str, GatedServer] = field(default_factory=dict)
     #: How the pipeline came to be (the compile argv, or "given").
     provenance: Mapping[str, Any] = field(default_factory=dict)
 
@@ -382,19 +386,57 @@ def _skill_name(skill_dir: Path) -> str:
     return read_identity(skill_dir).name
 
 
-def _read_only_registered(servers: Sequence[str]) -> dict[str, str]:
-    """``{server: url}`` for each server, from the user's registry, read-only only.
+@dataclass(frozen=True)
+class GatedServer:
+    """A live server the user registered but not read-only: both sides may
+    call only the tools it marks ``readOnlyHint`` itself."""
 
-    A live server the user has not registered read-only is refused: the eval
-    is read-only, and nothing else tells it which of a server's tools write.
+    url: str
+    #: ``mcp__<server>__<tool>`` ids of its read-only tools, and of the rest.
+    allowed: tuple[str, ...]
+    denied: tuple[str, ...]
+    #: The user's login for it, copied into each trial's throwaway state.
+    token: Path | None
+
+
+def _bound_tools(pipeline: Pipeline) -> dict[str, set[str]]:
+    """``{server: tools}`` the pipeline calls: ``mcp:`` bindings and the
+    tools an agent loop reaches through ``tool_servers``."""
+    out: dict[str, set[str]] = {}
+    for node in pipeline.nodes:
+        if node.mcp is not None:
+            out.setdefault(node.mcp.server, set()).add(node.mcp.tool)
+        for tool, server in (node.tool_servers or {}).items():
+            out.setdefault(server, set()).add(tool)
+    return out
+
+
+def live_servers(
+    servers: Sequence[str], bound: Mapping[str, set[str]] | None = None
+) -> tuple[dict[str, str], dict[str, GatedServer]]:
+    """``({server: url}, {server: GatedServer})`` for ``servers``, from the
+    user's registry.
+
+    A server registered read-only is called as is. One registered without
+    it is gated per tool, by the server's own ``readOnlyHint`` annotations:
+    every tool in ``bound`` (``{server: tools}`` the pipeline calls) must be
+    one it marks read-only, or the eval stops before spending anything and
+    names the tools that may write. With ``bound`` unknown (``rote try``,
+    before the compile), the server needs at least one read-only tool.
     The bundled demo's servers (public, read-only, the ones ``rote try``
     registers) count as registered."""
+    import asyncio
+
     from rote import demo
+    from rote.eval.baseline import read_only_allowlist
+    from rote.mcp import read_token_file, token_file
+    from rote.mcp.live_tools import mcp_tool_id
     from rote.mcp.registry import load_registry
 
     registry = load_registry()
     published = {s.name: s.url for s in demo.load_reference().servers}
     found: dict[str, str] = {}
+    gated: dict[str, GatedServer] = {}
     for server in servers:
         entry = registry.servers.get(server)
         if entry is not None and entry.read_only is True:
@@ -402,21 +444,37 @@ def _read_only_registered(servers: Sequence[str]) -> dict[str, str]:
         elif server in published and entry is None:
             found[server] = published[server]
         elif entry is not None:
-            from rote.mcp.registry import registry_path
-
-            raise SkillAbError(
-                f"the pipeline reads {server}, which is registered but not read-only, and the "
-                "eval only calls servers registered read-only. If none of its tools can change "
-                f'anything, say so: rote setup --read-only {server}, or set "read_only": true '
-                f"on {server} in {registry_path()}"
+            allowed, denied, skipped = asyncio.run(read_only_allowlist([server]))
+            if server in skipped:
+                raise SkillAbError(
+                    f"the pipeline reads {server}, which is not registered read-only, and its "
+                    f"tools could not be checked: {skipped[server]}. If none of its tools can "
+                    f"change anything, say so: rote setup --read-only {server}"
+                )
+            writes = sorted(
+                t for t in (bound or {}).get(server, set()) if mcp_tool_id(server, t) not in allowed
             )
+            if writes:
+                raise SkillAbError(
+                    f"the pipeline calls {', '.join(writes)} on {server}, which {server} does "
+                    "not mark read-only, and the eval only reads. If none of its tools can "
+                    f"change anything, say so: rote setup --read-only {server}"
+                )
+            path = token_file(server)
+            gated[server] = GatedServer(
+                url=entry.url,
+                allowed=tuple(allowed),
+                denied=tuple(denied),
+                token=path if read_token_file(server) is not None else None,
+            )
+            found[server] = entry.url
         else:
             raise SkillAbError(
                 f"the pipeline reads {server}, and the eval only calls servers registered "
-                f"read-only: rote mcp add {server} <url> --read-only (or use a bench case, "
-                "whose fixtures stand in for it)"
+                f"with rote: rote mcp add {server} <url> (or use a bench case, whose "
+                "fixtures stand in for it)"
             )
-    return found
+    return found, gated
 
 
 def subject_for(
@@ -440,6 +498,7 @@ def subject_for(
     case: Case | None = None
     reference: demo.Reference | None = None
     live: dict[str, str] = {}
+    gated: dict[str, GatedServer] = {}
     original_only: str | None = None
     if case_id is not None:
         casefile, case = bench_case(skill_dir, case_id)
@@ -479,7 +538,7 @@ def subject_for(
                 for f in proof.fields_from_ir(pipeline)
             )
         contract = tuple(dict.fromkeys(f.original.split("/")[1] for f in fields))
-        live = _read_only_registered(sorted(pipeline.required_mcp_servers))
+        live, gated = live_servers(sorted(pipeline.required_mcp_servers), _bound_tools(pipeline))
     return Subject(
         name=_skill_name(skill_dir),
         skill_dir=skill_dir.resolve(),
@@ -497,6 +556,7 @@ def subject_for(
         case=case,
         reference=reference,
         live_servers=live,
+        gated=gated,
         provenance=dict(provenance or given_provenance(pipeline_yaml)),
     )
 
@@ -809,7 +869,39 @@ def _environ(env: Mapping[str, str]) -> Iterator[None]:
         os.environ.update(saved)
 
 
-def install_compiled(skill_dir: Path, env: Mapping[str, str], servers: Mapping[str, str]) -> None:
+def _mcp_entry(name: str, url: str, gated: Mapping[str, GatedServer]) -> dict[str, Any]:
+    """The original side's ``--mcp-config`` entry for one server. A gated
+    server with a login authenticates through ``rote mcp headers``, which
+    reads the trial's copy of it, so no token lands in a file the run sees."""
+    import shlex
+
+    entry: dict[str, Any] = {"type": "http", "url": url}
+    if name in gated and gated[name].token is not None:
+        entry["headersHelper"] = (
+            f"{shlex.quote(sys.executable)} -m rote mcp headers {shlex.quote(name)}"
+        )
+    return entry
+
+
+def _copy_logins(gated: Mapping[str, GatedServer], env: Mapping[str, str]) -> None:
+    """Copy each gated server's login into the trial's token dir, owner-only.
+    The trial state is a throwaway dir removed with the work dir."""
+    tokens = Path(env["ROTE_MCP_TOKEN_DIR"])
+    for server in gated.values():
+        if server.token is None:
+            continue
+        tokens.mkdir(parents=True, exist_ok=True, mode=0o700)
+        dest = tokens / server.token.name
+        dest.write_bytes(server.token.read_bytes())
+        dest.chmod(0o600)
+
+
+def install_compiled(
+    skill_dir: Path,
+    env: Mapping[str, str],
+    servers: Mapping[str, str],
+    gated: Collection[str] = (),
+) -> None:
     """Register ``servers`` read-only and install the compiled skill, in the
     trial's own state (``env``'s rote paths, a dir this eval created).
 
@@ -828,7 +920,9 @@ def install_compiled(skill_dir: Path, env: Mapping[str, str], servers: Mapping[s
             raise SkillAbError("the trial state was not applied")
         save_registry(
             McpRegistry(
-                servers={n: McpServerConfig(url=u, read_only=True) for n, u in servers.items()}
+                servers={
+                    n: McpServerConfig(url=u, read_only=n not in gated) for n, u in servers.items()
+                }
             )
         )
         skill = trust.read_skill_dir(skill_dir)
@@ -926,17 +1020,24 @@ def run_trial(
     cwd.mkdir()
     state = work / "state"
     env = _trial_env(state, _shim_dir(harness.work))
+    _copy_logins(subject.gated, env)
     skill_dir = subject.skill_dir if side == "original" else compiled_dir
     if skill_dir is None:
         raise SkillAbError("the compiled side needs the compiled skill's directory")
     with _servers(subject, side, work) as (servers, log):
         mcp: dict[str, dict[str, Any]] = {}
         allowed: list[str] = []
+        denied: list[str] = []
         if side == "original":
-            mcp = {n: {"type": "http", "url": u} for n, u in servers.items()}
-            allowed = [f"mcp__{n}__*" for n in sorted(servers)]
+            mcp = {n: _mcp_entry(n, u, subject.gated) for n, u in servers.items()}
+            for n in sorted(servers):
+                if n in subject.gated:
+                    allowed += subject.gated[n].allowed
+                    denied += subject.gated[n].denied
+                else:
+                    allowed.append(f"mcp__{n}__*")
         else:
-            install_compiled(skill_dir, env, servers)
+            install_compiled(skill_dir, env, servers, gated=set(subject.gated))
             run_root = Path(env["ROTE_SKILL_RUN_DIR"])
             run_root.mkdir(parents=True, exist_ok=True)
             # The driver writes result.json into the run folder; the agent may
@@ -970,7 +1071,9 @@ def run_trial(
             harness.model,
             "--add-dir",
             str(skill_dir),
-            *skill_run_isolation_args(work, skill_dir, mcp, allowed, extra_tools=("Bash",)),
+            *skill_run_isolation_args(
+                work, skill_dir, mcp, allowed, denied_mcp_tools=denied, extra_tools=("Bash",)
+            ),
             "--output-format",
             "stream-json",
             "--verbose",
