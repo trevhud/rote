@@ -97,7 +97,13 @@ The module:
    find columns by the names the skill gives (case- and
    whitespace-insensitive), and raise `ValueError` naming a missing
    column. Never return an empty result for input you could not parse.
-7. A `pure_function` stays a stub only when the logic depends on a fact
+7. When the message shows the argument values a recorded run sent the
+   tool a reader calls, return values of exactly that form. A search
+   result's resource id (`ari:cloud:confluence:...:page/5208211471`) is not
+   the page id a fetch takes (`5208211471`): convert in code, and test the
+   conversion with the recorded form. The skill's wording ("the id from the
+   search results") does not override what the tool was really called with.
+8. A `pure_function` stays a stub only when the logic depends on a fact
    the skill does not state (a mapping it never lists). The whole body
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.

@@ -1439,7 +1439,7 @@ def test_a_node_feeding_a_tool_sees_the_argument_values_a_recorded_run_sent(
     )
     ctx.grounding = _replace(ctx.grounding, observations=calls)
     card = "\n".join(generate._node_card(ctx, node))
-    assert f"`{reader}` calls `{mcp.server}.{mcp.tool}`. A recorded run" in card
+    assert f"`{reader}` calls `{mcp.server}.{mcp.tool}` with what this node returns." in card
     assert '- `pageId`: "5270208513", "5208211471"' in card
     assert "- `n`: 1" in card  # each distinct value once
     assert "failed" not in card and "elsewhere" not in card
