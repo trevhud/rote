@@ -68,6 +68,7 @@ from rote.compiler.provenance import (
     provenance_findings,
 )
 from rote.compiler.tool_grounding import (
+    DECLARED_TOOL_UNBOUND,
     schema_sources,
     stale_bundled,
     tool_findings,
@@ -609,7 +610,7 @@ UNUSED_CONSTANT = "unused_constant"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
-REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT})
+REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND})
 
 
 def unused_constant_findings(

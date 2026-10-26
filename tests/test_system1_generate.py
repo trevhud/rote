@@ -374,8 +374,11 @@ def test_a_judge_may_pass_through_only_an_input_field_of_the_same_schema(tmp_pat
     assert any("is not a candidate" in p for p in judge_problems(ctx, node, wrong_path))
     wrong_field = {**ok, "passthrough": {"verdict": param}}
     assert any("offered for `verdict`: none" in p for p in judge_problems(ctx, node, wrong_field))
-    every = {**ok, "passthrough": {"copied": param, "verdict": param}}
-    assert any("decide nothing" in p for p in judge_problems(ctx, node, every))
+    # Naming every output field leaves nothing to decide: code drops it, as
+    # a re-ask cannot (an empty passthrough in a repair keeps the old one).
+    assert generate.covers_every_output(ctx, node, {"copied": param, "verdict": param})
+    assert not generate.covers_every_output(ctx, node, {"copied": param})
+    assert not generate.covers_every_output(ctx, node, {})
     answered = generate.judge_passthrough(
         {"passthrough": [{"output_field": "copied", "input_path": param}]}
     )
@@ -1411,3 +1414,35 @@ def test_pydantics_type_tail_names_no_node() -> None:
     )
     per, _ = attribute(_validation(error), ["summarize", "type"], [], [])
     assert list(per) == ["summarize"]
+
+
+def test_a_node_feeding_a_tool_sees_the_argument_values_a_recorded_run_sent(
+    tmp_path: Path,
+) -> None:
+    """Atlassian's search returns a page's resource id; getConfluencePage
+    takes the bare number. Only the recorded call shows the form, so the
+    node producing the argument is shown it."""
+    from dataclasses import replace as _replace
+
+    from rote.eval.baseline import ObservedToolCall
+    from rote.ir import MCPBinding
+
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    node, reader = next((n, c) for n in ctx.pipeline.nodes for c, _ in ctx.consumers(n.id))
+    ctx.node(reader).mcp = MCPBinding(server="atlassian", tool="getConfluencePage")
+    mcp = ctx.node(reader).mcp
+    calls = (
+        ObservedToolCall(mcp.server, mcp.tool, {"pageId": "5270208513", "n": 1}),
+        ObservedToolCall(mcp.server, mcp.tool, {"pageId": "5208211471", "n": 1}),
+        ObservedToolCall(mcp.server, mcp.tool, {"pageId": "failed"}, is_error=True),
+        ObservedToolCall(mcp.server, "some_other_tool", {"pageId": "elsewhere"}),
+    )
+    ctx.grounding = _replace(ctx.grounding, observations=calls)
+    card = "\n".join(generate._node_card(ctx, node))
+    assert f"`{reader}` calls `{mcp.server}.{mcp.tool}`. A recorded run" in card
+    assert '- `pageId`: "5270208513", "5208211471"' in card
+    assert "- `n`: 1" in card  # each distinct value once
+    assert "failed" not in card and "elsewhere" not in card
+    # With no recording, the card says nothing about it.
+    ctx.grounding = _replace(ctx.grounding, observations=())
+    assert "A recorded run" not in "\n".join(generate._node_card(ctx, node))

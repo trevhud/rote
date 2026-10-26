@@ -240,6 +240,27 @@ def test_a_named_declared_tool_that_no_node_calls_fails(tmp_path: Path) -> None:
     )
 
 
+def test_a_named_tool_on_a_server_the_pipeline_already_calls_is_a_review_gap(
+    tmp_path: Path,
+) -> None:
+    """Atlassian's search skill names searchJiraIssuesUsingJql as a fallback
+    and compiles to Rovo search on the same server: worth a look, not an exit 1."""
+    from rote.compiler.verify import REVIEW_GAP_KINDS
+
+    skill = _named_skill(
+        tmp_path,
+        "Use `migrate_pages_to_workers_guide`; if unclear, try `search_cloudflare_documentation`.",
+    )
+    other = _PLAIN.replace(
+        "    impl: extracted/a.py:answer\n",
+        "    impl: extracted/a.py:answer\n"
+        "    mcp: {server: cloudflare_docs, tool: migrate_pages_to_workers_guide}\n",
+    ).replace("kind: pure_function", "kind: external_call")
+    [finding] = unbound_tool_findings(_ir(tmp_path, other), skill, DOCS)
+    assert (finding.kind, finding.severity) == ("declared_tool_unbound", "warning")
+    assert finding.kind in REVIEW_GAP_KINDS
+
+
 def test_a_binding_or_a_loop_that_uses_the_tool_passes(tmp_path: Path) -> None:
     skill = _named_skill(tmp_path, "Use search_cloudflare_documentation to find the page.")
     bound = _PLAIN.replace(

@@ -42,7 +42,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -500,11 +500,55 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
     readers = ctx.consumers(node.id)
     if readers:
         lines.append("Read by: " + ", ".join(f"`{c}` (as `{p}`)" for c, p in readers) + ".")
+        lines += _recorded_arguments(ctx, [c for c, _ in readers])
     if ctx.tables:
         lines += [
             "",
             f"Rule tables in `extracted.{TABLES_MODULE}` (shown above in full; import, "
             "never retype): " + ", ".join(f"`{t}`" for t in ctx.tables),
+        ]
+    return lines
+
+
+#: Distinct recorded values shown per argument, and how long each may be.
+RECORDED_VALUES = 3
+RECORDED_VALUE_CHARS = 120
+
+
+def _recorded_arguments(ctx: Context, readers: list[str]) -> list[str]:
+    """For each reader that calls an MCP tool, the argument values a
+    recorded run (``rote baseline``) really sent it.
+
+    The node feeding a tool argument must produce the form the tool takes,
+    and only a recording shows it: Atlassian's search returns a page's
+    resource id (``ari:cloud:confluence:...:page/5208211471``) while
+    getConfluencePage takes the bare ``5208211471``. A compile that never
+    saw the call copied the id and every fetch failed."""
+    calls = getattr(ctx.grounding, "observations", ()) or ()
+    lines: list[str] = []
+    for reader in readers:
+        mcp = ctx.node(reader).mcp
+        if mcp is None:
+            continue
+        seen: dict[str, list[str]] = {}
+        for call in calls:
+            if (call.server, call.tool) != (mcp.server, mcp.tool) or call.is_error:
+                continue
+            for arg, value in (call.input or {}).items():
+                shown = json.dumps(value, default=str)[:RECORDED_VALUE_CHARS]
+                if shown not in seen.setdefault(str(arg), []):
+                    seen[str(arg)].append(shown)
+        if not seen:
+            continue
+        lines += [
+            "",
+            f"`{reader}` calls `{mcp.server}.{mcp.tool}`. A recorded run of the skill sent it "
+            "these argument values (data, for the form each argument takes; produce values "
+            "of that form):",
+        ]
+        lines += [
+            f"- `{arg}`: " + ", ".join(values[:RECORDED_VALUES])
+            for arg, values in sorted(seen.items())
         ]
     return lines
 
@@ -1161,13 +1205,16 @@ def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str
                 f"field there with exactly `{target}`'s schema (offered for `{target}`: "
                 f"{offered})"
             )
-    props = ctx.output_schema(node.id).get("properties") or {}
-    if passthrough and set(props) <= set(passthrough):
-        problems.append(
-            "passthrough names every output field, so the judge would decide nothing; "
-            "pass through only the fields the skill returns unchanged"
-        )
     return problems
+
+
+def covers_every_output(ctx: Context, node: Any, passthrough: Mapping[str, str]) -> bool:
+    """Whether ``passthrough`` would leave the judge nothing to decide. Code
+    settles that by dropping it (the judge then fills every field, as it did
+    before passthrough existed): a re-ask cannot, because an empty
+    passthrough in a repair keeps the earlier choice."""
+    props = ctx.output_schema(node.id).get("properties") or {}
+    return bool(passthrough) and set(props) <= set(passthrough)
 
 
 def piece_findings(
@@ -1635,6 +1682,13 @@ class TextWriter:
                 answer["passthrough"] = judge_passthrough(payload) or dict(
                     (prior or {}).get("passthrough") or {}
                 )
+                if covers_every_output(self.ctx, node, answer["passthrough"]):
+                    self._emit(
+                        "log",
+                        f"generate: {node.id}: passthrough named every output field, so it "
+                        "was dropped and the judge fills them all",
+                    )
+                    answer["passthrough"] = {}
             problems += await self._checks(node, answer)
             if not problems:
                 break
