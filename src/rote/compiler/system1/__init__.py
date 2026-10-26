@@ -81,6 +81,7 @@ def prepare(
     observations: Iterable[Any] = (),
     structure_lane: Lane | None = None,
     decider_why: str | None = None,
+    offered: Iterable[str] = (),
 ) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
@@ -118,6 +119,7 @@ def prepare(
             structure_lane,
             tools=tools,
             sample=sample,
+            offered=offered,
             checker=(
                 None
                 if verdicts is None

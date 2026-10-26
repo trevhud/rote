@@ -239,7 +239,7 @@ async def test_the_compile_records_the_declared_schemas_beside_the_ir(
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
 
     async def listed(self: Any, observations: Any, skill_dir: Path, snapshot: Any = None) -> Any:
-        return _declared(), {}
+        return _declared(), {}, {}
 
     monkeypatch.setattr(Compiler, "_tool_schemas", listed)
     out = tmp_path / "out"

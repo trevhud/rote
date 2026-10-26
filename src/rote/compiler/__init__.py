@@ -610,7 +610,9 @@ class Compiler:
                 snapshot = tool_grounding.bundled(skill_dir)
             except ValueError as e:
                 raise CompilerError(str(e)) from e
-            tools, unlisted = await self._tool_schemas(observations, skill_dir, snapshot)
+            tools, unlisted, candidates = await self._tool_schemas(
+                observations, skill_dir, snapshot
+            )
             grounding = Grounding(
                 sample=sample,
                 observations=observations,
@@ -618,6 +620,15 @@ class Compiler:
                 unlisted=unlisted,
                 bundled=snapshot,
             )
+            if candidates and not use_system1:
+                # Only the structure pass chooses among offered tools.
+                for server in sorted({s for s, _ in candidates}):
+                    grounding.unlisted[server] = "the skill names none of its tools"
+                    self._emit(
+                        "log",
+                        f"tool schemas: not using {server!r}: the skill names none of its "
+                        "tools, and only System-1 chooses among a logged-in server's tools",
+                    )
             s1_plan: system1.Plan | None = None
             if use_system1:
                 decider, decider_why = self._resolve_decider()
@@ -644,7 +655,8 @@ class Compiler:
                         decider,
                         decider_why=decider_why,
                         sample=sample,
-                        tools=grounding.tools,
+                        tools={**grounding.tools, **candidates},
+                        offered=sorted({server for server, _ in candidates}),
                         observations=grounding.observations,
                         tiebreak_lane=lane,
                         structure_lane=(
@@ -671,6 +683,21 @@ class Compiler:
                         error.usage = usage  # type: ignore[attr-defined]
                         raise error from e
                     raise CompilerError(str(e)) from e
+                # An offered server the plan binds a step to is now grounding
+                # like any other; one it binds nothing of is left unused.
+                adopted, unused = tool_grounding.adopt_offered(
+                    candidates, (n.mcp["server"] for n in s1_plan.nodes if n.mcp)
+                )
+                for server in sorted({s for s, _ in adopted}):
+                    self._emit(
+                        "log",
+                        f"tool schemas: using {server!r} (the structure pass bound a step to "
+                        "its tools)",
+                    )
+                for server in unused:
+                    grounding.unlisted[server] = "no step uses its tools"
+                    self._emit("log", f"tool schemas: not using {server!r}: no step uses it")
+                grounding.tools.update(adopted)
                 st = s1_plan.structure
                 if st is not None:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
@@ -1074,10 +1101,12 @@ class Compiler:
         observations: tuple[Any, ...],
         skill_dir: Path,
         snapshot: tool_grounding.ToolSchemas | None = None,
-    ) -> tuple[tool_grounding.ToolSchemas, dict[str, str]]:
+    ) -> tuple[tool_grounding.ToolSchemas, dict[str, str], tool_grounding.ToolSchemas]:
         """Every MCP tool's input schema rote can get, before the agent runs.
 
-        Returns the schemas and ``{server: why}`` for each registered server
+        Returns the schemas, the candidates (the tools of logged-in servers
+        the skill names none of, for the structure pass to choose from), and
+        ``{server: why}`` for each registered server
         it did not list (:attr:`Grounding.unlisted`), so the compile summary
         can say what to fix.
 
@@ -1112,6 +1141,7 @@ class Compiler:
             else []
         )
         declared: tool_grounding.ToolSchemas = {}
+        candidates: tool_grounding.ToolSchemas = {}
         for server, why in contact.items():
             self._emit("log", f"tool schemas: listing {server!r} (the skill says: {why!r})")
         for server in logged_in:
@@ -1145,15 +1175,18 @@ class Compiler:
                     if server in calls:
                         self._emit("log", f"tool schemas: using {server!r} ({calls[server]})")
                     elif server not in unlisted:
-                        unlisted[server] = "the skill calls none of its tools"
                         self._emit(
                             "log",
-                            f"tool schemas: not using {server!r}: the skill calls none of its "
-                            "tools",
+                            f"tool schemas: offering {server!r}'s tools to the structure pass: "
+                            "the skill names none of them, so it decides whether a step uses one",
                         )
-                declared = {
-                    k: v for k, v in declared.items() if k[0] not in logged_in or k[0] in calls
+                # The rest are candidates: the structure pass sees their
+                # names and descriptions and may bind a step to one, which
+                # code then checks; a server it binds none of stays unused.
+                candidates = {
+                    k: v for k, v in declared.items() if k[0] in logged_in and k[0] not in calls
                 }
+                declared = {k: v for k, v in declared.items() if k not in candidates}
         if snapshot:
             servers = sorted({s for s, _ in snapshot} - {s for s, _ in declared})
             if servers:
@@ -1169,7 +1202,7 @@ class Compiler:
                 "log",
                 f"tool arguments grounded in {len(tools)} tool schema(s) from {', '.join(servers)}",
             )
-        return tools, unlisted
+        return tools, unlisted, candidates
 
     def _emit_verification(self, verification: Verification) -> None:
         """One log line for the per-node implementation tally, one warning per problem."""

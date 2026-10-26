@@ -87,9 +87,30 @@ class ToolSchema:
     #: skill's :data:`rote.tool_schema.BUNDLED_TOOLS_FILENAME` snapshot) or
     #: ``recorded`` (inferred from a baseline's calls).
     origin: Literal["live", "bundled", "recorded"] = "live"
+    #: The server's own one-line description of the tool, made safe to
+    #: show a model (:func:`safe_description`); ``""`` when it gave none.
+    description: str = ""
 
 
 ToolSchemas = dict[tuple[str, str], ToolSchema]
+
+#: The longest tool description a prompt shows.
+DESCRIPTION_CHARS = 200
+
+
+def safe_description(text: object) -> str:
+    """A server's tool description as one short line of plain text.
+
+    It is remote input, shown to a model as data: control, format and
+    line-separator characters go (:func:`rote.adapters._common.escape_invisible`
+    escapes them), whitespace runs become one space, and it is cut at
+    :data:`DESCRIPTION_CHARS`."""
+    from rote.adapters._common import escape_invisible
+
+    if not isinstance(text, str):
+        return ""
+    line = " ".join(escape_invisible(text).split())
+    return line if len(line) <= DESCRIPTION_CHARS else line[: DESCRIPTION_CHARS - 3] + "..."
 
 
 def _phrase(name: str) -> str:
@@ -201,6 +222,17 @@ def logged_in_servers(registered: Mapping[str, Any]) -> list[str]:
         for name, config in registered.items()
         if auth_status(config, read_token_file(name)) in ("authenticated", "expired (refreshable)")
     )
+
+
+def adopt_offered(
+    candidates: ToolSchemas, bound_servers: Iterable[str]
+) -> tuple[ToolSchemas, list[str]]:
+    """The offered tools of the servers a plan binds a step to, and the
+    offered servers it binds nothing of (left unused, never grounding)."""
+    bound = set(bound_servers)
+    adopted = {k: v for k, v in candidates.items() if k[0] in bound}
+    unused = sorted({s for s, _ in candidates} - bound)
+    return adopted, unused
 
 
 def servers_whose_tools_the_skill_calls(schemas: ToolSchemas, skill_text: str) -> dict[str, str]:
@@ -370,6 +402,7 @@ async def discover(
                     f"tools/list on the registered {name!r}",
                     True,
                     output if isinstance(output, dict) else None,
+                    description=safe_description(getattr(tool, "description", None)),
                 )
     return found
 
