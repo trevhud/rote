@@ -240,9 +240,9 @@ def run_tty(world: World) -> tuple[int, str]:
         (r"Log in to which servers", (ENTER,), "both (the default)"),
         (r"Apply this plan\?", ("y",), "yes"),
         (r"Which skill should rote compile and compare\?", (ENTER,), "the recommended one"),
-        (r"Let rote call any tool on deepwiki", ("y",), "yes"),
-        (r"Let rote call any tool on mslearn", ("y",), "yes"),
-        (r"Apply this plan\?", ("y",), "yes"),
+        # The fixture servers mark their tools read-only, so nobody is asked
+        # to vouch for them: the pick's plan notes it instead.
+        (r"calls only the 1 tool\(s\) it marks read-only[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: rote try docs-digest: compile[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: install[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: rote try docs-digest: the paired eval[\s\S]*Apply this plan\?", ("y",), "yes"),

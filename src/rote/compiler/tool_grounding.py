@@ -738,6 +738,10 @@ def _names_tool(tool: str, text: str) -> bool:
     return re.search(rf"`{name}(?:\([^`]*\))?`", text) is not None
 
 
+#: The finding :func:`unbound_tool_findings` raises.
+DECLARED_TOOL_UNBOUND = "declared_tool_unbound"
+
+
 def unbound_tool_findings(
     pipeline: Pipeline, skill_dir: Path | None, tools: ToolSchemas
 ) -> list[ContractFinding]:
@@ -759,17 +763,24 @@ def unbound_tool_findings(
         declared.setdefault(tool, set()).add(server)
     bound = {n.mcp.tool for n in pipeline.nodes if n.mcp is not None}
     bound |= {t for n in pipeline.nodes for t in n.tools or []}
+    used = {n.mcp.server for n in pipeline.nodes if n.mcp is not None}
+    used |= {s for n in pipeline.nodes for s in (n.tool_servers or {}).values()}
     text = _skill_text(skill_dir)
     findings: list[ContractFinding] = []
     for tool in sorted(declared):
         if tool in bound or not _names_tool(tool, text):
             continue
         servers = sorted(declared[tool])
+        # A server the pipeline calls nothing of is the step compiled into
+        # something else: an error. One whose other tools it calls is a tool
+        # the skill offers as an option (a fallback search): worth a look,
+        # not a failure.
+        severity: Literal["error", "warning"] = "warning" if used & set(servers) else "error"
         findings.append(
             ContractFinding(
                 node_id="(pipeline)",
-                kind="declared_tool_unbound",
-                severity="error",
+                kind=DECLARED_TOOL_UNBOUND,
+                severity=severity,
                 message=(
                     f"the skill names the tool `{tool}` ({', '.join(servers)}), but no node "
                     f"calls it. Bind the step that uses it: an external_call with "

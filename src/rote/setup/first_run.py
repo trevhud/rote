@@ -588,7 +588,17 @@ class SkillStep:
             from urllib.parse import urlsplit
 
             host = urlsplit(entry.url).hostname or entry.url
-            if server in self.flags.read_only or self._vouch(prompter, server, host):
+            if server in self.flags.read_only:
+                marks.append(server)
+                continue
+            marked = _tools_marked_read_only(server)
+            if marked:
+                # The server says which of its tools only read: the comparison
+                # calls only those, so there is nothing to vouch for.
+                notes.append(
+                    f"{server}: the comparison calls only the {marked} tool(s) it marks read-only"
+                )
+            elif self._vouch(prompter, server, host):
                 marks.append(server)
             else:
                 notes.append(
@@ -900,6 +910,18 @@ class Runner:
             ],
             **self._context(),
         }
+
+
+def _tools_marked_read_only(server: str) -> int:
+    """How many of ``server``'s tools it marks ``readOnlyHint`` itself (a
+    read-only ``tools/list``). 0 when it marks none or cannot be listed now,
+    which leaves the question to the user."""
+    import asyncio
+
+    from rote.eval.baseline import read_only_allowlist
+
+    allowed, _denied, skipped = asyncio.run(read_only_allowlist([server]))
+    return 0 if server in skipped else len(allowed)
 
 
 def plan_code(step_id: str, plan: Plan) -> str:

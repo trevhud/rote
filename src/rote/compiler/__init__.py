@@ -606,6 +606,12 @@ class Compiler:
             from rote.eval.baseline import load_observations
 
             observations = tuple(load_observations(probe_dir)) if probe_dir else ()
+            if observations and self.tool_discovery != "none":
+                from rote.compiler.replay import runtime_shapes
+
+                observations = await runtime_shapes(
+                    observations, lambda line: self._emit("log", line)
+                )
             try:
                 snapshot = tool_grounding.bundled(skill_dir)
             except ValueError as e:

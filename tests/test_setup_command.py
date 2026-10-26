@@ -129,6 +129,17 @@ def _install_as_the_user(monkeypatch: pytest.MonkeyPatch, capsys: Any, command: 
 # ───────── the agent protocol: each consent point stops, for its own step ─────────
 
 
+@pytest.fixture
+def unmarked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Servers that mark none of their tools read-only: only the user's word
+    can let the comparison call them."""
+
+    async def _nothing_marked(names: list[str]) -> tuple[list[str], list[str], dict[str, str]]:
+        return [], [], {n: "no tools declare readOnlyHint" for n in names}
+
+    monkeypatch.setattr("rote.eval.baseline.read_only_allowlist", _nothing_marked)
+
+
 def test_an_agent_is_asked_which_servers_to_import_and_nothing_is_written(
     world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -321,7 +332,10 @@ def test_an_approval_for_one_skill_does_not_approve_another(
 
 
 def test_the_skill_step_asks_for_each_live_server_and_saves_the_pick(
-    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    unmarked: None,
+    world: SetupWorld,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _agent(monkeypatch)
     _through_import(capsys)
@@ -359,7 +373,10 @@ def test_the_skill_step_asks_for_each_live_server_and_saves_the_pick(
 
 
 def test_yes_never_vouches_for_a_server(
-    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    unmarked: None,
+    world: SetupWorld,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _agent(monkeypatch)
     status, payload, _ = _setup(
@@ -441,7 +458,10 @@ def test_a_step_that_is_not_one_is_refused(
 
 
 def test_a_person_walks_through_every_step_to_the_verdict_and_a_rerun_costs_nothing(
-    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    unmarked: None,
+    world: SetupWorld,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompter = _person(
         monkeypatch,
@@ -506,7 +526,10 @@ def test_a_person_who_declines_the_import_goes_on_to_the_next_step(
 
 
 def test_a_server_the_person_does_not_mark_read_only_stops_setup_before_any_spend(
-    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    unmarked: None,
+    world: SetupWorld,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompter = _person(
         monkeypatch,
@@ -539,7 +562,7 @@ def test_rote_try_refuses_before_the_compile_when_a_server_is_not_read_only(
     status = main(["try", str(world.skill), "--json", "--yes", "--live"])
     out = json.loads(capsys.readouterr().out)
     assert status == 1
-    assert "registered but not read-only" in out["error"]
+    assert "which is not registered read-only, and its tools could not be checked" in out["error"]
     assert "rote setup --read-only mslearn" in out["error"]
     assert world.compiles == []
 
@@ -557,7 +580,10 @@ def test_the_parser_names_every_step_setup_takes() -> None:
 
 
 def test_next_is_short_and_carries_only_the_new_answer(
-    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    unmarked: None,
+    world: SetupWorld,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _agent(monkeypatch)
     mode = ("--agent-mode", "yes", "--json")
@@ -627,3 +653,21 @@ def test_setup_says_why_rote_inits_defaults_are_not_a_step(
     _agent(monkeypatch)
     _, _, err = _setup(capsys, "--json")
     assert "rote init's defaults are not a step here: rote try pins its own runtime" in err
+
+
+def test_a_server_that_marks_its_read_only_tools_is_not_asked_about(
+    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture servers mark every tool read-only, as Atlassian's do: the
+    comparison calls only those, so nobody is asked to vouch for the server
+    and the registry is not changed to say it only reads."""
+    _agent(monkeypatch)
+    _through_import(capsys)
+    _setup(capsys, "--json", "--skip", "login")
+    status, payload, err = _setup(capsys, "--json", "--skill", "docs-digest@claude-code-user")
+    assert (status, payload["reason"]) == (2, "confirmation_required")
+    assert "--read-only" not in json.dumps(payload["next"])
+    assert "deepwiki: the comparison calls only the 1 tool(s) it marks read-only" in err
+    status, payload, _ = _yes(capsys, payload)
+    assert payload["step"]["id"] == "compile"
+    assert not any(s.read_only for s in load_registry().servers.values())

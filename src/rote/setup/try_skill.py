@@ -380,18 +380,19 @@ def require_live_servers(skill_dir: Path) -> dict[str, str]:
     """``{server: url}`` the comparison will call, or :class:`TryError` before
     anything is spent.
 
-    The eval calls only servers registered read-only
-    (:func:`rote.eval.skill_ab.subject_for`); a skill naming one that is not
-    would otherwise be compiled, paid for, and then refused at the eval. The
+    The eval calls a server registered read-only, or one whose own
+    ``readOnlyHint`` marks the tools the pipeline calls
+    (:func:`rote.eval.skill_ab.live_servers`); a skill naming one it cannot
+    call would otherwise be compiled, paid for, and then refused. The
     servers are the ones :func:`rote.compiler.tool_grounding.servers_named`
     finds, which counts only explicit forms."""
     from rote.compiler.tool_grounding import servers_named
-    from rote.eval.skill_ab import SkillAbError, _read_only_registered
+    from rote.eval.skill_ab import SkillAbError, live_servers
     from rote.mcp.registry import load_registry
 
     named = servers_named(skill_dir, load_registry().servers.keys())
     try:
-        return _read_only_registered(sorted(named))
+        return live_servers(sorted(named))[0]
     except SkillAbError as e:
         raise TryError(f"{e}. Checked before the compile: nothing was spent") from None
 
