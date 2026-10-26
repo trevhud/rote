@@ -654,10 +654,17 @@ grounded each server. Things to preserve:
   `rote.compiler.tool_grounding` lists the tools (`tools/list`, read-only,
   through the emitted pipelines' own non-interactive client, all servers
   concurrently) of the registered servers the skill names, before the
-  agent runs, plus the servers the user has logged in to, kept only when
-  the skill calls one of their tools (a code span or a call, never a
+  agent runs, plus the servers the user has logged in to. A logged-in
+  server whose tool the skill calls (a code span or a call, never a
   product name in prose: Atlassian's own skills say "Jira" and call
-  `getJiraIssue(...)` but never name `atlassian`). Only those: a
+  `getJiraIssue(...)` but never name `atlassian`) grounds the compile
+  directly. Otherwise its tools are *offered* to the structure pass, with
+  each tool's own description (`safe_description`: one escaped line, cut
+  at 200 characters, labeled as data), and the pass may bind a step to
+  one ("use read-only Jira search" became `searchJiraIssuesUsingJql`).
+  Code checks the binding like any declared tool, and only a server the
+  plan binds becomes grounding (`adopt_offered`). Descriptions go to the
+  structure pass only, never to the files the agent reads. Only those: a
   third-party skill must not trigger authenticated requests, and silent
   token refreshes, against servers the user has not approved
   (`--tool-discovery all` opts in, `none` opts out on any driver). Schemas

@@ -903,7 +903,7 @@ def test_the_compile_records_why_a_registered_server_was_not_listed(
         return {}
 
     monkeypatch.setattr(tool_grounding, "discover", _discover)
-    tools, unlisted = asyncio.run(Compiler()._tool_schemas((), skill))
+    tools, unlisted, _ = asyncio.run(Compiler()._tool_schemas((), skill))
     assert tools == {}
     assert unlisted == {
         "gmail": "MCPError: Unauthorized. Provide a valid Bearer token.",
@@ -1156,3 +1156,15 @@ def test_servers_named_does_not_take_half_a_longer_name(tmp_path: Path) -> None:
         "drive": "Drive MCP",
         "sheets": "`sheets` server",
     }
+
+
+def test_only_the_offered_servers_a_plan_binds_become_grounding() -> None:
+    from rote.compiler.tool_grounding import adopt_offered
+
+    other = ToolSchema("figma", "get_screenshot", SEARCH, "tools/list", True)
+    candidates = {("atlassian", "getJiraIssue"): JIRA, ("figma", "get_screenshot"): other}
+    adopted, unused = adopt_offered(candidates, ["atlassian", "gmail"])
+    assert adopted == {("atlassian", "getJiraIssue"): JIRA}
+    assert unused == ["figma"]
+    # Binding nothing adopts nothing.
+    assert adopt_offered(candidates, []) == ({}, ["atlassian", "figma"])

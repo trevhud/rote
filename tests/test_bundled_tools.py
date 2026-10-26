@@ -114,7 +114,7 @@ def test_a_live_listing_replaces_the_snapshot_for_its_server_only() -> None:
 def test_the_compile_grounds_in_the_snapshot_with_nothing_registered(tmp_path: Path) -> None:
     skill = _snapshot(tmp_path / "skill", {"gmail": {"search_threads": SEARCH}})
     (skill / "SKILL.md").write_text("Search Gmail.\n", encoding="utf-8")
-    tools, _ = asyncio.run(Compiler()._tool_schemas((), skill, bundled(skill)))
+    tools, _, _ = asyncio.run(Compiler()._tool_schemas((), skill, bundled(skill)))
     assert tools[("gmail", "search_threads")].origin == "bundled"
     assert tools[("gmail", "search_threads")].input_schema == SEARCH
 
@@ -132,7 +132,7 @@ def test_the_compile_prefers_a_live_listing_of_a_registered_server(
         return {("gmail", "search_threads"): _live("gmail", "search_threads", READ)}
 
     monkeypatch.setattr(tool_grounding, "discover", _discover)
-    tools, _ = asyncio.run(Compiler()._tool_schemas((), skill, bundled(skill)))
+    tools, _, _ = asyncio.run(Compiler()._tool_schemas((), skill, bundled(skill)))
     assert tools[("gmail", "search_threads")].origin == "live"
     assert tools[("gmail", "search_threads")].input_schema == READ
 

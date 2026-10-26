@@ -212,7 +212,7 @@ async def test_a_compile_binds_from_its_baseline_recordings(
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
 
     async def listed(self: Any, observations: Any, skill_dir: Path, snapshot: Any = None) -> Any:
-        return TOOLS, {}
+        return TOOLS, {}, {}
 
     monkeypatch.setattr(Compiler, "_tool_schemas", listed)
     out = tmp_path / "out"
