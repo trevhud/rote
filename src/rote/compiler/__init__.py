@@ -243,6 +243,7 @@ class Compiler:
         system1_tiebreak: str = DEFAULT_TIEBREAK,
         system1_structure: str = DEFAULT_STRUCTURE,
         tool_discovery: tool_grounding.Discovery = "named",
+        compile_anyway: bool = False,
         max_parallel: int = DEFAULT_MAX_PARALLEL,
     ) -> None:
         """
@@ -330,6 +331,9 @@ class Compiler:
         self.run_generated_tests = run_generated_tests
         self.trust_skill = trust_skill
         self.emit_target = emit_target
+        #: Compile to the skill runtime even when it would not pay off
+        #: (:mod:`rote.compiler.worth`).
+        self.compile_anyway = compile_anyway
         self.strict_provenance = strict_provenance
         self.system1 = system1
         self.tool_discovery = tool_discovery
@@ -704,6 +708,7 @@ class Compiler:
                     grounding.unlisted[server] = "no step uses its tools"
                     self._emit("log", f"tool schemas: not using {server!r}: no step uses it")
                 grounding.tools.update(adopted)
+                self._refuse_if_not_worth_it(s1_plan)
                 st = s1_plan.structure
                 if st is not None:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
@@ -1101,6 +1106,22 @@ class Compiler:
             return changes
 
         return run
+
+    def _refuse_if_not_worth_it(self, plan: system1.Plan) -> None:
+        """Stop a skill-runtime compile whose plan stops for the model too
+        often to pay off, before generation spends anything more. Only the
+        structure pass (cents) has run; its cost is in the error."""
+        from rote.compiler.worth import worth
+
+        target = self.emit_target
+        if target is None or target.runtime != "skill" or self.compile_anyway:
+            return
+        verdict = worth(plan.nodes, target.judges)
+        if verdict.pays_off:
+            return
+        st = plan.structure
+        spent = "" if st is None or st.cost_usd is None else f" (spent so far: ${st.cost_usd:.4f})"
+        raise CompilerError(verdict.explain() + spent)
 
     async def _tool_schemas(
         self,

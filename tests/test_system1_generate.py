@@ -1446,3 +1446,41 @@ def test_a_node_feeding_a_tool_sees_the_argument_values_a_recorded_run_sent(
     # With no recording, the card says nothing about it.
     ctx.grounding = _replace(ctx.grounding, observations=())
     assert "A recorded run" not in "\n".join(generate._node_card(ctx, node))
+
+
+@pytest.mark.asyncio
+async def test_a_skill_compile_that_would_not_pay_off_stops_before_generating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.compiler import CompilerError
+    from rote.compiler.verify import EmitTarget
+
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    skeleton = tmp_path / "skeleton"
+    skeleton.mkdir()
+    nodes = {
+        n.id: n
+        for n in load_pipeline(
+            (system1.prepare(skill, skeleton), skeleton / "pipeline.yaml")[1]
+        ).nodes
+    }
+    fake = FakeGenerator(nodes)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
+    # Every plan is over the line, so the check is what is tested.
+    monkeypatch.setattr("rote.compiler.worth.MAX_MODEL_STOPS", -1)
+
+    def compiler(anyway: bool) -> Compiler:
+        return Compiler(
+            run_generated_tests=False,
+            system1_tiebreak="none",
+            system1_structure="rules",
+            emit_target=EmitTarget(runtime="skill", skill_dir=skill, judges="session"),
+            compile_anyway=anyway,
+        )
+
+    with pytest.raises(CompilerError, match="would not pay off"):
+        await compiler(anyway=False).compile(skill, tmp_path / "out")
+    assert fake.requests == []
+    await compiler(anyway=True).compile(skill, tmp_path / "out2")
+    assert fake.requests
