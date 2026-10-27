@@ -840,7 +840,7 @@ def test_a_codex_tiebreak_is_one_schema_locked_codex_exec(
             "model": "gpt-5.5",
             "input_tokens": 600,
             "output_tokens": 50,
-            "cache_write_tokens": None,
+            "cache_write_tokens": 0,  # unreported, with input and output known: none spent
             "cache_read_tokens": 400,
         }
     ]
