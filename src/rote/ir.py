@@ -837,7 +837,8 @@ class Node(BaseModel):
             "this node's code reads (os.environ / os.getenv), by name. Every "
             "workflow runtime runs code in the full process environment; a "
             "compiled skill's driver gets an allowlisted one, so it passes "
-            "exactly these from the caller (rote.skill_target.launch). "
+            "exactly these, with the values recorded at install "
+            "(rote.skill_target.trust, launch). "
             "Verification refuses a literal read a node does not declare."
         ),
     )
