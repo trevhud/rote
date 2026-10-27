@@ -79,6 +79,7 @@ from rote.compiler.tool_grounding import (
     unbound_tool_findings,
     unchecked_tools,
     unsent_constant_findings,
+    unserved_loop_tool_findings,
 )
 from rote.contracts import (
     ContractFinding,
@@ -1201,6 +1202,9 @@ def _verify(
             called, grounding.tools, grounding.observations
         )
         findings += field_findings
+        findings += unserved_loop_tool_findings(
+            pipeline, skill_dir, grounding.tools, grounding.unlisted
+        )
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
             for node_id, text in [*tool_questions(called, grounding.tools), *field_questions]

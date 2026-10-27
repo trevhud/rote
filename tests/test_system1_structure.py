@@ -1163,6 +1163,28 @@ def test_a_builders_fixed_schema_is_never_rewritten(skill: Any) -> None:
     assert builder.output_schema["properties"]["items"]["items"] == {"type": want}
 
 
+def test_the_plan_never_pins_a_loop_tool_to_the_first_of_two_servers(skill: Any) -> None:
+    """#262: the compile pins loop tools from grounding afterwards
+    (tool_grounding.loop_tool_pins); the plan used to pin whichever server
+    came first, a guess when two offer the tool."""
+    two = {
+        **TOOLS,
+        ("gmail2", "search_messages"): replace(
+            TOOLS[("gmail", "search_messages")], server="gmail2"
+        ),
+    }
+    loop = {"tools": ["search_messages"], "stop_condition": "", "max_iterations": 0}
+    answer = good_answer()
+    answer["nodes"].insert(
+        1, node("research", 2, "agent_loop", mandatory=False, reads=["fetch_emails"], loop=loop)
+    )
+    fake = FakeCall(answer)
+    plan, _ = structure.decide(skill, SKILL, "rubric", Lane("claude-cli"), tools=two, call=fake)
+    research = {n.id: n for n in plan.nodes}["research"]
+    assert research.tools == ["search_messages"]
+    assert research.tool_servers == {}
+
+
 def test_a_loop_calls_only_optional_callable_nodes(skill: Any) -> None:
     declared = structure.declared_tools(skill, TOOLS)
     answer = good_answer()

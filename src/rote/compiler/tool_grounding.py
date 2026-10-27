@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from rote.contracts import ContractFinding
-from rote.ir import Node, Pipeline
+from rote.ir import Node, NodeKind, Pipeline
 from rote.tool_schema import checkable, is_json_type, names_problem
 
 #: Per-server cap on one ``tools/list``. Servers are listed concurrently,
@@ -225,11 +225,13 @@ def logged_in_servers(registered: Mapping[str, Any]) -> list[str]:
 
 
 def adopt_offered(
-    candidates: ToolSchemas, bound_servers: Iterable[str]
+    candidates: ToolSchemas, bound_servers: Iterable[str], loop_tools: Iterable[str] = ()
 ) -> tuple[ToolSchemas, list[str]]:
-    """The offered tools of the servers a plan binds a step to, and the
-    offered servers it binds nothing of (left unused, never grounding)."""
-    bound = set(bound_servers)
+    """The offered tools of the servers a plan binds a step to or offering
+    a tool one of its loops lists, and the offered servers it uses nothing
+    of (left unused, never grounding)."""
+    listed = set(loop_tools)
+    bound = set(bound_servers) | {server for server, tool in candidates if tool in listed}
     adopted = {k: v for k, v in candidates.items() if k[0] in bound}
     unused = sorted({s for s, _ in candidates} - bound)
     return adopted, unused
@@ -807,6 +809,183 @@ def listed_tools(tools: ToolSchemas) -> dict[str, set[str]]:
     return listed
 
 
+def _servers_by_tool(tools: ToolSchemas) -> dict[str, set[str]]:
+    by_tool: dict[str, set[str]] = {}
+    for server, tool in tools:
+        by_tool.setdefault(tool, set()).add(server)
+    return by_tool
+
+
+def _unpinned_loop_tools(pipeline: Pipeline) -> list[tuple[Node, str]]:
+    return [
+        (node, tool)
+        for node in pipeline.nodes
+        if node.kind is NodeKind.AGENT_LOOP
+        for tool in node.tools or ()
+        if tool not in (node.tool_servers or {})
+    ]
+
+
+def loop_tool_pins(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, dict[str, str]]:
+    """``{loop id: {tool: server}}`` for each agent-loop tool the loop does not
+    pin and exactly one grounded server lists.
+
+    A loop's ``tools`` are bare names, and the compiled skill calls a loop
+    tool only on the server ``tool_servers`` pins it to. The grounded
+    servers' tools are the evidence: one server offering the tool is its
+    server. A tool two servers offer is left unpinned (:func:`tool_questions`
+    asks), because pinning either would send the loop to an endpoint
+    nothing chose. A pin the loop already has always stays.
+    """
+    by_tool = _servers_by_tool(tools)
+    pins: dict[str, dict[str, str]] = {}
+    for node, tool in _unpinned_loop_tools(pipeline):
+        servers = by_tool.get(tool, set())
+        if len(servers) == 1:
+            pins.setdefault(node.id, {})[tool] = next(iter(servers))
+    return pins
+
+
+def with_loop_pins(pipeline: Pipeline, pins: Mapping[str, Mapping[str, str]]) -> Pipeline:
+    """``pipeline`` with ``pins`` added to its loops' ``tool_servers``."""
+    nodes = [
+        n.model_copy(update={"tool_servers": {**pins[n.id], **(n.tool_servers or {})}})
+        if n.id in pins
+        else n
+        for n in pipeline.nodes
+    ]
+    return pipeline.model_copy(update={"nodes": nodes})
+
+
+def write_loop_pins(path: Path, pipeline: Pipeline, pins: Mapping[str, Mapping[str, str]]) -> bool:
+    """Write ``pins`` into the pipeline.yaml at ``path`` by editing only the
+    pinned loops' ``tool_servers`` lines, so the agent's comments (its
+    ``# rote: assumption:`` markers among them) survive.
+
+    ``pipeline`` is what ``path`` holds. Returns False, with the file as it
+    was, when the edited text does not load as exactly
+    :func:`with_loop_pins` of it (a layout the edit does not handle).
+    """
+    from rote.ir import load_pipeline
+
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    current = {n.id: dict(n.tool_servers or {}) for n in pipeline.nodes}
+    for node_id, new in pins.items():
+        found = _id_line(lines, node_id)
+        if found is None:
+            return False
+        at, col = found
+        start, end = _item_bounds(lines, at, col)
+        merged = dict(sorted({**new, **current[node_id]}.items()))
+        line = f"{' ' * col}tool_servers: {json.dumps(merged)}\n"
+        key = re.compile(rf"^(?: *- +| {{{col}}})tool_servers:")
+        existing = next((i for i in range(start, end) if key.match(lines[i])), None)
+        if existing is None:
+            lines.insert(at + 1, line)
+            continue
+        if lines[existing].lstrip().startswith("-"):
+            return False  # the item opens with tool_servers: not a layout this edits
+        stop = existing + 1
+        while stop < end and (not lines[stop].strip() or _indent(lines[stop]) > col):
+            stop += 1
+        lines[existing:stop] = [line]
+    path.write_text("".join(lines), encoding="utf-8")
+    try:
+        written: Pipeline | None = load_pipeline(path)
+    except Exception:  # noqa: BLE001 (any load failure means the edit did not hold)
+        written = None
+    if written is None or written.model_dump() != with_loop_pins(pipeline, pins).model_dump():
+        path.write_text(original, encoding="utf-8")
+        return False
+    return True
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _id_line(lines: list[str], node_id: str) -> tuple[int, int] | None:
+    """The one line holding ``id: <node_id>`` as a list item's key, and the
+    column the item's keys start at."""
+    pattern = re.compile(
+        rf"^(?P<lead> *- +| +)id: *(?P<q>['\"]?){re.escape(node_id)}(?P=q) *(?:#.*)?\n?$"
+    )
+    hits = [(i, len(m.group("lead"))) for i, ln in enumerate(lines) if (m := pattern.match(ln))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _item_bounds(lines: list[str], at: int, col: int) -> tuple[int, int]:
+    """``[start, end)`` of the list item whose keys sit at ``col``, around line ``at``."""
+    start = at
+    while start > 0 and lines[start][col - 2 : col] != "- ":
+        start -= 1
+    end = at + 1
+    while end < len(lines):
+        text = lines[end].strip()
+        if text and not text.startswith("#") and _indent(lines[end]) < col:
+            break
+        end += 1
+    return start, end
+
+
+#: The finding :func:`unserved_loop_tool_findings` raises.
+LOOP_TOOL_UNSERVED = "loop_tool_unserved"
+
+
+def unserved_loop_tool_findings(
+    pipeline: Pipeline, skill_dir: Path | None, tools: ToolSchemas, unlisted: Iterable[str]
+) -> list[ContractFinding]:
+    """Each unpinned agent-loop tool no grounded server offers, when that proves something.
+
+    It does only when a live ``tools/list`` answered and every server the
+    skill names (:func:`servers_named`, told which registered servers rote
+    did not list) is among the live-listed ones: then no server the skill
+    uses offers the tool, and the loop fails at its first run. A command the
+    skill calls a tool (``chrome_cdp_snapshot``, a browser CLI) is the usual
+    cause. With no live listing, or a named server rote could not list,
+    nothing is known and nothing is said.
+    """
+    listed = listed_tools(tools)
+    if not listed or skill_dir is None or not (skill_dir / "SKILL.md").is_file():
+        return []
+    if set(servers_named(skill_dir, unlisted)) - set(listed):
+        return []
+    served = _servers_by_tool(tools)
+    return [
+        ContractFinding(
+            node_id=node.id,
+            kind=LOOP_TOOL_UNSERVED,
+            severity="error",
+            message=(
+                f"{node.id} lists `{tool}` in its tools, but no server the skill uses offers "
+                f"it (rote listed {', '.join(sorted(listed))}). An agent loop calls MCP tools "
+                f"only: if `{tool}` is a command or a script (a CLI, a browser), make that work "
+                f"a loop_body sub-node whose impl runs it and drop it from tools; if it is an "
+                f"MCP tool, use the name a listed server offers"
+            ),
+            path="pipeline.yaml",
+        )
+        for node, tool in _unpinned_loop_tools(pipeline)
+        if tool not in served
+    ]
+
+
+def _loop_tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
+    """``(loop id, text)`` for each unpinned loop tool several grounded servers offer."""
+    by_tool = _servers_by_tool(tools)
+    return [
+        (
+            node.id,
+            f"its tool `{tool}` is offered by {' and '.join(sorted(by_tool[tool]))}, so rote "
+            f"left it unpinned rather than pick one. The compiled skill refuses a loop tool "
+            f"tool_servers does not pin: pin it in the node's tool_servers ({tool}: <server>)",
+        )
+        for node, tool in _unpinned_loop_tools(pipeline)
+        if len(by_tool.get(tool, ())) > 1
+    ]
+
+
 def _unknown_tool(node_id: str, server: str, tool: str, offered: set[str]) -> ContractFinding:
     return ContractFinding(
         node_id=node_id,
@@ -1148,4 +1327,4 @@ def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, st
                         f"was not available to check it",
                     )
                 )
-    return questions
+    return questions + _loop_tool_questions(pipeline, tools)
