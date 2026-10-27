@@ -543,7 +543,9 @@ def run_pipeline(
 
     On the four runtimes that park on MCP auth (dbos, dbos-ts, inngest,
     cloudflare) a watcher reports each park, naming the server, the node
-    and the command that releases it. ``interactive`` (a terminal on
+    and the command that releases it. On every runtime that has gates the
+    same watcher prints each gate the run reaches, with the gate's
+    rendered ``notify.message_template``. ``interactive`` (a terminal on
     both ends) additionally offers the browser login in place; without
     it nothing ever prompts or opens a browser.
     """
@@ -627,6 +629,7 @@ def _dispatch(
             input_payload,
             signals=signals or {},
             timeout_seconds=timeout_seconds,
+            park_watch=park_watch,
         )
     else:
         run = run_pipeline_trial(

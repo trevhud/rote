@@ -74,6 +74,8 @@ from rote.adapters._ts_common import (
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_message_helper_ts,
+    gate_report_ts,
     impl_input_type_block,
     llm_clients,
     module_imports,
@@ -82,7 +84,7 @@ from rote.adapters._ts_common import (
     required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
-from rote.mcp.parked import AUTH_PARK_MARKER
+from rote.mcp.parked import AUTH_PARK_MARKER, GATE_PARK_MARKER
 
 # ───────── Adapter configuration ─────────
 
@@ -477,7 +479,14 @@ def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
         f"        // ─── HITL gate: {node.id} ───\n"
         f"        // Workflow suspends here until an event of type {node.signal!r}\n"
         f"        // arrives. Survives hibernation; events that arrive before this\n"
-        f"        // line is reached are buffered and delivered when reached.\n"
+        f"        // line is reached are buffered and delivered when reached. First\n"
+        f"        // it tells `rote run` which gate it waits at, and the gate's\n"
+        f"        // message (it can print again on replay; the wait name\n"
+        f"        // de-duplicates it). Display only: nothing is sent anywhere.\n"
+        f"        console.error(\n"
+        f'            "{GATE_PARK_MARKER} " +\n'
+        f"                JSON.stringify({gate_report_ts(node, wait=node.id)}),\n"
+        f"        );\n"
         f"        const {node.id}_event = await step.waitForEvent<any>(\n"
         f"            {json.dumps(node.id)},\n"
         f"            {{ type: {json.dumps(node.signal)}, timeout: {json.dumps(timeout_cf)} }},\n"
@@ -726,6 +735,8 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
     if pipeline.needs_input_check:
         helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
+    if gate_helper := gate_message_helper_ts(pipeline):
+        helper_block += f"{gate_helper}\n"
     impl_input = impl_input_type_block(class_block)
     if impl_input:
         helper_block += f"{impl_input}\n"

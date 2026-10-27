@@ -119,6 +119,8 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_message_helper_ts,
+    gate_report_ts,
     impl_input_type_block,
     judge_env_arg,
     llm_clients,
@@ -128,6 +130,7 @@ from rote.adapters._ts_common import (
     required_inputs_ts_guard,
 )
 from rote.ir import CONSTANT_ARGUMENT_KINDS, Node, NodeKind, Pipeline
+from rote.mcp.parked import GATE_STATUS_EVENT
 
 _GENERATED_BY = "rote.adapters.dbos_ts"
 
@@ -388,6 +391,16 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
         f"        // DBOS.send(workflowID, payload, {quoted_signal})\n"
         f"        // delivers the resume message. Survives process restarts. The\n"
         f"        // timeout is explicit — DBOS.recv defaults to 60s when omitted.\n"
+        f"        // First it says which gate the run waits at, and the gate's\n"
+        f"        // message, in the workflow event `rote run` watches (portable, so\n"
+        f"        // the Python DBOSClient can read it). Display only: nothing is\n"
+        f"        // sent to a person or a channel.\n"
+        f"        roteGates.push({gate_report_ts(node)});\n"
+        f"        await DBOS.setEvent(\n"
+        f"            {json.dumps(GATE_STATUS_EVENT)},\n"
+        f"            {{ reached: [...roteGates] }},\n"
+        f'            {{ serializationType: "portable" }},\n'
+        f"        );\n"
         f"        const {node.id}_result = await DBOS.recv<Record<string, unknown>>(\n"
         f"            {quoted_signal},\n"
         f"            {timeout_seconds}, // {timeout_str}\n"
@@ -442,6 +455,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
     waves = _execution_waves(pipeline)
     lines: list[str] = []
     uses_unwrap = False
+    if pipeline.nodes_by_kind(NodeKind.HITL_GATE):
+        lines.append("        // Every gate this run has reached, for the rote_gate_status event.")
+        lines.append("        const roteGates: Record<string, unknown>[] = [];")
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
@@ -731,6 +747,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         unwrap_block += f"\n{FAN_OUT_LIST_HELPER_TS.rstrip(chr(10))}\n"
     if pipeline.needs_input_check:
         unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
+    if gate_helper := gate_message_helper_ts(pipeline):
+        unwrap_block += f"\n{gate_helper.rstrip(chr(10))}\n"
     impl_input = impl_input_type_block("\n".join([*step_blocks, body]))
     if impl_input:
         unwrap_block += f"\n{impl_input.rstrip(chr(10))}\n"

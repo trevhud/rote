@@ -23,7 +23,7 @@ from typing import Any
 from pydantic_core import PydanticSerializationError
 
 from rote.inference import STRUCTURED_INEXPRESSIBLE, structured_output_schema
-from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
+from rote.ir import GATE_MESSAGE_PLACEHOLDER, MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -188,6 +188,17 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
         else:
             sources.append((tool_arg, "payload", source))
     return sources
+
+
+def gate_message_names(node: Node) -> list[str]:
+    """The bound inputs a gate's message names, in first-use order.
+
+    The IR requires every ``{name}`` to be bound, so this is every name the
+    template uses. Only these are evaluated: the message needs nothing else.
+    """
+    template = (node.notify.message_template if node.notify else None) or ""
+    names = dict.fromkeys(re.findall(GATE_MESSAGE_PLACEHOLDER, template))
+    return [name for name in names if name in (node.inputs or {})]
 
 
 #: Characters that render invisibly or reorder what a reader sees: controls

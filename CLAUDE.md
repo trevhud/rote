@@ -1231,6 +1231,20 @@ waits on. Traps, all found by running it:
   not spend a gate payload on it.
 - Non-TTY never prompts and never opens a browser. The browser login is
   offered only when stdin and stderr are both terminals.
+- **Gates ride the same channel.** Each emitted gate renders its
+  `notify.message_template` and reports `{gate, signal, message}` before it
+  waits: the `rote_gate_status` event (DBOS, both SDKs), the
+  `rote_gate_status` query (Temporal), or a `rote-gate-park` log line
+  (Inngest, Cloudflare, deduped on `wait`). The event and the query list
+  every gate reached, because the payload is often already waiting and the
+  gate passes between two polls.
+  The watcher prints each once, and on DBOS and Temporal it drains after the
+  run ends for the same reason (the log-marker runtimes tick before they
+  read a terminal status, and park at each gate until it is answered). Rendering is `GATE_MESSAGE_HELPER_PY` and its TS twin: a string
+  as is, anything else as `JSON.stringify` writes it (Python reproduces
+  JS number layout and key order), a value the run lacks kept as `{name}`,
+  invisible characters escaped. Display only: `notify.channel`/`target`
+  are never sent to (`tests/test_gate_message*.py`).
 
 ### An agent loop returns its declared output, through a submit tool
 
