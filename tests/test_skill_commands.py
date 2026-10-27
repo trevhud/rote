@@ -1319,3 +1319,160 @@ def test_the_driver_keeps_rotes_bytecode_and_writes_none_into_the_skill(
         assert status == 0, out + err
         assert header(out)["kind"] == "DONE"
     assert list(digest.rglob("__pycache__")) == []
+
+
+# ───────── the variables a node's code reads (#267) ─────────
+
+ENV_PIPELINE: dict[str, Any] = {
+    "name": "where-to",
+    "version": "0.1.0",
+    "input": {"type": "In", "required": ["n"]},
+    "nodes": [
+        {
+            "id": "located",
+            "kind": "pure_function",
+            "description": "Say where the report goes.",
+            "impl": "extracted/where.py:locate",
+            "env": ["WHERE_TO_REPORT_DIR"],
+            "inputs": {"n": "pipeline.input.n"},
+        }
+    ],
+    "edges": [],
+    "entry_nodes": ["located"],
+    "exit_nodes": ["located"],
+}
+WHERE_MODULE = (
+    "import os\n\n\n"
+    "def locate(n):\n"
+    "    return {'dir': os.environ.get('WHERE_TO_REPORT_DIR'),\n"
+    "            'other': os.environ.get('WHERE_TO_OTHER')}\n"
+)
+
+
+def _where_to(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> tuple[Path, str]:
+    """where-to, emitted and installed (``--yes``) in this environment: what it printed."""
+    out = _emit_note_taker(tmp_path, ENV_PIPELINE, {"where.py": WHERE_MODULE}, name="where-to")
+    status, said, err = _cli(capsys, "skill", "install", str(out), "--yes")
+    assert status == 0, err
+    return out, said + err
+
+
+def _run_where_to(capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+    status, block, err = _cli(capsys, "skill", "run", "where-to", "start", '{"n": 1}')
+    return status, block + err
+
+
+def test_a_run_passes_the_value_recorded_at_install_and_nothing_undeclared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module's own variable reaches the driver when its node declares it, with
+    the value the person installed it with, and a variable the same module reads
+    undeclared does not: the allowlist widens by the declaration and nothing else."""
+    finance = str(tmp_path / "finance")
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", finance)
+    out, said = _where_to(tmp_path, capsys)
+    assert f'records $WHERE_TO_REPORT_DIR = "{finance}" for the skill' in said
+    record = _trust_record(out)
+    assert record is not None and record["bindings"]["env"] == {"WHERE_TO_REPORT_DIR": finance}
+    monkeypatch.setenv("WHERE_TO_OTHER", "leaked")
+    status, block = _run_where_to(capsys)
+    assert status == 0, block
+    assert result_of(block) == {"located": {"dir": finance, "other": None}}
+
+
+def test_a_caller_cannot_change_a_recorded_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent's shell sets the caller's environment, so a value other than the
+    recorded one is refused like a moved proxy, naming the variable but never its
+    value (the agent reads the block); a person re-records it with rote skill trust,
+    which shows both values."""
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", str(tmp_path / "finance"))
+    _where_to(tmp_path, capsys)
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", str(tmp_path / "elsewhere"))
+    status, block = _run_where_to(capsys)
+    assert status == 1
+    assert "$WHERE_TO_REPORT_DIR differs from the one recorded at install" in block
+    assert "elsewhere" not in block and "finance" not in block
+    assert "rote skill trust where-to" in block
+    # Re-recording needs a person: --yes from an agent's shell is not one.
+    status, said = _cli(capsys, "skill", "trust", "where-to", "--yes")[:2]
+    assert status == 2
+    with monkeypatch.context() as m:
+        _person(m, Answer("confirm", "--yes", True))
+        status, said, err = _cli(capsys, "skill", "trust", "where-to")
+    assert status == 0, err
+    assert (
+        f'$WHERE_TO_REPORT_DIR differs: "{tmp_path / "finance"}" at install, '
+        f'"{tmp_path / "elsewhere"}" now'
+    ) in said + err
+    status, block = _run_where_to(capsys)
+    assert status == 0, block
+    assert result_of(block)["located"]["dir"] == str(tmp_path / "elsewhere")
+
+
+def test_a_value_recorded_unset_stays_unset(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WHERE_TO_REPORT_DIR", raising=False)
+    out, said = _where_to(tmp_path, capsys)
+    assert "records $WHERE_TO_REPORT_DIR = unset" in said
+    record = _trust_record(out)
+    assert record is not None and record["bindings"]["env"] == {"WHERE_TO_REPORT_DIR": None}
+    status, block = _run_where_to(capsys)
+    assert status == 0 and result_of(block) == {"located": {"dir": None, "other": None}}
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", str(tmp_path / "set-later"))
+    status, block = _run_where_to(capsys)
+    assert status == 1
+    assert "$WHERE_TO_REPORT_DIR differs from the one recorded at install" in block
+
+
+def test_the_driver_gets_the_recorded_value_even_past_the_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What reaches the driver is the record's by construction, not because the
+    caller happened to match: child_env is handed the recorded values."""
+    from rote.skill_target import launch, trust
+
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", "/recorded")
+    out, _ = _where_to(tmp_path, capsys)
+    (app,) = [a for a in registered_apps() if a.path == out.resolve()]
+    verified = trust.check(app)
+    env, _ = launch.child_env({"WHERE_TO_REPORT_DIR": "/caller"}, verified.plan, verified.bound)
+    assert env["WHERE_TO_REPORT_DIR"] == "/recorded"
+
+
+def test_a_record_without_the_variable_needs_a_new_trust(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record from before the plan declared the variable is refused by name."""
+    from dataclasses import replace
+
+    from rote.app_registry import render_apps
+
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", "/recorded")
+    out, _ = _where_to(tmp_path, capsys)
+    apps = registered_apps()
+    (app,) = [a for a in apps if a.path == out.resolve()]
+    assert app.trust is not None
+    older = {**app.trust, "bindings": {**app.trust["bindings"], "env": {}}}
+    apps_path().write_text(
+        render_apps([replace(a, trust=older) if a is app else a for a in apps]), encoding="utf-8"
+    )
+    status, block = _run_where_to(capsys)
+    assert status == 1
+    assert "$WHERE_TO_REPORT_DIR is read by the skill's code and was not recorded" in block
+    assert "/recorded" not in block
+
+
+def test_a_plan_edited_to_pass_a_reserved_variable_is_refused() -> None:
+    """The IR refuses the name; a plan.json edited to carry one anyway is refused
+    before anything is recorded or run."""
+    from rote.skill_target import trust
+    from rote.skill_target.trust import SkillTrustError
+
+    plan = {"steps": [{"kind": "call", "id": "a", "env": ["ROTE_MCP_CONFIG"]}]}
+    with pytest.raises(SkillTrustError, match="passes ROTE_MCP_CONFIG to its code"):
+        trust.plan_env(plan)
+    body = {"steps": [{"kind": "loop", "id": "l", "body": [{"kind": "call", "env": ["X_DIR"]}]}]}
+    assert trust.plan_env(body) == ["X_DIR"]

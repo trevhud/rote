@@ -201,6 +201,8 @@ nodes:
       returned totals, render the report in references/report-format.md
       layout, and write <period>-expense-audit.md to the finance folder.
     impl: extracted/report.py:file_report
+    # The finance folder: report.py writes under $EXPENSE_AUDIT_REPORT_DIR.
+    env: [EXPENSE_AUDIT_REPORT_DIR]
     inputs:
       period: pipeline.input.period
       summary: summarize_audit.output

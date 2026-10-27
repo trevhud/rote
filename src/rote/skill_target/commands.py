@@ -168,6 +168,20 @@ def _require_person(mode: Any, prompter: Any, plan: Plan, why: str | None, comma
 # ───────── install ─────────
 
 
+def _env_notes(bound: dict[str, Any]) -> list[str]:
+    """What the record will pass the skill's code for each variable it reads: the
+    value in this environment, shown to the person recording it."""
+    recorded: dict[str, Any] = bound.get("env") or {}
+    if not recorded:
+        return []
+    values = ", ".join(f"${name} = {trust.shown_value(v)}" for name, v in sorted(recorded.items()))
+    return [
+        f"records {values} for the skill's code (env: in pipeline.yaml); every run gets "
+        "these values, whatever the environment it is run in, until rote skill trust "
+        "records new ones"
+    ]
+
+
 def install_plan(
     skill: trust.SkillDir, read: Snapshot, apps: list[RegisteredApp], now: trust.Scan
 ) -> tuple[Plan, str | None]:
@@ -196,7 +210,7 @@ def install_plan(
     if previous is not None:
         recorded_bound = previous.get("bindings") or {}
         same_files = previous.get("files") == now.files
-        moved = trust.moved_bindings(recorded_bound, bound)
+        moved = trust.moved_bindings(recorded_bound, bound, show_values=True)
         if same_files and not moved and not displaced:
             return Plan(
                 f"install {skill.name}",
@@ -224,6 +238,7 @@ def install_plan(
         )
     if bound.get("read_only"):
         reasons.append(f"letting {skill.name} call servers registered read-only")
+    notes += _env_notes(bound)
     record = trust.install_record(now, writes=writes)
     updated = [
         replace(a, trust=None) if a in displaced else a for a in apps if a.path != skill.root
@@ -459,13 +474,14 @@ def trust_plan(
     lines = trust.diff_summary(now, found, recorded)
     plan_data = trust.scanned_plan(now)
     bound = trust.bindings(plan_data)
-    moved = trust.moved_bindings(app.trust.get("bindings") or {}, bound)
+    moved = trust.moved_bindings(app.trust.get("bindings") or {}, bound, show_values=True)
     writes = app.trust.get("writes")
     notes = [*lines, *(f"moved: {m}" for m in moved)]
     for server, url in (bound.get("read_only") or {}).items():
         notes.append(
             f"relies on {server} at {url} being read-only (registered so): every tool on it runs"
         )
+    notes += _env_notes(bound)
     if isinstance(writes, dict) and (writes.get("plan_sha256") != trust.plan_sha256(now) or moved):
         notes.append(
             "the earlier write consent is dropped (the plan or what it depends on changed)"

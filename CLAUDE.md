@@ -2770,7 +2770,16 @@ command must approve exactly the files the user vouched for
   Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
   next command every block prints), base URLs, `XDG_*`, proxies and CA
   bundles are dropped. Header-template variables pass only when the bound
-  registry names them for this plan's servers.
+  registry names them for this plan's servers. A module's own variable
+  passes only when its node declares it (`Node.env`), with the value the
+  install recorded (unset stays unset), never the caller's: a different
+  value refuses the run like a moved proxy, naming the variable but not the
+  value, until a person runs `rote skill trust`. `rote.env_vars` is the
+  one copy of these sets, and the IR refuses a declaration of any of them.
+  Verification (`rote.compiler.env_reads`) refuses a literal
+  `os.environ` / `os.getenv` read a node does not declare, because the
+  workflow runtimes see the full environment and the skill would silently
+  differ (#267: expense-audit's report landed in another folder).
 - **State paths are bound to the install, not merely read.** The MCP
   registry, login store and run dir each widen trust when forged (a server
   declared read-only, someone else's login, a gate nobody answered).

@@ -46,7 +46,13 @@ driver:
   can name them;
 - for a ``--judges helper`` skill, who pays: the vendor keys and the
   ``ROTE_INFERENCE`` / ``ROTE_MODEL_`` / ``ROTE_EFFORT_`` /
-  ``ROTE_TEMPERATURE_`` knobs for its own judges.
+  ``ROTE_TEMPERATURE_`` knobs for its own judges;
+- the variables the plan's code reads, as its nodes declare them
+  (``Node.env``), with the values the install recorded (one recorded unset
+  stays unset), so an ``extracted/`` module sees the person's
+  ``$EXPENSE_AUDIT_REPORT_DIR`` here as on every other runtime, and the
+  agent's shell cannot pick another. :mod:`rote.env_vars` keeps every name
+  above out of a declaration.
 
 Everything else is dropped, notably what redirects a run or widens it:
 ``ROTE_MCP_<SERVER>_URL`` (another endpoint, outside the read-only
@@ -74,6 +80,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
+from rote.env_vars import BASE_VARS, HELPER_KEYS, HELPER_KNOBS
 from rote.skill_target.trust import SkillTrustError, Verified
 
 #: The child's whole program, passed with ``-c``: never a file. argv: the read
@@ -129,23 +136,6 @@ os._exit(status)
 """
 
 
-#: Passed through when set: what any process needs to start and find its tools.
-BASE_VARS = frozenset(
-    {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "SYSTEMROOT"}
-)
-#: The vendor keys a ``--judges helper`` skill's judges pay with.
-HELPER_KEYS = frozenset(
-    {
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "OPENAI_API_KEY",
-        "ROTE_INFERENCE",
-        "ROTE_INFERENCE_TIMEOUT",
-        "ROTE_JUDGE_EFFORT",
-    }
-)
-#: Per-judge knobs a helper skill honors, ``<prefix><JUDGE ID>``.
-HELPER_KNOBS = ("ROTE_INFERENCE_", "ROTE_MODEL_", "ROTE_EFFORT_", "ROTE_TEMPERATURE_")
 _ENDPOINT_OVERRIDE = re.compile(r"ROTE_MCP_[A-Z0-9_]+_URL")
 
 
@@ -175,8 +165,10 @@ def child_env(
 
     ``bound`` is what the check held to the install record
     (:func:`rote.skill_target.trust.bindings`): the state paths, and the proxy
-    variables, passed as recorded. ``ca_files`` maps each recorded CA
-    variable to the private copy of the bundle the check verified."""
+    variables and the variables the plan's code reads, each passed as recorded
+    (never from ``environ``; one recorded unset is left unset). ``ca_files``
+    maps each recorded CA variable to the private copy of the bundle the
+    check verified."""
     allowed = set(BASE_VARS) | _header_vars(plan)
     if plan.get("judges") == "helper":
         allowed |= HELPER_KEYS
@@ -191,6 +183,11 @@ def child_env(
     if plan.get("judges") == "helper":
         env["ROTE_CLOUD_CRED_PATH"] = bound["cloud_cred"]
     env.update(bound.get("proxy") or {})
+    for name, value in (bound.get("env") or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     env.update(ca_files or {})
     dropped = sorted(k for k in environ if _ENDPOINT_OVERRIDE.fullmatch(k) and k not in env)
     return env, dropped
