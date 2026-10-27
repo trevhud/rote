@@ -657,9 +657,9 @@ numbered `Step i/6`, after one line naming the client rote runs under
 
 | # | id | Step | Done when (read from the world) |
 | --- | --- | --- | --- |
-| 1 | `mcp-import` | `McpImportStep`, with `login=()` (logins are step 2) | every preselectable, non-work server is registered |
-| 2 | `login` | `LoginStep`: registered servers without headers whose `auth_status` is not usable | none is left |
-| 3 | `skill` | `SkillStep`: pick (ranked, the user's own first, rote's demo last, the pick explained in one line), its input, and a per-server "only reads?" yes | `setup.json` names a skill and `require_live_servers` passes |
+| 1 | `mcp-import` | `McpImportStep`, with `login=()` (logins are step 3); importable servers listed first, the user's own before work ones, registered ones last | every preselectable, non-work server is registered |
+| 2 | `skill` | `SkillStep`: pick (the user's own skills, then plugin skills, each ranked, rote's demo last; no "recommended" pick, since whether a skill is worth compiling is read from the skill), its input, and a per-server "only reads?" yes for a server that lists its tools and marks none read-only (one that needs a login first is checked after it) | `setup.json` names a skill and `require_live_servers` passes, or a server it names waits for its login |
+| 3 | `login` | `LoginStep`: of the registered servers without headers whose `auth_status` is not usable, the ones the picked skill names (all checked), or, when it names none, all of them with none checked, for whoever answers to pick the ones the skill calls (`skill_logins`). Coding CLIs connect a tool when it is first needed, not all at once | none of those is left |
 | 4-6 | `compile`, `install`, `eval` | `rote try`'s steps, from `try_skill.session_for` and `try_steps` | `rote try`'s own status |
 
 - **The pick is kept in `setup.json`** (`ROTE_SETUP_STATE_PATH`, else

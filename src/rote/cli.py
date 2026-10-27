@@ -5476,7 +5476,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 def _add_setup_parser(subparsers: Any) -> None:
     # rote.setup.first_run's STEP_IDS, spelled out so building the parser
     # does not import rote.setup (rich); a test pins them.
-    steps = "mcp-import, login, skill, compile, install, eval"
+    steps = "mcp-import, skill, login, compile, install, eval"
     setup_p = subparsers.add_parser(
         "setup",
         help="The guided first run: import your MCP servers, compile a skill, compare (asks first)",

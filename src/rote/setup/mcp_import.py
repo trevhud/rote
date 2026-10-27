@@ -498,6 +498,10 @@ class ImportPlanner:
                 default.append(selector)
         if not any(choice.disabled is None for choice in choices):
             return []
+        # What can be imported first, the user's own before work servers, and
+        # what is already registered last. Stable, so the client's order holds.
+        work_of = {self._selector(c, primary): is_work_host(c.host, domains) for c in primary}
+        choices.sort(key=lambda ch: (ch.disabled is not None, work_of.get(ch.value, False)))
         answer = self.prompter.checkbox(
             "Which servers should rote import?", choices, flag="--only", default=default
         )

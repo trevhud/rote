@@ -4,11 +4,12 @@ One command that chains the steps rote already has (docs/design/first-run.md):
 
 1. **mcp-import**: the servers in the AI client rote runs under, then the
    others on this machine (:class:`~rote.setup.mcp_import.McpImportStep`).
-2. **login**: the registered servers that cannot connect yet
-   (:class:`LoginStep`).
-3. **skill**: one of the user's skills, ranked (:mod:`rote.skills`), its
+2. **skill**: one of the user's skills, ranked (:mod:`rote.skills`), its
    input, and a yes for each server the comparison calls live
    (:class:`SkillStep`).
+3. **login**: the servers that skill uses that cannot connect yet
+   (:class:`LoginStep`), the way a coding CLI connects a tool when it is
+   first needed rather than all at once.
 4. **compile**, 5. **install**, 6. **eval**: ``rote try``'s three steps
    (:mod:`rote.setup.try_skill`), on the picked skill.
 
@@ -77,7 +78,7 @@ STATE_ENV = "ROTE_SETUP_STATE_PATH"
 STATE_FORMAT = "rote-setup/1"
 
 #: Every step, in order. ``--approve`` and ``--skip`` take these.
-STEP_IDS: tuple[str, ...] = ("mcp-import", "login", "skill", "compile", "install", "eval")
+STEP_IDS: tuple[str, ...] = ("mcp-import", "skill", "login", "compile", "install", "eval")
 #: Steps whose skip leaves the rest runnable. Skipping any other ends setup
 #: there: the later steps build on it.
 CONTINUES_WHEN_SKIPPED = frozenset({"mcp-import", "login"})
@@ -326,9 +327,31 @@ def needs_login(work_domains: Sequence[str]) -> list[NeedsLogin]:
     return found
 
 
+def skill_logins(
+    skill: Path | None, pending: Sequence[NeedsLogin]
+) -> tuple[list[NeedsLogin], bool]:
+    """The servers in ``pending`` to offer a login for, once ``skill`` is
+    picked, and whether the skill named them.
+
+    A skill that names registered servers (:func:`servers_named`) is offered
+    those. One that names none may still call a server's tools by name
+    (Atlassian's skills call ``getJiraIssue(...)`` and never say
+    ``atlassian``), and which server serves a tool is unknown until it is
+    logged in, so every server that needs a login is offered, none checked:
+    whoever answers reads the skill and picks."""
+    from rote.compiler.tool_grounding import servers_named
+
+    if skill is None:
+        return [], False
+    named = servers_named(skill, [n.name for n in pending])
+    if named:
+        return [n for n in pending if n.name in named], True
+    return list(pending), False
+
+
 @dataclass
 class LoginStep:
-    """Log in to the registered servers that need it.
+    """Log in to the servers the picked skill uses that need it.
 
     A person gets ``rote mcp login``'s blocking browser login per server.
     Nobody at the terminal gets ``rote mcp login --no-wait``'s actions
@@ -337,12 +360,14 @@ class LoginStep:
 
     flags: SetupFlags
     work_domains: Callable[[], Sequence[str]]
+    #: The skill the skill step picked (its saved state).
+    skill: Callable[[], Path | None] = lambda: read_state().skill
     #: The blocking login for a person; injected by tests.
     login: Callable[[str], object] | None = None
     #: Servers the user was offered a login for and did not pick, remembered.
     passed_on: Callable[[], Collection[str]] = frozenset
     id: str = "login"
-    title: str = "Log in to the servers that need it"
+    title: str = "Log in to the servers the skill uses"
     command: str = "rote mcp login <name>"
     #: Filled while planning, for :func:`cmd_setup` to read after the apply.
     offered: list[NeedsLogin] = field(default_factory=list)
@@ -351,25 +376,33 @@ class LoginStep:
     #: Servers whose ``--no-wait`` login is already waiting for the browser.
     waiting: list[Any] = field(default_factory=list)
 
-    def status(self, ctx: SetupContext) -> StepStatus:
-        pending = needs_login(self.work_domains())
+    def _offer(self) -> tuple[list[NeedsLogin], bool]:
         passed = set(self.passed_on())
-        left = [n for n in pending if n.name not in passed]
-        if left:
-            names = ", ".join(n.name for n in left)
-            return StepStatus("pending", f"{len(left)} not logged in: {names}")
-        if pending:
-            names = ", ".join(n.name for n in pending)
+        pending = [n for n in needs_login(self.work_domains()) if n.name not in passed]
+        return skill_logins(self.skill(), pending)
+
+    def status(self, ctx: SetupContext) -> StepStatus:
+        offer, named = self._offer()
+        if offer:
+            names = ", ".join(n.name for n in offer)
+            if named:
+                return StepStatus("pending", f"the skill uses {names}, not logged in")
+            return StepStatus("pending", f"pick the ones the skill uses: {names}")
+        passed = set(self.passed_on())
+        declined, _ = skill_logins(
+            self.skill(), [n for n in needs_login(self.work_domains()) if n.name in passed]
+        )
+        if declined:
+            names = ", ".join(n.name for n in declined)
             return StepStatus("done", f"you chose not to log in to {names} (rote mcp login <name>)")
-        return StepStatus("done", "every registered server can connect")
+        return StepStatus("done", "every server the skill needs can connect")
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
         from rote.mcp.pending_login import live_for_server
         from rote.setup.mcp_import import login_action
         from rote.setup.mcp_login import no_wait_actions
 
-        passed = set(self.passed_on())
-        self.offered = [n for n in needs_login(self.work_domains()) if n.name not in passed]
+        self.offered, named = self._offer()
         by_name = {n.name: n for n in self.offered}
         if self.flags.login is not None:
             unknown = [n for n in self.flags.login if n not in by_name]
@@ -384,11 +417,19 @@ class LoginStep:
                 Choice(n.name, n.name, f"{n.host}  ·  {n.auth}" + ("  ·  WORK" if n.work else ""))
                 for n in self.offered
             ]
+            skill = self.skill()
+            name = skill.name if skill is not None else "the skill"
+            question = (
+                f"{name} uses these. Log in to which (each opens your browser to approve rote)?"
+                if named
+                else f"{name} does not say which servers it calls. Which of these does it "
+                "use? Each opens your browser to approve rote"
+            )
             chosen = prompter.checkbox(
-                "Log in to which servers (each one opens your browser to approve rote)?",
+                question,
                 choices,
                 flag="--login",
-                default=[n.name for n in self.offered if not n.work],
+                default=[n.name for n in self.offered] if named else [],
             )
         actions: list[Action] = []
         self.waiting = []
@@ -460,26 +501,38 @@ class Offered:
 
 
 def offered_skills(limit: int) -> list[Offered]:
-    """The user's own skills, best ranked first (:func:`rote.skills.discover`),
-    then rote's demo, so a first run with no skills still has one to try."""
+    """The user's own skills, then plugin skills, each best ranked first
+    (:func:`rote.skills.discover`), then rote's demo, so a first run with no
+    skills still has one to try. Own skills lead because a plugin cache
+    holds hundreds of skills the user did not write, and they crowded the
+    user's out of the list."""
     from rote.skills import discover
 
     mine: list[Offered] = []
+    plugins: list[Offered] = []
     demos: list[Offered] = []
+    seen: set[tuple[str, bytes]] = set()
     for s in discover().skills:
         if s.readiness.state == "unreadable":
             continue
         root = s.found_in[0]
         bundled = root.scope == "bundled"
+        # One skill copied into two clients' folders (~/.claude/skills and
+        # ~/.agents/skills) is offered once; copies that differ stay apart.
+        # rote's demo is listed on its own, whatever the user copied.
+        same = None if bundled else _same_copy(s.name, s.path)
+        if same is not None and same in seen:
+            continue
+        if same is not None:
+            seen.add(same)
         where = (
             "rote's demo"
             if bundled
             else root.client + (f" plugin {root.plugin}" if root.plugin else f" {root.scope}")
         )
-        (demos if bundled else mine).append(
-            Offered(s.path, s.name, s.readiness.reason, where, bundled)
-        )
-    offered = [*mine[:limit], *demos[:1]]
+        bucket = demos if bundled else plugins if root.plugin else mine
+        bucket.append(Offered(s.path, s.name, s.readiness.reason, where, bundled))
+    offered = [*[*mine, *plugins][:limit], *demos[:1]]
     counts: dict[str, int] = {}
     for o in offered:
         counts[o.name] = counts.get(o.name, 0) + 1
@@ -491,6 +544,20 @@ def offered_skills(limit: int) -> list[Offered]:
         return f"{o.name}@{where}"
 
     return [replace(o, key=key(o)) for o in offered]
+
+
+def _same_copy(name: str, path: Path) -> tuple[str, bytes] | None:
+    """What makes two copies of a skill one: its name and its SKILL.md's
+    digest. None when the file cannot be read, so it is never folded."""
+    import hashlib
+
+    from rote.skill_files import read_skill_md
+
+    try:
+        text = read_skill_md(path)
+    except (OSError, ValueError):
+        return None
+    return name, hashlib.sha256(text.encode()).digest()
 
 
 def _registry() -> tuple[Any, Any]:
@@ -535,10 +602,19 @@ class SkillStep:
         flagged = self._flag_skill(NonInteractivePrompter(why="reading status"))
         if flagged is not None and flagged.resolve() != state.skill.resolve():
             return StepStatus("pending", f"--skill names {flagged}, not {state.skill}")
+        _read, registry = _registry()
+        unmarked = [s for s in self.flags.read_only if not _is_read_only(registry, s)]
+        if unmarked:
+            return StepStatus("pending", f"--read-only {unmarked[0]}: not marked yet")
         try:
             require_live_servers(state.skill)
         except TryError:
-            return StepStatus("pending", f"{state.skill.name}: a server it calls is not read-only")
+            # A server that cannot list its tools before a login is the login
+            # step's (next); the compile checks again before it spends.
+            if not _waits_for_login(state.skill):
+                return StepStatus(
+                    "pending", f"{state.skill.name}: a server it calls is not read-only"
+                )
         return StepStatus("done", f"picked {state.skill.name} ({state.skill})")
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
@@ -551,13 +627,13 @@ class SkillStep:
         if skill_dir is None:
             if not self.offered:
                 raise SetupError("no skills found. Fix: rote setup --skill <dir with a SKILL.md>")
-            best = self.offered[0]
-            why = (
-                "none of your skills could be read, so rote's demo"
-                if best.bundled
-                else f"{best.reason}"
+            # No "recommended" pick: whether a skill is worth compiling is
+            # read from the skill itself (the agent, per /rote:setup, or the
+            # person), and the compile checks it after its first step.
+            ctx.out.say(
+                "  Pick a skill whose work is mostly tool calls and code: one that is mostly "
+                "judgment runs slower compiled, and rote stops before compiling it"
             )
-            ctx.out.say(f"  Recommended: {best.name} ({best.where}): {why}")
             choices = [Choice(o.key, o.name, f"{o.where}  ·  {o.reason}") for o in self.offered]
             picked = prompter.select(
                 "Which skill should rote compile and compare?",
@@ -591,8 +667,14 @@ class SkillStep:
             if server in self.flags.read_only:
                 marks.append(server)
                 continue
-            marked = _tools_marked_read_only(server)
-            if marked:
+            marked, needs_auth = _tools_marked_read_only(server)
+            if needs_auth:
+                # Its tools cannot be listed before the login, the next step.
+                notes.append(
+                    f"{server}: after you log in, the comparison calls only the tools it "
+                    f"marks read-only (if it marks none: rote setup --read-only {server})"
+                )
+            elif marked:
                 # The server says which of its tools only read: the comparison
                 # calls only those, so there is nothing to vouch for.
                 notes.append(
@@ -912,16 +994,33 @@ class Runner:
         }
 
 
-def _tools_marked_read_only(server: str) -> int:
+def _is_read_only(registry: Any, server: str) -> bool:
+    entry = registry.servers.get(server)
+    return entry is not None and entry.read_only is True
+
+
+def _waits_for_login(skill: Path) -> bool:
+    """Whether a server ``skill`` names cannot list its tools until a login."""
+    from rote.compiler.tool_grounding import servers_named
+
+    _read, registry = _registry()
+    named = servers_named(skill, registry.servers.keys())
+    return any(_tools_marked_read_only(s)[1] for s in named if not _is_read_only(registry, s))
+
+
+def _tools_marked_read_only(server: str) -> tuple[int, bool]:
     """How many of ``server``'s tools it marks ``readOnlyHint`` itself (a
-    read-only ``tools/list``). 0 when it marks none or cannot be listed now,
-    which leaves the question to the user."""
+    read-only ``tools/list``), and whether listing them needs a login first.
+    0 when it marks none or cannot be listed now, which leaves the question
+    to the user."""
     import asyncio
 
-    from rote.eval.baseline import read_only_allowlist
+    from rote.eval.baseline import AUTH_SKIP_PREFIX, read_only_allowlist
 
     allowed, _denied, skipped = asyncio.run(read_only_allowlist([server]))
-    return 0 if server in skipped else len(allowed)
+    if server not in skipped:
+        return len(allowed), False
+    return 0, skipped[server].startswith(AUTH_SKIP_PREFIX)
 
 
 def plan_code(step_id: str, plan: Plan) -> str:
@@ -1103,8 +1202,8 @@ def cmd_setup(args: Any) -> int:
     try:
         first: list[Step] = [
             _import_step(mode, flags, runner.planners),
-            LoginStep(flags, _work_domains, passed_on=_passed_on("login")),
             SkillStep(flags),
+            LoginStep(flags, _work_domains, passed_on=_passed_on("login")),
         ]
         for index, step in enumerate(first, start=1):
             stopped = runner.one(step, index)

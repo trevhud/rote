@@ -237,12 +237,13 @@ def run_tty(world: World) -> tuple[int, str]:
         (r"Your work domains", (ENTER,), "no work domains"),
         (r"Which servers should rote import\?", (SPACE, DOWN, SPACE, ENTER), "both"),
         (r"Apply this plan\?", ("y",), "yes"),
-        (r"Log in to which servers", (ENTER,), "both (the default)"),
-        (r"Apply this plan\?", ("y",), "yes"),
-        (r"Which skill should rote compile and compare\?", (ENTER,), "the recommended one"),
+        (r"Which skill should rote compile and compare\?", (ENTER,), "the first one"),
         # The fixture servers mark their tools read-only, so nobody is asked
         # to vouch for them: the pick's plan notes it instead.
         (r"calls only the 1 tool\(s\) it marks read-only[\s\S]*Apply this plan\?", ("y",), "yes"),
+        # Logins come after the pick, for the servers that skill names.
+        (r"docs-digest uses these\. Log in to which", (ENTER,), "both (the default)"),
+        (r"Apply this plan\?", ("y",), "yes"),
         (r"Plan: rote try docs-digest: compile[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: install[\s\S]*Apply this plan\?", ("y",), "yes"),
         (r"Plan: rote try docs-digest: the paired eval[\s\S]*Apply this plan\?", ("y",), "yes"),

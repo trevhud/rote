@@ -41,6 +41,10 @@ Run exactly the command `next` gives. rote remembers earlier answers, so it carr
 Never add a flag it does not name. An error (exit 1, `error`) names its fix:
 tell the user, and run `rote setup` again once it is fixed.
 
+When rote asks which servers to log in to (step `login`) and says the
+skill does not say which servers it calls, read the skill and pick the
+servers whose tools it calls.
+
 When rote asks which skill to compile (`reason: missing_answer`, step
 `skill`), read the SKILL.md of each choice before you answer, and
 recommend one to the user by the rule below, with one line on why. Say
