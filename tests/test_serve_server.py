@@ -980,7 +980,9 @@ async def test_temporal_backend_starts_and_polls_real_workflow() -> None:
     from temporalio.testing import WorkflowEnvironment
     from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    from rote.runners.temporal import start_with_retries
+
+    async with await start_with_retries(WorkflowEnvironment.start_time_skipping) as env:
         address = env.client.service_client.config.target_host
         task_queue = f"rote-serve-smoke-{uuid4()}"
         entry = RegistryEntry(
