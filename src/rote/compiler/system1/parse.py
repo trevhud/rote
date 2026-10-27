@@ -309,9 +309,36 @@ class Constant:
     """One literal the prose states, named by what kind of literal it is."""
 
     name: str
-    value: int | float | str
+    value: int | float | bool | str
     phrase: str
     line: int
+    #: A number's unit (rote.ir.CONSTANT_UNIT_RE), or "" for none.
+    unit: str = ""
+
+
+#: The time units a window pattern captures, by their spelling's prefix
+#: ("d", "day", "days"), in an order where no prefix shadows a longer one.
+_TIME_UNITS = (
+    ("mo", "months"),
+    ("mi", "minutes"),
+    ("d", "days"),
+    ("h", "hours"),
+    ("w", "weeks"),
+    ("s", "seconds"),
+)
+
+
+def _unit_of(token: str, match: re.Match[str], window: bool) -> str:
+    """The unit the matched text writes: a ``%`` sign, or a window's time unit.
+
+    A ``$`` sets none: it is several currencies, and the rules cannot tell
+    which (the structure pass names one from the skill)."""
+    if token.endswith("%"):
+        return "percent"
+    if not window:
+        return ""
+    word = next((g for g in match.groups() if g and to_number(g) is None), "").lower()
+    return next((unit for prefix, unit in _TIME_UNITS if word.startswith(prefix)), "")
 
 
 def constants_in(text: str, first_line: int) -> list[Constant]:
@@ -326,7 +353,8 @@ def constants_in(text: str, first_line: int) -> list[Constant]:
                     if n is None or (name, n) in seen:
                         continue
                     seen.add((name, n))
-                    out.append(Constant(name, n, m.group(0).strip(), i))
+                    unit = _unit_of(g, m, window=name == "window")
+                    out.append(Constant(name, n, m.group(0).strip(), i, unit))
         for m in _ID_LITERAL.finditer(line):
             name = slug(m.group(1))
             if (name, m.group(2)) not in seen:

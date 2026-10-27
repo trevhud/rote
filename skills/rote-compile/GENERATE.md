@@ -90,7 +90,10 @@ The module:
    operator the prose implies (`>= 10`, `> 5%`, `below 90%`). Each
    constant arrives as its parameter, and the logic uses the parameter: a
    module-level copy may be its default, never the value the code applies.
-   rote sends a constant the body never reads back as dead config. Import
+   rote sends a constant the body never reads back as dead config. A
+   constant arrives typed, with its unit in the message (`75 (percent)` is
+   75 percent, `2500 (currency:USD)` is $2,500.00): use the number as
+   given, never parse it from text or keep a table of number words. Import
    rule-table values from `extracted.rule_tables` when the message lists
    them. Never retype them.
 5. Python 3.11 syntax, stdlib only, imports at the top. No backslash,

@@ -12,7 +12,9 @@ evidence only (:func:`check`):
 * a tool must be declared (the skill's tool tables, a server's tools/list),
   and an argument must be a property of that tool's input schema;
 * a URL, a local path, or a named product must appear in the skill's text;
-* a constant's value must appear verbatim in the skill;
+* a constant's quote must appear verbatim in the skill, a string value
+  inside its quote, and a number's digits in its quote (a number read from
+  words is kept and listed for review); a unit is one of the IR's closed set;
 * each node cites a heading of SKILL.md and a quote from under it, verbatim;
 * every reference must name an earlier node, and the IR validator must
   accept the result.
@@ -33,6 +35,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +64,7 @@ from rote.compiler.system1.parse import (
 )
 from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
 from rote.compiler.tool_grounding import parameters, placeholder_loop_tool
-from rote.ir import GATE_MESSAGE_PLACEHOLDER
+from rote.ir import CONSTANT_UNIT_NAMES, CONSTANT_UNIT_RE, GATE_MESSAGE_PLACEHOLDER
 from rote.tool_schema import checkable
 
 #: How a structure-pass note starts in ``Plan.review``; the report titles it by it.
@@ -182,7 +185,27 @@ SCHEMA: dict[str, Any] = _obj(
                     },
                     "constants": {
                         "type": "array",
-                        "items": _obj({"name": _str(), "value": _str()}),
+                        "items": _obj(
+                            {
+                                "name": _str(description="snake_case"),
+                                "value": {
+                                    "anyOf": [
+                                        {"type": "number"},
+                                        {"type": "boolean"},
+                                        {"type": "string"},
+                                    ],
+                                    "description": "a JSON number for anything numeric",
+                                },
+                                "unit": _str(
+                                    description="a number's unit: "
+                                    + ", ".join(CONSTANT_UNIT_NAMES)
+                                    + ", currency:<ISO code>, or '' for none"
+                                ),
+                                "quote": _str(
+                                    description="the skill's words that state it, copied exactly"
+                                ),
+                            }
+                        ),
                     },
                     "gate": _obj(
                         {
@@ -314,8 +337,16 @@ Per node:
   product a search was for), add a pure_function that pairs the items with
   the results, and have the later steps read or fan out over that.
 - constants: literal values the step states (thresholds, windows, limits,
-  ids, labels): a snake_case name and the value copied exactly as the skill
-  writes it ("$2,500", "60 days").
+  ids, labels). Each has a snake_case name, a value, a unit, and quote: the
+  few words of the skill that state it, copied exactly. A number is a JSON
+  number with its unit, never text: "$2,500.00" is 2500 with unit
+  "currency:USD", "60 days" is 60 with "days", "75%" is 75 with "percent"
+  (a percent is the percentage itself, never 0.75), "first five results" is
+  5 with "count". Units: percent, count, seconds, minutes, hours, days,
+  weeks, months, currency:<ISO 4217 code>; a number with no unit, and every
+  string or boolean, has unit "". A string (an id, a label, a query) is
+  copied exactly from its quote. The code receives the number itself, so
+  write it the way the module will use it.
 - gate: for a hitl_gate, a snake_case signal name, the keys the person sends
   back, and the timeout if the skill states one. Else empty. The step the
   approval guards waits for it: that node reads the gate, or lists it in
@@ -596,6 +627,64 @@ def _appears(value: str, text: str) -> bool:
     return bool(v) and v in _normal(text)
 
 
+#: A number as a skill writes it: thousands separators and decimals allowed.
+_WRITTEN_NUMBER = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _written_numbers(quote: str) -> set[Decimal]:
+    """Every number written in digits in ``quote``, as a Decimal."""
+    return {Decimal(m.group(0).replace(",", "")) for m in _WRITTEN_NUMBER.finditer(quote)}
+
+
+def _from_words(c: Mapping[str, Any]) -> bool:
+    """A value the quote does not write in digits: a number in words, a boolean.
+
+    Kept, because "the first five results" is a real way to write 5, but the
+    reading is the model's, so its decision is listed for a reviewer."""
+    value = c.get("value")
+    if isinstance(value, bool):
+        return True
+    return _is_number(value) and not _written_numbers(str(c.get("quote", "")))
+
+
+def _constant_problem(c: Mapping[str, Any], text: str) -> str | None:
+    """Why one constant of the answer contradicts the skill's text, or None.
+
+    Evidence only: the quote is the skill's own words, a string value is in
+    it, a number's digits are in it unless it writes none, and a unit is one
+    of the IR's closed set, on a number."""
+    name, value = c.get("name"), c.get("value")
+    quote, unit = str(c.get("quote", "")), str(c.get("unit", ""))
+    if not _IDENTIFIER.match(str(name or "")):
+        return f"constant name {name!r} is not an identifier"
+    if not isinstance(value, (str, int, float)):
+        return f"constant {name!r} = {value!r} is not a number, boolean or string"
+    if not _appears(quote, text):
+        return f"constant {name!r}: its quote {quote!r} does not appear in the skill's text"
+    if isinstance(value, str) and not _appears(value, quote):
+        return f"constant {name!r} = {value!r} does not appear in its quote {quote!r}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        written = _written_numbers(quote)
+        if written and Decimal(str(abs(value))) not in written:
+            return (
+                f"constant {name!r} = {value!r}: its quote {quote!r} writes "
+                f"{', '.join(sorted(str(w) for w in written))}, not {abs(value)}; give the "
+                "number the skill writes (75% is 75 with unit percent)"
+            )
+    if unit and not CONSTANT_UNIT_RE.fullmatch(unit):
+        return (
+            f"constant {name!r}: unit {unit!r} is not one of "
+            f"{', '.join(CONSTANT_UNIT_NAMES)}, currency:<ISO code>, or ''"
+        )
+    if unit and not _is_number(value):
+        return f"constant {name!r} = {value!r} has unit {unit!r}, but only a number has a unit"
+    return None
+
+
 def _outside_paths(text: str) -> list[str]:
     """Paths in ``text`` that are not the skill's own reference files."""
     return [
@@ -702,13 +791,11 @@ def check(
             )
         text = f"{u.title}\n{u.text}" if u is not None else ""
         for c in n.get("constants") or []:
-            if not _IDENTIFIER.match(str(c.get("name", ""))):
-                out.append(f"{where}: constant name {c.get('name')!r} is not an identifier")
-            if u is not None and not _appears(str(c.get("value", "")), f"{text}\n{skill_md}"):
-                out.append(
-                    f"{where}: constant {c.get('name')!r} = {c.get('value')!r} does not appear "
-                    "in the skill's text"
-                )
+            if u is None:
+                continue
+            problem = _constant_problem(c, f"{text}\n{skill_md}")
+            if problem is not None:
+                out.append(f"{where}: {problem}")
         if kind == "hitl_gate":
             gate = n.get("gate") or {}
             sig = str(gate.get("signal", ""))
@@ -1611,11 +1698,13 @@ def resolve(
         kept = [
             c
             for c in n.get("constants") or []
-            if _IDENTIFIER.match(str(c.get("name", "")))
-            and _appears(str(c.get("value", "")), f"{text}\n{skill_md}")
+            if _constant_problem(c, f"{text}\n{skill_md}") is None
         ]
         if len(kept) != len(n.get("constants") or []):
-            notes.append(f"`{nid}`: dropped constants whose value is not in the skill's text")
+            notes.append(
+                f"`{nid}`: dropped constants whose quote, value or unit the skill's text "
+                "does not support"
+            )
         n["constants"] = kept
         if n["kind"] == "hitl_gate":
             gate = n.get("gate") or {}
@@ -1906,14 +1995,30 @@ def to_plan(
         if kind not in ("agent_loop", "hitl_gate"):
             node.mandatory = bool(n.get("mandatory"))
             node.decide("mandatory", node.mandatory, conf, rule)
-        node.constants = {str(c["name"]): _value(str(c["value"])) for c in n.get("constants") or []}
+        consts = n.get("constants") or []
+        node.constants = {str(c["name"]): c["value"] for c in consts}
+        node.constant_units = {str(c["name"]): str(c["unit"]) for c in consts if c.get("unit")}
         node.unit = replace(
             u,
             stated=[],
-            constants=[Constant(k, v, k, u.line) for k, v in node.constants.items()],
+            constants=[
+                Constant(str(c["name"]), c["value"], str(c["quote"]), u.line) for c in consts
+            ],
         )
         if node.constants:
             node.decide("constants", dict(node.constants), conf, rule)
+        if node.constant_units:
+            node.decide("constant_units", dict(node.constant_units), conf, rule)
+        for c in consts:
+            if _from_words(c):
+                # The skill writes no digits for it: the number is the
+                # model's reading of words, which a reviewer confirms.
+                node.decide(
+                    f"constants.{c['name']}",
+                    c["value"],
+                    min(conf, REVIEW_BELOW - 0.01),
+                    f"read from words, not digits: {str(c['quote'])!r}",
+                )
         system = n.get("system") or {}
         if kind == "external_call":
             node.role = "fetch" if system.get("io") == "read" else "write"

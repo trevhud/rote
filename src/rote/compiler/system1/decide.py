@@ -145,6 +145,8 @@ class NodePlan:
     element_source: str | None = None
     mandatory: bool = False
     constants: dict[str, Any] = field(default_factory=dict)
+    #: Constant name -> unit (rote.ir.CONSTANT_UNIT_RE), for numeric constants only.
+    constant_units: dict[str, str] = field(default_factory=dict)
     mcp: dict[str, Any] | None = None
     tools: list[str] = field(default_factory=list)
     tool_servers: dict[str, str] = field(default_factory=dict)
@@ -522,17 +524,24 @@ def _unit_dependencies(skill: SkillParse) -> dict[int, tuple[list[int], float, s
 # ── constants, tools, gates ───────────────────────────────────────────────
 
 
-def _constant_names(cs: list[Constant]) -> dict[str, Any]:
-    """One parameter per distinct value: "more than 60" and "60 days" are one constant."""
+def _constant_names(cs: list[Constant]) -> tuple[dict[str, Any], dict[str, str]]:
+    """One parameter per distinct value: "more than 60" and "60 days" are one
+    constant. Returns the values and the units the text writes for them."""
     out: dict[str, Any] = {}
+    units: dict[str, str] = {}
     for c in cs:
         if c.value in out.values():
+            name = next(k for k, v in out.items() if v == c.value)
+            if c.unit and name not in units:
+                units[name] = c.unit
             continue
         name, n = c.name, 2
         while name in out:
             name, n = f"{c.name}_{n}", n + 1
         out[name] = c.value
-    return out
+        if c.unit:
+            units[name] = c.unit
+    return out, units
 
 
 def _gate_timeout(text: str) -> str | None:
@@ -1083,10 +1092,12 @@ def plan(
             target = target or work or unit_nodes[0]
             per_node.setdefault(target.id, []).append(c)
         for n in unit_nodes:
-            n.constants = _constant_names(per_node.get(n.id, []))
+            n.constants, n.constant_units = _constant_names(per_node.get(n.id, []))
         for n in unit_nodes:
             if n.constants:
                 n.decide("constants", dict(n.constants), 0.8, "literal values stated in the step")
+            if n.constant_units:
+                n.decide("constant_units", dict(n.constant_units), 0.8, "units the step writes")
             if n.role == "fetch":
                 bound = next(((s, t) for s, t in u.mcp if t), None)
                 if bound is not None:
