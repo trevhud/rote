@@ -777,3 +777,18 @@ def test_own_skills_are_offered_before_plugin_skills(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("rote.skills.discover", lambda: SimpleNamespace(skills=ranked))
     assert [o.name for o in first_run.offered_skills(10)] == ["zz-mine", "aa-plugin"]
     assert [o.name for o in first_run.offered_skills(1)] == ["zz-mine"]
+
+
+def test_a_machine_with_no_client_config_is_told_so_and_the_demo_needs_nothing(
+    world: SetupWorld, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brand-new user: no AI-client config, so nothing to import, and rote's
+    demo calls public servers that need no registration, so nothing waits."""
+    (Path(os.environ["ROTE_CLIENT_HOME_DIR"]) / ".claude.json").unlink()
+    _agent(monkeypatch)
+    status, payload, err = _setup(capsys, "--json", "--skill", "docs-digest@demo")
+    assert (status, payload["step"]["id"]) == (2, "skill")
+    assert "no MCP servers found in your AI clients' configs to import" in err
+    assert "0 server(s) registered" not in err
+    assert "deepwiki: a public server rote's demo calls, no login needed" in err
+    assert "the compile waits for" not in err

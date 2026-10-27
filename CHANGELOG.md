@@ -9,15 +9,20 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
 ### Added
 
 - **`rote setup`: the guided first run, and `/rote:setup`.** One resumable
   command chains the steps rote has: import the MCP servers from the client
-  you run in (`rote mcp import`'s planner), log in to the registered servers
-  that cannot connect yet (a browser login for a person, `rote mcp login
-  --no-wait` for an agent), pick one of your skills (ranked, the pick
-  explained in one line, rote's demo last), say which of its servers only
-  read, then `rote try`'s compile, install and paired eval, and the verdict.
+  you run in (`rote mcp import`'s planner), pick one of your skills (your
+  own first, then plugin skills, identical copies once, rote's demo last),
+  log in to the servers that skill uses (a browser login for a person,
+  `rote mcp login --no-wait` for an agent; a skill that does not say which
+  servers it calls is offered every server that needs a login, for you or
+  the agent to pick from), then `rote try`'s compile, install and paired
+  eval, and the verdict. A server that marks its tools `readOnlyHint` needs
+  no vouching: the comparison calls only those tools.
   Each step is a plan you confirm and can skip, and a re-run skips what is
   done (read from the registry, the token store, `rote try`'s files, and the
   pick in `$XDG_DATA_HOME/rote/setup.json`). Under an agent every question
@@ -113,6 +118,24 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   consent for that plan. It needs a person at a terminal, because `--yes`
   cannot stand in for one.
 
+- **A compile grounds tools on the servers you logged in to.** A logged-in
+  server whose tool the skill calls (a code span or a call, never a
+  product name in prose) grounds the compile, and a logged-in server's
+  other tools are offered to the structure pass with their descriptions,
+  so a skill that names no server ("use read-only Jira search") can bind a
+  step to `searchJiraIssuesUsingJql`. Only a server the plan binds becomes
+  grounding.
+
+- **A skill compile stops when compiling would not pay off.** A compiled
+  skill stops for the agent at each judge and agent loop, and each stop
+  re-reads the conversation. Measured: expense-audit (no stops) ran 3.6x
+  faster and 62% cheaper compiled, Atlassian's search-company-knowledge (4
+  judges) 4x slower and 3x costlier. A `--runtime skill` compile with more
+  than 2 judges and loops stops right after the structure pass (cents),
+  naming them; `--compile-anyway` overrides it. `/rote:compile` and
+  `/rote:setup` give the agent the same rule, so it judges a skill before
+  anything is spent.
+
 ### Changed
 
 - **A flagless `rote compile` emits a compiled skill (`--runtime skill`),
@@ -169,7 +192,31 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 - The `mcp` extra stays as an empty alias, so `rote-cli[mcp]` still
   resolves.
 
+- **The paired eval calls a server you did not register read-only, through
+  its own `readOnlyHint` annotations.** Both sides may call only the tools
+  the server marks read-only, the rest are denied, and a pipeline that
+  calls a tool the server does not mark stops before anything is spent.
+  Your login is copied owner-only into each trial's throwaway state.
+
 ### Fixed
+
+- **A compiled step sends the argument values a recorded run sent.** A
+  compile of Atlassian's search skill passed a page's ARI where the tool
+  takes the plain id, and every call failed with a 401. The generation card
+  now shows an MCP-bound reader's recorded argument values, and the module
+  converts to that form in code. Recorded results from read-only tools are
+  replayed through rote's own client before the compile reads them, so it
+  sees the shape a compiled step receives (Atlassian's text block wraps the
+  page; its structured result is the page).
+
+- **A judge whose passthrough covers every output field no longer fails the
+  compile**: the passthrough is dropped and the model answers as before. An
+  unused fallback tool on a server the pipeline already calls is a warning,
+  not an error.
+
+- **`rote setup` on a machine with no AI-client config** says it found
+  nothing to import instead of "0 server(s) registered", and the demo's
+  public servers are no longer said to block the compile.
 
 - **`rote try` refuses before the compile when the comparison could not
   call a server the skill names.** The eval only calls servers registered
@@ -2126,7 +2173,8 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/trevhud/rote/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/trevhud/rote/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0

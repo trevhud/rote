@@ -965,6 +965,12 @@ class McpImportStep:
         left = [c for c in missing if candidate_key(c) not in passed_on]
         if left:
             return StepStatus("pending", f"{len(left)} server(s) not in rote's registry yet")
+        if not planner.found and not registry.servers:
+            return StepStatus(
+                "done",
+                "no MCP servers found in your AI clients' configs to import "
+                "(later: rote mcp add <name> <url>)",
+            )
         detail = f"{len(registry.servers)} server(s) registered"
         if missing:
             detail += f"; {len(missing)} you did not pick (rote mcp import adds them)"

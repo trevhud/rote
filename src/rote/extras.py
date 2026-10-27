@@ -211,7 +211,7 @@ _PIPX_SPEC_RE = re.compile(
 
 def _pipx_context(path: Any) -> _Context:
     """A pipx venv: ``pipx_metadata.json`` records the main package as the
-    requirement pipx installed (``rote-cli[temporal]==0.16.0`` after an
+    requirement pipx installed (``rote-cli[temporal]==0.17.0`` after an
     inject of the app's own extra), so its extras are what to keep."""
     import json
 
