@@ -647,12 +647,19 @@ class SkillStep:
         task_path = input_path(skill_dir, self.flags.input, prompter)
         load_task(task_path)  # a bad input is refused now, not after the compile
 
+        from rote import demo
+
         read, registry = _registry()
         named = servers_named(skill_dir, registry.servers.keys())
+        # rote's demo calls public servers that need no registration or login.
+        published = {sv.name for sv in demo.load_reference().servers}
         marks: list[str] = []
         notes: list[str] = [f"input: {task_path}"]
         for server in sorted(named):
             entry = registry.servers.get(server)
+            if entry is None and server in published:
+                notes.append(f"{server}: a public server rote's demo calls, no login needed")
+                continue
             if entry is None:
                 notes.append(
                     f"{server}: {name} calls it and it is not registered; the compile waits "
