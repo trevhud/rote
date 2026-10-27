@@ -66,7 +66,9 @@ How the modules plug in:
 
 - The function takes exactly the node's `inputs:` keys as parameters, plus
   one parameter per `constants:` key. `request` is the whole pipeline
-  input.
+  input. A constant arrives typed; `constant_units:` names a number's unit
+  (`percent` is the percentage itself, so 75 is 75 percent, and
+  `currency:USD` is dollars). Use the number as given, never parse it from text.
 - A parameter named after an upstream node is that node's whole return
   value (`<node>.output`). On a `fan_out` node, the parameter bound to
   `<node>.output.items` is ONE element.

@@ -73,6 +73,7 @@ from rote.contracts import ContractFinding, _prompt_paths_in_schema
 from rote.ir import (
     NodeKind,
     Pipeline,
+    constant_text,
     fan_out_element_param,
     parse_input_ref,
     passthrough_candidates,
@@ -447,6 +448,26 @@ def _json(value: Any, limit: int | None = None) -> str:
     return text
 
 
+#: How a module reads a constant's unit (rote.ir.CONSTANT_UNIT_RE's conventions).
+CONSTANT_USE = (
+    "Each value is already what the code applies, of the type shown: use the "
+    "parameter as is and never parse it from text. A number's unit is in "
+    "parentheses: `percent` is the percentage itself (75 means 75 percent, so "
+    "compare a 0.8 rate as 0.8 * 100 >= 75), `currency:<code>` is an amount in "
+    "that currency's major unit, and a time unit is a count of that unit."
+)
+
+
+def _constant_lines(node: Any) -> list[str]:
+    """Each constant with its type and unit, then how a module uses them."""
+    units = node.constant_units or {}
+    lines = [
+        f"- `{k}`: {type(v).__name__} = {constant_text(v, units.get(k))}"
+        for k, v in node.constants.items()
+    ]
+    return [*lines, CONSTANT_USE]
+
+
 def _node_card(ctx: Context, node: Any) -> list[str]:
     """What one node is, for a piece that writes it. Facts from the IR only."""
     np = ctx.plan[node.id]
@@ -487,7 +508,7 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
             )
     if node.constants:
         lines += ["", "Constants (parameters with these defaults, decided from the skill):"]
-        lines += [f"- `{k}` = {v!r}" for k, v in node.constants.items()]
+        lines += _constant_lines(node)
     lines += ["", "Return value schema (the contract):", _json(ctx.output_schema(node.id))]
     readers = ctx.consumers(node.id)
     if readers:
@@ -810,7 +831,7 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         element = node.inputs[fan_out_element_param(node, ctx.pipeline)]
         lines.append(f"It runs once per item of `{element}` and returns one value per item.")
     if node.constants:
-        lines.append(f"Its constants: {node.constants!r}")
+        lines += ["Its constants:", *_constant_lines(node)]
     if node.mcp is not None:
         lines.append(
             f"It is the MCP call `{node.mcp.server}.{node.mcp.tool}`: its output is the "
