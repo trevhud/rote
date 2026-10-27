@@ -26,9 +26,11 @@ use a registered name. Three pieces, all here:
 
 Besides the state paths, the record binds ``ROTE_CLOUD_CRED_PATH``, the
 proxy variables, the CA bundles (path and hash), the servers the plan
-calls that the user registered read-only (name and URL), and the names of
-the environment variables the plan's code reads (``Node.env``), which a run
-passes through from the caller's environment. A read-only declaration lets
+calls that the user registered read-only (name and URL), and each
+environment variable the plan's code reads (``Node.env``) with its value at
+install, or unset. A run passes the recorded values, never the caller's: the
+agent's shell sets the caller's, and a value can steer what the code does
+(where expense-audit writes its report). A read-only declaration lets
 every tool on a server run, so it is write consent by another name and is
 bound the same way.
 
@@ -238,8 +240,8 @@ def plan_servers(plan: Mapping[str, Any]) -> set[str]:
 
 def plan_env(plan: Mapping[str, Any]) -> list[str]:
     """The environment variables the plan's code reads (``Node.env``), sorted:
-    a run passes exactly these from the caller's environment, beyond the
-    allowlist. A name no node may declare (:func:`rote.env_vars.reserved_reason`)
+    a run passes exactly these, with the values recorded at install, beyond
+    the allowlist. A name no node may declare (:func:`rote.env_vars.reserved_reason`)
     is refused: the IR refuses it too, so only an edited plan carries one."""
     names: set[str] = set()
     for step in plan.get("steps") or []:
@@ -249,8 +251,7 @@ def plan_env(plan: Mapping[str, Any]) -> list[str]:
         reason = reserved_reason(name)
         if reason is not None:
             raise SkillTrustError(
-                f"the skill's plan passes {name} through from the caller's environment, "
-                f"which no skill may: {reason}.",
+                f"the skill's plan passes {name} to its code, which no skill may: {reason}.",
                 "re-emit the skill from its pipeline.yaml (rote emit --runtime skill)",
             )
     return sorted(names)
@@ -287,12 +288,47 @@ def bindings(plan: Mapping[str, Any], environ: Mapping[str, str] | None = None) 
         "cloud_cred": str(credential_path().resolve()),
         **network_env(environ),
         "read_only": relied_read_only(plan),
-        "env": plan_env(plan),
+        # Each variable the plan's code reads, with its value (None: unset).
+        # Recorded at install and passed only as recorded, like the proxies.
+        "env": {name: environ.get(name) for name in plan_env(plan)},
     }
 
 
-def moved_bindings(recorded: Mapping[str, Any], now: Mapping[str, Any]) -> list[str]:
-    """One line per binding that differs from the record."""
+def shown_value(value: Any) -> str:
+    return "unset" if value is None else json.dumps(value)
+
+
+def moved_env(
+    recorded: Mapping[str, Any], now: Mapping[str, Any], *, show_values: bool
+) -> list[str]:
+    """One line per declared variable whose value (or whose declaration) differs
+    from the record. The values are the user's data: ``show_values`` only for
+    the person reviewing an install or trust plan, never for a run's refusal,
+    which the agent reads."""
+    was: Mapping[str, Any] = recorded.get("env") or {}
+    is_: Mapping[str, Any] = now.get("env") or {}
+    lines = []
+    for name in sorted(set(was) | set(is_)):
+        if name not in is_:
+            lines.append(f"${name} is no longer read by the skill's code")
+        elif name not in was:
+            shown = f": {shown_value(is_[name])}" if show_values else ""
+            lines.append(f"${name} is read by the skill's code and was not recorded{shown}")
+        elif was[name] != is_[name]:
+            shown = (
+                f": {shown_value(was[name])} at install, {shown_value(is_[name])} now"
+                if show_values
+                else " from the one recorded at install"
+            )
+            lines.append(f"${name} differs{shown}")
+    return lines
+
+
+def moved_bindings(
+    recorded: Mapping[str, Any], now: Mapping[str, Any], *, show_values: bool = False
+) -> list[str]:
+    """One line per binding that differs from the record (declared variables'
+    values only with ``show_values``, :func:`moved_env`)."""
     lines = []
     for key, (var, what) in BINDINGS.items():
         if recorded.get(key) != now[key]:
@@ -304,11 +340,7 @@ def moved_bindings(recorded: Mapping[str, Any], now: Mapping[str, Any]) -> list[
     ):
         if (recorded.get(key) or {}) != (now.get(key) or {}):
             lines.append(f"{what} were {recorded.get(key) or {}} at install and are {now[key]} now")
-    if (recorded.get("env") or []) != (now.get("env") or []):
-        lines.append(
-            "the environment variables passed through from the caller were "
-            f"{recorded.get('env') or []} at install and are {now.get('env') or []} now"
-        )
+    lines += moved_env(recorded, now, show_values=show_values)
     return lines
 
 
@@ -647,9 +679,13 @@ def check(app: RegisteredApp, environ: Mapping[str, str] | None = None) -> Verif
             f"{name} was installed against another setup than this run sees: "
             + "; ".join(moved)
             + ". These decide which servers count as read-only, whose logins a run "
-            "uses, where its traffic goes and which journals it reads.",
+            "uses, where its traffic goes, which journals it reads and what its code "
+            "reads from the environment.",
             fix,
         )
+    # What the run passes its code is the record's, never this process's: the
+    # check above held them equal, and this keeps it so by construction.
+    bound["env"] = dict(recorded.get("env") or {})
     exposed = proxied_plain_http(plan, bound)
     if exposed:
         raise SkillTrustError(

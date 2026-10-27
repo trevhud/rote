@@ -306,7 +306,7 @@ def test_the_plan_carries_the_declaration_only_when_there_is_one() -> None:
     assert "env" not in plain
 
 
-def test_the_driver_environment_takes_the_declared_names_from_the_caller() -> None:
+def test_the_driver_environment_holds_the_recorded_values_only() -> None:
     from rote.skill_target.launch import child_env
 
     bound = {
@@ -316,15 +316,25 @@ def test_the_driver_environment_takes_the_declared_names_from_the_caller() -> No
         "cloud_cred": "/c.json",
         "proxy": {},
         "ca": {},
-        "env": ["REPORT_DIR"],
+        "env": {"REPORT_DIR": "/finance", "MODE": None},
     }
-    environ = {"PATH": "/bin", "REPORT_DIR": "/finance", "OTHER_DIR": "/elsewhere"}
+    environ = {"PATH": "/bin", "REPORT_DIR": "/caller", "MODE": "x", "OTHER_DIR": "/elsewhere"}
     env, _ = child_env(environ, {"steps": []}, bound)
-    assert env["REPORT_DIR"] == "/finance"
-    assert "OTHER_DIR" not in env
-    # Declared but unset in the caller: absent, as on every other runtime.
-    env, _ = child_env({"PATH": "/bin"}, {"steps": []}, bound)
-    assert "REPORT_DIR" not in env
+    assert env["REPORT_DIR"] == "/finance"  # the record's, not the caller's
+    assert "MODE" not in env  # recorded unset stays unset
+    assert "OTHER_DIR" not in env  # undeclared never passes
+    # Even when another rule would let the caller's value through (a registry
+    # header template naming it), the record decides.
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(servers={"gh": McpServerConfig(url="http://gh", headers={"X-Mode": "${MODE}"})})
+    )
+    plan = {"steps": [{"kind": "mcp", "server": "gh", "tool": "t", "id": "a"}]}
+    env, _ = child_env(environ, plan, bound)
+    assert "MODE" not in env
+    env, _ = child_env(environ, plan, {**bound, "env": {"MODE": "recorded"}})
+    assert env["MODE"] == "recorded"
 
 
 # ───────── System-1 ─────────

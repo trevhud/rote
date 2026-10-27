@@ -308,14 +308,15 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
     compiled = EXAMPLES / "expense-audit" / "expected"
     (case,) = [c for c in load_cases(EXAMPLES / "expense-audit").cases if c.id == "second_batch"]
     (reply,) = case.gates
-    install(capsys, compiled, tmp_path / "expense-audit", tmp_path, skill=compiled.parent / "skill")
     # One finance folder for both sides. file_report declares
-    # EXPENSE_AUDIT_REPORT_DIR (env: in pipeline.yaml), so `rote skill run`
-    # passes it to the driver's allowlisted environment as DBOS's full one has
-    # it (#267). The working directory is elsewhere, so a run that dropped the
-    # variable would write to <cwd>/reports instead and fail below.
+    # EXPENSE_AUDIT_REPORT_DIR (env: in pipeline.yaml), so `rote skill install`
+    # records the person's value and `rote skill run` passes it to the driver's
+    # allowlisted environment, as DBOS's full one has it (#267). The working
+    # directory is elsewhere, so a run that dropped the variable would write to
+    # <cwd>/reports instead and fail below.
     reports = tmp_path / "finance"
     monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(reports))
+    install(capsys, compiled, tmp_path / "expense-audit", tmp_path, skill=compiled.parent / "skill")
     monkeypatch.chdir(tmp_path)
     said = "Approve 2410 and 2440, reject 2403 and 2413. Priya"
     done, asked = drive_to_done(

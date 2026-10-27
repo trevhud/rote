@@ -48,9 +48,11 @@ driver:
   ``ROTE_INFERENCE`` / ``ROTE_MODEL_`` / ``ROTE_EFFORT_`` /
   ``ROTE_TEMPERATURE_`` knobs for its own judges;
 - the variables the plan's code reads, as its nodes declare them
-  (``Node.env``, bound by name in the install record), so an ``extracted/``
-  module sees ``$EXPENSE_AUDIT_REPORT_DIR`` here as on every other runtime.
-  :mod:`rote.env_vars` keeps every name above out of a declaration.
+  (``Node.env``), with the values the install recorded (one recorded unset
+  stays unset), so an ``extracted/`` module sees the person's
+  ``$EXPENSE_AUDIT_REPORT_DIR`` here as on every other runtime, and the
+  agent's shell cannot pick another. :mod:`rote.env_vars` keeps every name
+  above out of a declaration.
 
 Everything else is dropped, notably what redirects a run or widens it:
 ``ROTE_MCP_<SERVER>_URL`` (another endpoint, outside the read-only
@@ -163,10 +165,11 @@ def child_env(
 
     ``bound`` is what the check held to the install record
     (:func:`rote.skill_target.trust.bindings`): the state paths, and the proxy
-    variables, passed as recorded, and the names of the variables the plan's
-    code reads, passed from ``environ``. ``ca_files`` maps each recorded CA
-    variable to the private copy of the bundle the check verified."""
-    allowed = set(BASE_VARS) | _header_vars(plan) | set(bound.get("env") or ())
+    variables and the variables the plan's code reads, each passed as recorded
+    (never from ``environ``; one recorded unset is left unset). ``ca_files``
+    maps each recorded CA variable to the private copy of the bundle the
+    check verified."""
+    allowed = set(BASE_VARS) | _header_vars(plan)
     if plan.get("judges") == "helper":
         allowed |= HELPER_KEYS
         from rote.skill_target import helper_judge_ids
@@ -180,6 +183,11 @@ def child_env(
     if plan.get("judges") == "helper":
         env["ROTE_CLOUD_CRED_PATH"] = bound["cloud_cred"]
     env.update(bound.get("proxy") or {})
+    for name, value in (bound.get("env") or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     env.update(ca_files or {})
     dropped = sorted(k for k in environ if _ENDPOINT_OVERRIDE.fullmatch(k) and k not in env)
     return env, dropped
