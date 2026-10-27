@@ -908,6 +908,18 @@ is an error (`result_field_missing`) when the known result is a string or a
 list, or a closed object without the field, and an Open question when
 nothing is known. An object that admits other keys proves nothing.
 
+The same rule holds at the other boundaries a generated test cannot see,
+because the model that wrote the module wrote its fixtures too (#291).
+`rote.compiler.boundaries` reads each module for literal keys
+(`p["k"]`, `p.get("k")`, `p.pop("k")`) on the parameter bound to a gate's
+answer or the pipeline input, and refuses one the other side does not
+declare. `tool_grounding.unsent_constant_findings` refuses an MCP node whose
+constants `mcp.args` never names (`adapters._common.unsent_constants`): an
+error when the tool's schema names its parameters, else an unresolved call
+that blocks the run (`NodeImplementation.blocks_run`) and asks for the
+server's registration. Never guess the parameter names. `mcp.args: {}` on a
+node with no constants stays a zero-argument call.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,
