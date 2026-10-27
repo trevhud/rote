@@ -640,6 +640,20 @@ class MCPBinding(BaseModel):
 #: and an MCP-bound step forwards one only when ``mcp.args`` names it.
 CONSTANT_ARGUMENT_KINDS = frozenset({NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL})
 
+#: The units a numeric constant may carry (``Node.constant_units``). A closed
+#: set, so a unit is safe to print anywhere. ``percent`` means the number is
+#: the percentage itself: ``75`` with ``percent`` is 75 percent, never 0.75.
+#: ``currency:<ISO 4217 code>`` is an amount in that currency's major unit
+#: (``2500`` with ``currency:USD`` is $2,500.00). ``count`` is a number of
+#: things, and the time units are a length of time in that unit.
+CONSTANT_UNIT_NAMES = ("percent", "count", "seconds", "minutes", "hours", "days", "weeks", "months")
+CONSTANT_UNIT_RE = re.compile(rf"(?:{'|'.join(CONSTANT_UNIT_NAMES)}|currency:[A-Z]{{3}})")
+
+
+def constant_text(value: Any, unit: str | None) -> str:
+    """One constant's value as a reader sees it: ``75 (percent)``, ``'BDR'``."""
+    return f"{value!r} ({unit})" if unit else repr(value)
+
 
 class Node(BaseModel):
     """A single step in the compiled pipeline.
@@ -814,6 +828,15 @@ class Node(BaseModel):
         default=None,
         description="Hard-coded constants extracted from the source skill",
     )
+    constant_units: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Constant name -> the unit of its numeric value (CONSTANT_UNIT_RE): "
+            "'percent' (75 is 75 percent), 'currency:USD', 'days', 'count'... "
+            "Documentation for the module's author and the reviewer; the impl "
+            "still receives the bare number as its keyword argument."
+        ),
+    )
     cache: CacheConfig | None = None
     fan_out: bool = Field(
         default=False,
@@ -886,6 +909,27 @@ class Node(BaseModel):
         description="Signal name the workflow waits for (resume on signal)",
     )
     notify: NotifyConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_constant_units(self) -> Self:
+        """Each unit names a numeric constant of this node and is one of the
+        closed set, so it can be printed into a card, a report or a comment
+        as is (invariant #7)."""
+        constants = self.constants or {}
+        for name, unit in (self.constant_units or {}).items():
+            if name not in constants:
+                raise ValueError(f"node {self.id!r}: constant_units names {name!r}, not a constant")
+            value = constants[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"node {self.id!r}: constant {name!r} has unit {unit!r} but is not a number"
+                )
+            if not isinstance(unit, str) or not CONSTANT_UNIT_RE.fullmatch(unit):
+                raise ValueError(
+                    f"node {self.id!r}: constant {name!r} unit {unit!r} must be one of "
+                    f"{', '.join(CONSTANT_UNIT_NAMES)} or currency:<ISO code>"
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_constants_do_not_shadow_inputs(self) -> Self:

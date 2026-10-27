@@ -25,6 +25,7 @@ import yaml
 
 from rote.compiler.system1.decide import REVIEW_BELOW, NodePlan, Plan
 from rote.compiler.system1.parse import RuleTable, slug
+from rote.ir import constant_text
 
 BRIEF_DIRNAME = "system1"
 DECISIONS_FILENAME = "decisions.json"
@@ -121,6 +122,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["fan_out"] = True
         if n.constants:
             node["constants"] = dict(n.constants)
+        if n.constant_units:
+            node["constant_units"] = dict(n.constant_units)
         if n.kind in ("pure_function", "external_call"):
             node["impl"] = f"extracted/{n.id}.py:{n.id}"
         if n.kind == "external_call":
@@ -396,11 +399,13 @@ def brief_markdown(plan: Plan, table_names: list[str]) -> str:
     ]
     for n in plan.nodes:
         low = min(n.decisions, key=lambda d: d.confidence)
+        constants = ", ".join(
+            f"`{k}`={constant_text(v, n.constant_units.get(k))}" for k, v in n.constants.items()
+        )
         lines.append(
             f"| `{n.id}` | {n.kind} | {_quoted(n.unit.section)} | "
             f"{', '.join(f'`{k}`' for k in n.inputs)} | {'yes' if n.fan_out else ''} | "
-            f"{'yes' if n.mandatory else ''} | "
-            f"{', '.join(f'`{k}`={v!r}' for k, v in n.constants.items())} | "
+            f"{'yes' if n.mandatory else ''} | {constants} | "
             f"{low.field} {low.confidence:.2f} |"
         )
     if table_names:

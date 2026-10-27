@@ -51,6 +51,7 @@ DECISION_FIELDS = (
     "fan_out",
     "mandatory",
     "constants",
+    "constant_units",
     "impl",
     "mcp",
     "tools",

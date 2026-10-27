@@ -112,7 +112,14 @@ def good_answer() -> dict[str, Any]:
                 "llm_judge",
                 reads=["fetch_emails"],
                 fan_out_over="fetch_emails",
-                constants=[{"name": "flag_over_usd", "value": "$2,500"}],
+                constants=[
+                    {
+                        "name": "flag_over_usd",
+                        "value": 2500,
+                        "unit": "currency:USD",
+                        "quote": "Flag totals over $2,500",
+                    }
+                ],
             ),
             node("render_digest", 3, "pure_function", reads=["summarize_email"]),
         ],
@@ -169,8 +176,9 @@ def test_a_valid_answer_takes_one_round_and_becomes_the_plan(skill: Any) -> None
     assert judge.fan_out and judge.element_source == "fetch_emails"
     assert judge.inputs["fetch_emails"] == "fetch_emails.output.items"
     assert fetch.lists_output
-    # Verbatim, as the prompt asked: only a plainly written number becomes one.
-    assert judge.constants == {"flag_over_usd": "$2,500"}
+    # Typed, with its unit: the module receives the number, never "$2,500".
+    assert judge.constants == {"flag_over_usd": 2500}
+    assert judge.constant_units == {"flag_over_usd": "currency:USD"}
     assert plan.input_fields == {"day": "the day to digest"}
     # A fanned node's whole result is described where its reader is written.
     assert by_id["render_digest"].intent == (
@@ -219,8 +227,11 @@ def test_a_write_to_an_unidentified_system_ends_as_output(skill: Any) -> None:
     ("change", "expected"),
     [
         (
-            lambda a: a["nodes"][1]["constants"].append({"name": "limit", "value": "40"}),
-            "node summarize_email: constant 'limit' = '40' does not appear in the skill's text",
+            lambda a: a["nodes"][1]["constants"].append(
+                {"name": "limit", "value": 40, "unit": "count", "quote": "keep 40 results"}
+            ),
+            "node summarize_email: constant 'limit': its quote 'keep 40 results' does not "
+            "appear in the skill's text",
         ),
         (
             lambda a: a["nodes"][0]["args"].append(
