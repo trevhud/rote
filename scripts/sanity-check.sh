@@ -49,7 +49,10 @@ if [[ -f "$PSL_PATH" && "$(sha256_of "$PSL_PATH")" == "$PSL_SHA256" ]]; then
 fi
 
 # Use ripgrep if available (much faster + respects .gitignore), fall back
-# to a grep invocation that excludes the obvious cruft dirs.
+# to a grep invocation that excludes the obvious cruft dirs. The fallback
+# runs on GitHub's runners (no rg there), after the tests in release.yml:
+# pytest's cache records test ids holding the fake secrets a test feeds the
+# URL-secret check, so the tool caches must be excluded here too.
 if command -v rg >/dev/null 2>&1; then
     SCANNER() {
         # $1 = pattern, $2+ = rg flags
@@ -74,6 +77,10 @@ else
             --exclude-dir=node_modules \
             --exclude-dir='*.egg-info' \
             --exclude-dir=launch \
+            --exclude-dir=.pytest_cache \
+            --exclude-dir=.mypy_cache \
+            --exclude-dir=.ruff_cache \
+            --exclude-dir=__pycache__ \
             --exclude='sanity-check.sh' \
             "$pattern" . 2>/dev/null | skip_exempt || true
     }
