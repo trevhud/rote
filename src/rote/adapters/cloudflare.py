@@ -155,10 +155,17 @@ def _step_config_literal(node: Node, cfg: CloudflareAdapterConfig) -> str:
     The IR ``backoff`` enum values match Cloudflare's exactly, so the
     mapping is lossless — unlike Temporal where ``backoff_coefficient``
     is numeric.
+
+    A node with no ``retry:`` is attempted once, as on every runtime, so it
+    gets ``retries: { limit: 0 }``: left out, ``step.do`` retries 5 times,
+    which reruns a paid judge or a non-idempotent call.
     """
     timeout = node.timeout or cfg.default_step_timeout
     parts = [f"timeout: {json.dumps(_ir_duration_to_cf(timeout))}"]
-    if node.retry:
+    if node.retry is None:
+        retry_delay = _ir_duration_to_cf(cfg.default_step_retry_delay)
+        parts.insert(0, f"retries: {{ limit: 0, delay: {json.dumps(retry_delay)} }}")
+    else:
         backoff = node.retry.backoff if node.retry.backoff in _VALID_BACKOFFS else "exponential"
         retry_delay = _ir_duration_to_cf(cfg.default_step_retry_delay)
         retry_obj = (

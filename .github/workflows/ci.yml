@@ -139,6 +139,7 @@ jobs:
             tests/test_bench_fidelity.py \
             tests/test_http_fixtures.py \
             tests/test_constants_parity.py \
+            tests/test_retry_parity.py \
             tests/test_mcp_args_literal_parity.py \
             tests/test_agent_loop_output_parity.py \
             tests/test_pipeline_input_parity.py \
@@ -195,6 +196,7 @@ jobs:
             tests/test_ts_judge_e2e.py \
             tests/test_judge_passthrough.py \
             tests/test_constants_parity_ts_e2e.py \
+            tests/test_retry_parity_ts_e2e.py \
             tests/test_mcp_args_literal_parity_ts_e2e.py \
             tests/test_agent_loop_output_parity_ts_e2e.py \
             tests/test_judge_schema_parity_e2e.py \
@@ -254,5 +256,6 @@ jobs:
             tests/test_mcp_park_ts_e2e.py \
             tests/test_pipeline_input_ts_e2e.py \
             tests/test_constants_parity_dbos_ts_e2e.py \
+            tests/test_retry_parity_dbos_ts_e2e.py \
             tests/test_agent_loop_output_parity_dbos_ts_e2e.py \
             tests/test_mcp_args_literal_parity_dbos_ts_e2e.py

@@ -9,6 +9,22 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Behavior change: a node with no `retry:` is attempted once on every
+  runtime.** It ran once on dbos, python and temporal, but up to six times on
+  cloudflare (`step.do`'s default of 5 retries) and four on inngest (the
+  SDK's function-level default of 3), so a paid judge or a call that is not
+  idempotent did different things per runtime. Cloudflare now emits
+  `retries: { limit: 0 }` and inngest `retries: 0` when no node declares a
+  retry. A declared `retry:` is unchanged. `tests/test_retry_parity*.py`
+  counts the attempts on all six runtimes.
+
+### Fixed
+
+- **`rote run` on a temporal app names the exception a failed step raised**,
+  not only Temporal's "Activity task failed" wrapper.
+
 ## [0.17.0] - 2026-10-26
 
 ### Added

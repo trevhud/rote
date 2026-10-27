@@ -137,7 +137,7 @@ async def _run_async(
                 return MeasuredRun(
                     wall_seconds=time.monotonic() - started,
                     output=None,
-                    error=f"workflow failed: {e.cause or e}",
+                    error=f"workflow failed: {_failure_chain(e)}",
                 )
         return MeasuredRun(
             wall_seconds=time.monotonic() - started,
@@ -168,3 +168,19 @@ def run_temporal(
         return asyncio.run(
             _run_async(workflow_class, activities, input_payload, signals, timeout_seconds)
         )
+
+
+def _failure_chain(error: BaseException) -> str:
+    """Every message in a Temporal failure's ``cause`` chain, outermost first.
+
+    The workflow's own failure is a wrapper ("Activity task failed"), and the
+    exception the node's code raised is one or two causes further in. Showing
+    only the first level hid it, so a user saw that a step failed but not why."""
+    messages: list[str] = []
+    current: BaseException | None = getattr(error, "cause", None) or error
+    while current is not None:
+        text = str(current) or type(current).__name__
+        if text not in messages:
+            messages.append(text)
+        current = getattr(current, "cause", None)
+    return ": ".join(messages)

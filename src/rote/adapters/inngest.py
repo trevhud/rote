@@ -255,7 +255,6 @@ def auth_event_name(pipeline: Pipeline, server: str) -> str:
 # |                | surfaced as a comment                                 |
 
 _INNGEST_MAX_RETRIES = 20
-_INNGEST_DEFAULT_RETRIES = 3
 
 
 def _function_retries(pipeline: Pipeline) -> int:
@@ -264,14 +263,14 @@ def _function_retries(pipeline: Pipeline) -> int:
     Inngest v4 has no per-step retry configuration (``StepOptions`` is
     ``{ id, name?, parallelMode? }``), so the single function-level
     budget must cover the most retry-hungry node. Nodes that declared a
-    smaller budget get the surplus documented as a comment; when no
-    node declares a retry policy the SDK default (3) is kept rather
-    than forcing 0 — Inngest's platform semantics treat retries as the
-    baseline for transient HTTP failures, not an opt-in.
+    smaller budget get the surplus documented as a comment. When no node
+    declares a retry policy the budget is 0: a node with no ``retry:`` is
+    attempted once on every runtime, and the SDK's default of 3 would run
+    a paid judge or a non-idempotent call four times.
     """
     declared = [n.retry.max for n in pipeline.nodes if n.retry is not None]
     if not declared:
-        return _INNGEST_DEFAULT_RETRIES
+        return 0
     return min(max(declared), _INNGEST_MAX_RETRIES)
 
 

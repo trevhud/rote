@@ -136,7 +136,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── Wave 1 ───
         const taxonomy_lookup_result = await step.do(
             "taxonomy_lookup",
-            { timeout: "10 minutes" },
+            { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
             async () => taxonomyLookup({
                 brief: pipelineInput as ImplInput<typeof taxonomyLookup>["brief"],
             }),
@@ -211,7 +211,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                     lead_generation_loop_attempt === 0
                         ? "lead_generation_loop"
                         : `lead_generation_loop (auth retry ${lead_generation_loop_attempt})`,
-                    { timeout: "15 minutes" },
+                    { retries: { limit: 0, delay: "5 seconds" }, timeout: "15 minutes" },
                     async () => {
                         try {
                             return await leadGenerationLoop({
@@ -298,7 +298,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await step.do(
             "exclusion_check_dnc",
-            { timeout: "10 minutes" },
+            { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
             async () => exclusionCheckDnc({
                 contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof exclusionCheckDnc>["contacts"],
             }),
@@ -307,7 +307,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await step.do(
             "exclusion_check_recent",
-            { timeout: "10 minutes" },
+            { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
             async () => exclusionCheckRecent({
                 contacts: exclusion_check_dnc_result["passed"] as ImplInput<typeof exclusionCheckRecent>["contacts"],
                 days_back: 30,
@@ -318,7 +318,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await step.do(
             "exclusion_check_sequence",
-            { timeout: "10 minutes" },
+            { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
             async () => exclusionCheckSequence({
                 contacts: exclusion_check_recent_result["passed"] as ImplInput<typeof exclusionCheckSequence>["contacts"],
             }),
@@ -336,7 +336,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             ).map((_item, _index) =>
                 step.do(
                     `personalize_email[${_index}]`,
-                    { timeout: "10 minutes" },
+                    { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
                     async () => personalizeEmail({ contact: _item, intel: target_research_result, campaign_type: pipelineInput["campaign_type"] }, this.env),
                 ),
             ),
@@ -355,7 +355,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── Wave 11 ───
         const pre_enrollment_report_result = await step.do(
             "pre_enrollment_report",
-            { timeout: "10 minutes" },
+            { retries: { limit: 0, delay: "5 seconds" }, timeout: "10 minutes" },
             async () => preEnrollmentReport({
                 campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof preEnrollmentReport>["campaign_name"],
                 passed_contacts: exclusion_check_sequence_result["passed"] as ImplInput<typeof preEnrollmentReport>["passed_contacts"],
