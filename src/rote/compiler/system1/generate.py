@@ -335,26 +335,11 @@ class Context:
             return dict(node.output_schema), "fixed by the skeleton"
         if node.mcp is None:
             return None
-        from rote.mcp._runtime_helper import returned_schema
-        from rote.probe import infer_schema, parse_tool_result
+        from rote.compiler.tool_grounding import result_schema
 
-        key = (node.mcp.server, node.mcp.tool)
-        declared = self.grounding.tools.get(key)
-        output_schema = getattr(declared, "output_schema", None)
-        results = [
-            value
-            for o in self.grounding.observations
-            if (getattr(o, "server", None), getattr(o, "tool", None)) == key
-            and not getattr(o, "is_error", False)
-            and (value := parse_tool_result(getattr(o, "result", None), output_schema)) is not None
-        ]
-        if results:
-            return infer_schema(results), "observed in a recorded run"
-        if getattr(declared, "declared", False):
-            schema = returned_schema(output_schema)
-            if schema:
-                return schema, "declared by the server's tools/list"
-        return None
+        return result_schema(
+            node.mcp.server, node.mcp.tool, self.grounding.tools, self.grounding.observations
+        )
 
     def unverified_tool_result(self, node_id: str) -> bool:
         """An MCP call's result whose shape nothing observed or declared.

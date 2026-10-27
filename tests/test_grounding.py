@@ -1538,3 +1538,39 @@ def test_recorded_fanned_results_bind_as_the_list_not_element_zero(tmp_path: Pat
     )
     assert run.steps["search"]["status"] == "ok"
     assert run.steps["count"]["status"] == "ok", run.steps["count"]
+
+
+def _split_gates(outputs: list[str]) -> str:
+    nodes = "".join(
+        f"""  - id: ask_{i}
+    kind: hitl_gate
+    description: ask for one item
+    source:
+      section: Manual data to request from user
+    output: {{{key}: dict}}
+    signal: manual_{i}
+"""
+        for i, key in enumerate(outputs)
+    )
+    ids = ", ".join(f"ask_{i}" for i in range(len(outputs)))
+    return (
+        "name: ops\ninput:\n  type: Day\n  required: [report_date]\nnodes:\n"
+        + nodes
+        + f"edges: []\nentry_nodes: [{ids}]\nexit_nodes: [{ids}]\n"
+    )
+
+
+def test_gates_that_split_a_section_are_held_to_what_they_collect_together(
+    tmp_path: Path,
+) -> None:
+    """#291: three gates, one item each, from one section. Each used to be
+    flagged for lacking its siblings' keys."""
+    keys = ["dock_appointment_completion", "sorter_metrics", "current_dwell"]
+    root = _write(tmp_path, {"pipeline.yaml": _split_gates(keys)})
+    assert gate_findings(_pipeline(root), OPS / "skill", None) == []
+    # Two gates that together miss an item still fail, naming the missing one.
+    short = _write(tmp_path / "short", {"pipeline.yaml": _split_gates(keys[:2])})
+    [finding] = gate_findings(_pipeline(short), OPS / "skill", None)
+    assert "gates ask_0, ask_1 together collect" in finding.message
+    assert "**Current Dwell** -> `current_dwell`" in finding.message
+    assert "Sorter Metrics" not in finding.message
