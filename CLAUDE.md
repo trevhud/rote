@@ -1810,7 +1810,10 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    to a single function-level `retries` (max across nodes, clamped 0–20);
    per-node deltas, `backoff`, `retry_on`, and per-node `timeout` are
    emitted as comments. Don't "fix" the adapter to pass per-step retry
-   options — there's nowhere to put them.
+   options — there's nowhere to put them. When no node declares a
+   `retry:`, the budget is 0, not the SDK's default of 3: an absent
+   `retry:` means one attempt on every runtime (Cloudflare emits
+   `retries: { limit: 0 }` for the same reason; `tests/test_retry_parity*.py`).
 3. **`GET /v1/events/{id}/runs` lies while a run is parked.** During
    probing it reported `status: "Completed"` while the run was parked on
    `step.waitForEvent`. Use it only to discover the `run_id`, then poll
