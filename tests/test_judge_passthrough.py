@@ -836,11 +836,19 @@ def test_every_committed_passthrough_names_real_fields() -> None:
 
 
 def test_the_static_estimate_counts_only_the_fields_the_model_writes() -> None:
-    from rote.eval.estimate import _judge_field_counts
+    from rote.eval.estimate import Range, _model_written_tokens
+    from rote.eval.priors import Priors
 
+    priors = Priors()
+    per_field = priors.tokens_per_output_field
     with_copy = _pipeline().nodes[0]
     without = with_copy.model_copy(deep=True)
     assert without.signature_spec is not None
     without.signature_spec.passthrough = None
-    assert _judge_field_counts(with_copy) == (1, 2)
-    assert _judge_field_counts(without) == (1, 5)
+    # Copied: the model writes `urgency` and `reason` only.
+    assert _model_written_tokens(with_copy, priors) == Range.exact(2 * per_field)
+    # Not copied: the whole ticket too (id, title, body, reporter, and a
+    # list of tags of one to `elements_per_list` values), then ticket_id
+    # and reporter.
+    ticket = Range(4 * per_field + per_field, 4 * per_field + per_field * priors.elements_per_list)
+    assert _model_written_tokens(without, priors) == ticket + Range.exact(4 * per_field)

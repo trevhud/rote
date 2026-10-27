@@ -130,10 +130,25 @@ class Scorecard:
                         "id": n.node_id,
                         "kind": n.kind.value,
                         "calls": _range(n.calls),
-                        "llm_input_tokens_per_call": n.llm_input_tokens_per_call,
-                        "llm_output_tokens_per_call": n.llm_output_tokens_per_call,
+                        "llm_input_tokens_per_call": _range(n.llm_input_tokens_per_call),
+                        "llm_output_tokens_per_call": _range(n.llm_output_tokens_per_call),
                         "wall_seconds_per_call": n.wall_seconds_per_call,
                         **({"note": n.note} if n.note else {}),
+                        **(
+                            {
+                                "input_sizes": [
+                                    {
+                                        "param": size.param,
+                                        "ref": size.ref,
+                                        "tokens": _range(size.tokens),
+                                        "basis": size.basis,
+                                    }
+                                    for size in n.input_sizes
+                                ]
+                            }
+                            if n.input_sizes
+                            else {}
+                        ),
                     }
                     for n in self.pipeline.nodes
                 ],
@@ -259,8 +274,8 @@ class Scorecard:
         for n in self.pipeline.nodes:
             lines.append(
                 f"| `{n.node_id}` | {n.kind.value} | {_count(n.calls)} | "
-                f"{n.llm_input_tokens_per_call or '—'} | "
-                f"{n.llm_output_tokens_per_call or '—'} | "
+                f"{_per_call(n.llm_input_tokens_per_call)} | "
+                f"{_per_call(n.llm_output_tokens_per_call)} | "
                 f"{n.wall_seconds_per_call:g} |"
             )
         notes = [n for n in self.pipeline.nodes if n.note]
@@ -282,6 +297,18 @@ class Scorecard:
                 "at cache-write price, re-reads at cache-read price."
             )
         lines.append("- HITL gate waits are human time and excluded from wall-clock on both sides.")
+        lines.append(
+            "- Compiled model input is sized along the IR's data flow: each judge or "
+            "agent loop pays for what its `inputs:` bind, a whole external result at "
+            "the same prior the agent side is charged, a field of one between one value "
+            "and the whole result. Static sizes, not measured usage."
+        )
+        for n in self.pipeline.nodes:
+            for size in n.input_sizes:
+                lines.append(
+                    f"- `{n.node_id}` input `{size.param}` (`{size.ref}`): "
+                    f"{_tokens(size.tokens)} tokens per call, {size.basis}."
+                )
         for width in self.pipeline.fan_out_widths:
             lines.append(
                 f"- fan_out `{width.node_id}`: {_count(width.elements)} elements per run "
@@ -387,7 +414,7 @@ def build_scorecard_for(
     if skill_dir is not None:
         # The agent pulls the same sources the pipeline's external_call nodes
         # bind to; use that footprint to size the before-side context payload.
-        data_payload = external_call_payload_tokens(pipeline, priors)
+        data_payload = external_call_payload_tokens(pipeline, priors, sidecar=sidecar)
         skill_estimate = estimate_skill(
             skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
         )
@@ -526,6 +553,10 @@ def _range_str(r: Range) -> str:
 
 def _tokens(r: Range) -> str:
     return _range_str(r)
+
+
+def _per_call(r: Range) -> str:
+    return "—" if r.high == 0 else _range_str(r)
 
 
 def _count(r: Range) -> str:
