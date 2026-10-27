@@ -169,8 +169,18 @@ def turn_usage(stdout: str) -> dict[str, int] | None:
         if isinstance(obj, dict) and obj.get("type") == "turn.completed":
             reported = obj.get("usage")
             usage = reported if isinstance(reported, dict) else None
-    if usage is None:
-        return None
+    return split_usage(usage) if usage is not None else None
+
+
+def split_usage(usage: dict[str, Any]) -> dict[str, int] | None:
+    """One Codex usage object in rote's four buckets, each token in one of them.
+
+    Its ``input_tokens`` already holds the cached reads and the cache writes,
+    so both are taken out of it; ``output_tokens`` already holds reasoning.
+    None when input or output was not reported. The driver's run
+    (:func:`turn_usage`) and System-1's codex calls
+    (:func:`rote.compiler.system1.lane_call.usage_row`) both read usage here.
+    """
 
     def count(key: str) -> int | None:
         value = usage.get(key)
