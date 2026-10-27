@@ -683,7 +683,7 @@ def run_pipeline_trial(
     passes an allowlist, so a pipeline never sees the user's vendor
     credentials).
     """
-    from rote.mcp.parked import DbosAuthChannel, app_parks_on_auth, wait_for_exit
+    from rote.mcp.parked import DbosAuthChannel, wait_for_exit, watches_park
 
     app_path = Path(app_dir).resolve()
     main_py = app_path / "main.py"
@@ -721,7 +721,7 @@ def run_pipeline_trial(
             )
             watcher = (
                 park_watch(DbosAuthChannel(_dbos_system_database_url(app_path), stderr_path))
-                if park_watch is not None and is_dbos and app_parks_on_auth(app_path)
+                if park_watch is not None and is_dbos and watches_park(app_path)
                 else None
             )
             try:

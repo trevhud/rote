@@ -37,7 +37,7 @@ from urllib.error import URLError
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
 from rote.ir import Pipeline
-from rote.mcp.parked import AuthPark, LogMarkerChannel, ParkWatchFactory, app_parks_on_auth
+from rote.mcp.parked import AuthPark, LogMarkerChannel, ParkWatchFactory, watches_park
 from rote.runners._node import (
     ensure_npm_install,
     find_free_port,
@@ -260,7 +260,7 @@ def run_inngest(
                     time.sleep(0.5)
 
             watcher = None
-            if park_watch is not None and app_parks_on_auth(app_dir):
+            if park_watch is not None and watches_park(app_dir):
 
                 def release(park: AuthPark) -> None:
                     http_json(

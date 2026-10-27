@@ -43,7 +43,7 @@ from rote.mcp.parked import (
     AuthParkWatcher,
     LogMarkerChannel,
     ParkWatchFactory,
-    app_parks_on_auth,
+    watches_park,
 )
 from rote.runners._node import (
     ensure_npm_install,
@@ -150,7 +150,7 @@ def run_cloudflare(
             pending = [(g, signals[g]) for g in gate_order if g in signals]
 
             watcher = None
-            if park_watch is not None and app_parks_on_auth(app_dir):
+            if park_watch is not None and watches_park(app_dir):
 
                 def remote_fix(server: str) -> str:
                     return (
