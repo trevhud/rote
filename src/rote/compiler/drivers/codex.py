@@ -145,6 +145,50 @@ def web_events(stdout: str) -> list[CompilationEvent]:
     return events
 
 
+def turn_usage(stdout: str) -> dict[str, int] | None:
+    """The run's token usage from a ``codex exec --json`` event stream, or None.
+
+    Each ``turn.completed`` carries the thread's running total, not the
+    turn's own: codex-rs's JSONL processor fills it from the last
+    ``ThreadTokenUsageUpdated`` notification's ``total`` (rust-v0.164.0,
+    ``event_processor_with_jsonl_output.rs``). So the last one is the run,
+    and summing them would count every earlier turn again.
+
+    Its ``input_tokens`` is the Responses API's, which already holds the
+    cached reads and the cache writes (``input_tokens_details``); both are
+    split out so no token sits in two buckets. ``output_tokens`` already
+    holds the reasoning tokens. A stream with no ``turn.completed`` (a
+    failed turn, a crash) reported nothing, and that is None, never zero.
+    """
+    usage: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "turn.completed":
+            reported = obj.get("usage")
+            usage = reported if isinstance(reported, dict) else None
+    if usage is None:
+        return None
+
+    def count(key: str) -> int | None:
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    total, output = count("input_tokens"), count("output_tokens")
+    if total is None or output is None:
+        return None
+    cache_read = count("cached_input_tokens") or 0
+    cache_write = count("cache_write_input_tokens") or 0
+    return {
+        "input_tokens": max(0, total - cache_read - cache_write),
+        "output_tokens": output,
+        "cache_write_tokens": cache_write,
+        "cache_read_tokens": cache_read,
+    }
+
+
 #: Most of a failed run's stdout an error carries. With ``--json`` stdout is
 #: the whole event stream, search results included: megabytes, of which the
 #: last lines say why the run ended.
@@ -234,9 +278,9 @@ class CodexDriver(CompilerDriver):
     ) -> DriverResult:
         """Spawn ``codex exec`` and wait for it to produce pipeline.yaml.
 
-        Codex's stdout is not stream-parsed for turn/tool events — the
-        ``codex exec`` output format isn't a stable machine contract we
-        want to depend on. Phase events still flow: a
+        Codex's stdout is read once the run ends, not streamed: for its
+        token usage (:func:`turn_usage`) and, under ``web_tools``, its web
+        research (:func:`web_events`). Phase events still flow: a
         :class:`~rote.compiler.events.ProgressFileWatcher` polls the
         ``progress.ndjson`` the agent writes, exactly as it does for the
         claude driver.
@@ -286,8 +330,12 @@ class CodexDriver(CompilerDriver):
             ]
             if self.model:
                 args += ["--model", self.model]
+            # --json always: its turn.completed events are the only usage
+            # report codex exec makes (turn_usage), and web research is
+            # read from the same stream.
+            args.append("--json")
             if self.web_tools:
-                args += ["-c", WEB_SEARCH_CONFIG, "--json"]
+                args += ["-c", WEB_SEARCH_CONFIG]
             args.append(prompt)
 
             proc = await asyncio.create_subprocess_exec(
@@ -324,6 +372,9 @@ class CodexDriver(CompilerDriver):
                 )
 
             metadata = self._build_metadata(last_message_path)
+            usage = turn_usage(stdout)
+            if usage is not None:
+                metadata.update(usage, usage_source="turn.completed", usage_complete=True)
             if proc.returncode != 0:
                 metadata["subprocess_warning"] = (
                     f"codex CLI exited with code {proc.returncode} but "
