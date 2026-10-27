@@ -924,6 +924,119 @@ def unchecked_tools(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, list[st
     return {server: sorted(names) for server, names in sorted(unchecked.items())}
 
 
+def result_schema(
+    server: str, tool: str, tools: ToolSchemas, observations: Iterable[Any]
+) -> tuple[dict[str, Any], str] | None:
+    """A tool's result schema and where it is from, when data says it.
+
+    A baseline's recorded results first (they show the values a real call
+    returned), then the outputSchema the server declares. Both describe what
+    the step receives: a recorded result is decoded from its text, and
+    fastmcp's ``{"result": ...}`` wrapper is removed by the same rule the
+    emitted runtime helper applies. ``None``: nothing observed or declared.
+    """
+    from rote.mcp._runtime_helper import returned_schema
+    from rote.probe import infer_schema, parse_tool_result
+
+    declared = tools.get((server, tool))
+    output_schema = getattr(declared, "output_schema", None)
+    results = [
+        value
+        for o in observations
+        if (getattr(o, "server", None), getattr(o, "tool", None)) == (server, tool)
+        and not getattr(o, "is_error", False)
+        and (value := parse_tool_result(getattr(o, "result", None), output_schema)) is not None
+    ]
+    if results:
+        return infer_schema(results), "observed in a recorded run"
+    if getattr(declared, "declared", False):
+        schema = returned_schema(output_schema)
+        if schema:
+            return schema, "declared by the server's tools/list"
+    return None
+
+
+#: A node reads a field of an MCP result whose known shape has no such field.
+RESULT_FIELD_MISSING = "result_field_missing"
+
+
+def result_field_checks(
+    pipeline: Pipeline, tools: ToolSchemas, observations: Iterable[Any]
+) -> tuple[list[ContractFinding], list[tuple[str, str]]]:
+    """Every ``<node>.output.<field>`` read of an MCP-bound node's result,
+    against what is known of that result (#253).
+
+    Known (recorded, or declared by the server) and without the field: an
+    error, because the run fails at that read. A result that is a string or
+    a list has no fields; an object that lists its properties is closed, as
+    the vendors leave ``additionalProperties`` out. An object that admits
+    other keys proves nothing. Unknown: an open question, never a guess.
+    """
+    from rote.ir import parse_input_ref
+
+    observed = tuple(observations)
+    findings: list[ContractFinding] = []
+    questions: list[tuple[str, str]] = []
+    by_id = {n.id: n for n in pipeline.nodes}
+    for node in pipeline.nodes:
+        for param, source in sorted((node.inputs or {}).items()):
+            ref = parse_input_ref(source)
+            producer = by_id.get(ref.node_id) if ref.node_id is not None else None
+            if ref.field is None or producer is None or producer.mcp is None:
+                continue
+            if producer.fan_out:
+                continue  # its result is the list of its runs, read whole
+            call = f"{producer.mcp.server}.{producer.mcp.tool}"
+            known = result_schema(producer.mcp.server, producer.mcp.tool, tools, observed)
+            if known is None:
+                questions.append(
+                    (
+                        node.id,
+                        f"`{param}` reads `{ref.field}` from {producer.id}'s result, but no "
+                        f"recorded run or declared outputSchema shows what {call} returns; "
+                        "if it returns text or a list, every run fails at this read",
+                    )
+                )
+                continue
+            schema, where = known
+            missing = _field_missing(schema, ref.field)
+            if missing is not None:
+                findings.append(
+                    ContractFinding(
+                        node_id=node.id,
+                        kind=RESULT_FIELD_MISSING,
+                        severity="error",
+                        message=(
+                            f"`{param}` reads `{ref.field}` from {producer.id}'s result, but "
+                            f"{call}'s result ({where}) {missing}. Read the result whole, or "
+                            "add a pure_function after the call that builds the value"
+                        ),
+                        path="pipeline.yaml",
+                    )
+                )
+    return findings, questions
+
+
+def _field_missing(schema: Mapping[str, Any], field: str) -> str | None:
+    """Why ``schema`` cannot have ``field``, or None when it can (or may)."""
+    kind = schema.get("type")
+    if kind in ("string", "array", "number", "integer", "boolean", "null"):
+        article = "an" if kind in ("array", "integer") else "a"
+        return f"is {article} {kind}, which has no fields"
+    if kind != "object":
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping) or schema.get("additionalProperties") not in (
+        None,
+        False,
+    ):
+        return None
+    if field in properties:
+        return None
+    listed = ", ".join(f"`{k}`" for k in sorted(properties)) or "none"
+    return f"has no field `{field}` (its fields: {listed})"
+
+
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
     """``(node id, text)`` for every binding whose arguments nothing could check."""
     questions: list[tuple[str, str]] = []

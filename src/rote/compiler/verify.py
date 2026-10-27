@@ -69,6 +69,7 @@ from rote.compiler.provenance import (
 )
 from rote.compiler.tool_grounding import (
     DECLARED_TOOL_UNBOUND,
+    result_field_checks,
     schema_sources,
     stale_bundled,
     tool_findings,
@@ -1192,9 +1193,13 @@ def _verify(
         # The full pipeline: on the api backend a binding stays declared
         # even though its impl is what runs.
         findings += unbound_tool_findings(pipeline, skill_dir, grounding.tools)
+        field_findings, field_questions = result_field_checks(
+            called, grounding.tools, grounding.observations
+        )
+        findings += field_findings
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
-            for node_id, text in tool_questions(called, grounding.tools)
+            for node_id, text in [*tool_questions(called, grounding.tools), *field_questions]
         ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(

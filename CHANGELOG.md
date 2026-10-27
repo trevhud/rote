@@ -22,6 +22,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **A compile no longer ships a field read from an MCP result that has no
+  such field.** Verification checks every `<node>.output.<field>` read of an
+  MCP-bound node against the result a recorded run returned, else the
+  outputSchema the server declares. A result that is text or a list, or a
+  closed object without the field, goes back to the agent as an error,
+  because the run would fail at that read. With nothing recorded or
+  declared, it is an Open question in the report.
+
 - **`rote run` on a temporal app names the exception a failed step raised**,
   not only Temporal's "Activity task failed" wrapper.
 
