@@ -183,19 +183,25 @@ edges:
 # ───────── a loop tool no grounded server offers ─────────
 
 
-def test_a_loop_tool_no_listed_server_offers_is_an_error(tmp_path: Path) -> None:
-    """invoice-push's loop tools are browser CLIs (`chrome_cdp_snapshot`)."""
+def test_a_loop_tool_no_listed_server_offers_is_a_review_gap(tmp_path: Path) -> None:
+    """invoice-push's loop tools are browser CLIs (`chrome_cdp_snapshot`). A
+    warning, not an error: a registered server the skill never names was not
+    contacted and may offer the tool."""
     pipeline = load_pipeline(_write(tmp_path / "out", tools="chrome_cdp_snapshot"))
     skill = _skill(tmp_path, "Ask the `deepwiki` MCP server, then run chrome_cdp_snapshot.")
     [finding] = unserved_loop_tool_findings(pipeline, skill, WIKI, {})
     assert (finding.node_id, finding.kind, finding.severity) == (
         "research",
         LOOP_TOOL_UNSERVED,
-        "error",
+        "warning",
     )
     assert finding.message.startswith(
         "research lists `chrome_cdp_snapshot` in its tools, but no server the skill uses "
         "offers it (rote listed deepwiki)"
+    )
+    assert finding.message.endswith(
+        "It may also be on a server the skill does not name, which rote did not contact "
+        "(--tool-discovery all lists every registered server)"
     )
     # A tool a grounded server offers is fine.
     served = load_pipeline(_write(tmp_path / "ok"))
@@ -239,12 +245,32 @@ def test_an_authored_pin_is_not_unserved(tmp_path: Path) -> None:
     assert unserved_loop_tool_findings(pipeline, skill, WIKI, {}) == []
 
 
-def test_verification_sends_an_unserved_loop_tool_to_repair(tmp_path: Path) -> None:
+def test_an_unserved_loop_tool_is_sent_to_repair_but_leaves_the_compile_ok(
+    tmp_path: Path,
+) -> None:
     root = _write(tmp_path / "out", tools="chrome_cdp_snapshot").parent
+    (root / "tests").mkdir()
+    (root / "tests" / "test_r.py").write_text(
+        "from extracted.r import report\n\n\ndef test_report():\n    assert report([]) == {}\n"
+    )
     skill = _skill(tmp_path, "Ask the `deepwiki` MCP server.")
     v = verify_deliverable(root, grounding=Grounding(tools=WIKI), run_tests=False, skill_dir=skill)
-    assert LOOP_TOOL_UNSERVED in {f.kind for f in v.errors} and not v.ok
+    assert v.ok and not v.errors
+    assert [f.kind for f in v.review_gaps] == [LOOP_TOOL_UNSERVED]
     assert "chrome_cdp_snapshot" in (v.repair_instruction(root) or "")
+
+
+def test_the_structure_passs_placeholder_tool_is_not_reported(tmp_path: Path) -> None:
+    """System-1 writes `<loop id>_tool` when no declared tool fits; settle
+    restores it, so the agent cannot fix it. Only that exact name is exempt."""
+    skill = _skill(tmp_path, "Ask the `deepwiki` MCP server.")
+    placeholder = load_pipeline(_write(tmp_path / "a", tools="research_tool"))
+    assert unserved_loop_tool_findings(placeholder, skill, WIKI, {}) == []
+    for near in ("report_tool", "research_tools", "research_tool_x"):
+        other = load_pipeline(_write(tmp_path / near, tools=near))
+        assert [f.kind for f in unserved_loop_tool_findings(other, skill, WIKI, {})] == [
+            LOOP_TOOL_UNSERVED
+        ]
 
 
 def test_verification_lists_a_tool_two_servers_offer_as_a_question(tmp_path: Path) -> None:

@@ -60,7 +60,7 @@ from rote.compiler.system1.parse import (
     walk,
 )
 from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
-from rote.compiler.tool_grounding import parameters
+from rote.compiler.tool_grounding import parameters, placeholder_loop_tool
 from rote.ir import GATE_MESSAGE_PLACEHOLDER
 from rote.tool_schema import checkable
 
@@ -1968,7 +1968,7 @@ def to_plan(
                 node.decide("tools", node.tools, conf, rule)
             else:
                 # The IR needs a tool; no server declares one this loop can use.
-                node.tools = [f"{node.id}_tool"]
+                node.tools = [placeholder_loop_tool(node.id)]
                 node.decide("tools", node.tools, 0.2, "no declared tool: placeholder, needs review")
             stop, bound = str(lp.get("stop_condition") or ""), int(lp.get("max_iterations") or 0)
             if stop and bound > 0:

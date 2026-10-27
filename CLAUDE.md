@@ -1184,9 +1184,12 @@ Two behaviors to preserve:
   last stop (`tool_grounding.loop_tool_pins`, written as a line edit so
   the agent's YAML comments survive): one grounded server offering the
   tool pins it, two leave it unpinned as an Open question. A loop tool no
-  grounded server offers is `loop_tool_unserved`, an error, but only when
-  a live tools/list answered for every server the skill names. No listing
-  proves nothing.
+  grounded server offers is `loop_tool_unserved`, only when a live
+  tools/list answered for every server the skill names (no listing proves
+  nothing). It is a review gap, never an error: rote does not contact a
+  registered server the skill never names, which may offer the tool. The
+  structure pass's own `<loop id>_tool` placeholder is exempt by that exact
+  name.
 - **Discovery is best-effort, binding is not.** A server that is down may
   not be one this loop needed, so it is recorded and skipped; a declared
   tool no reachable server provides is fatal. When an auth failure

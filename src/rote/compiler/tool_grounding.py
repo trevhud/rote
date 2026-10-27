@@ -941,10 +941,17 @@ def unserved_loop_tool_findings(
     It does only when a live ``tools/list`` answered and every server the
     skill names (:func:`servers_named`, told which registered servers rote
     did not list) is among the live-listed ones: then no server the skill
-    uses offers the tool, and the loop fails at its first run. A command the
-    skill calls a tool (``chrome_cdp_snapshot``, a browser CLI) is the usual
-    cause. With no live listing, or a named server rote could not list,
-    nothing is known and nothing is said.
+    uses offers the tool. A command the skill calls a tool
+    (``chrome_cdp_snapshot``, a browser CLI) is the usual cause. With no live
+    listing, or a named server rote could not list, nothing is known and
+    nothing is said.
+
+    Even then it is a review gap, not an error: rote does not contact a
+    registered server the skill never names, and that server may offer the
+    tool, so a failure here could fail a correct compile. The structure
+    pass's own placeholder (``<loop id>_tool``, written when no declared tool
+    fits) is not reported: settle restores it, so the agent cannot change
+    it, and the report already lists it for review.
     """
     listed = listed_tools(tools)
     if not listed or skill_dir is None or not (skill_dir / "SKILL.md").is_file():
@@ -956,19 +963,26 @@ def unserved_loop_tool_findings(
         ContractFinding(
             node_id=node.id,
             kind=LOOP_TOOL_UNSERVED,
-            severity="error",
+            severity="warning",
             message=(
                 f"{node.id} lists `{tool}` in its tools, but no server the skill uses offers "
                 f"it (rote listed {', '.join(sorted(listed))}). An agent loop calls MCP tools "
                 f"only: if `{tool}` is a command or a script (a CLI, a browser), make that work "
                 f"a loop_body sub-node whose impl runs it and drop it from tools; if it is an "
-                f"MCP tool, use the name a listed server offers"
+                f"MCP tool, use the name a listed server offers. It may also be on a server "
+                f"the skill does not name, which rote did not contact (--tool-discovery all "
+                f"lists every registered server)"
             ),
             path="pipeline.yaml",
         )
         for node, tool in _unpinned_loop_tools(pipeline)
-        if tool not in served
+        if tool not in served and tool != placeholder_loop_tool(node.id)
     ]
+
+
+def placeholder_loop_tool(loop_id: str) -> str:
+    """The tool name System-1's structure pass gives a loop no declared tool fits."""
+    return f"{loop_id}_tool"
 
 
 def _loop_tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
