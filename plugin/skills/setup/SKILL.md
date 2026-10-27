@@ -41,6 +41,33 @@ Run exactly the command `next` gives. rote remembers earlier answers, so it carr
 Never add a flag it does not name. An error (exit 1, `error`) names its fix:
 tell the user, and run `rote setup` again once it is fixed.
 
+When rote asks which skill to compile (`reason: missing_answer`, step
+`skill`), read the SKILL.md of each choice before you answer, and
+recommend one to the user by the rule below, with one line on why. Say
+which choices it rules out.
+
+<!-- rote:worth -->
+### Is it worth compiling?
+
+Compiling to the skill runtime pays off when most of the skill's work is
+fixed steps: tool calls, lookups, filtering, arithmetic, formatting. The
+compiled skill does those in code and stops for you only where the skill
+needs judgment. Each stop is a round trip that re-reads the conversation,
+so a skill that is mostly judgment (search, read, then write an answer)
+runs slower and costs more compiled. Measured: Atlassian's
+search-company-knowledge took 4x longer at 3x the cost, while
+expense-audit ran 3.6x faster at 62% less.
+
+Read the SKILL.md before compiling, and count the steps that need
+judgment: choosing, ranking, summarizing, writing prose. If a run needs
+more than two, tell the user compiling will not pay off and why, and do
+not compile unless they still want to. rote checks the same thing after
+its first step and stops (`--compile-anyway` overrides it), so a
+misjudgment costs cents, not a whole compile. This applies to
+`--runtime skill`: on a workflow runtime a judge is an API call, not a
+round trip.
+<!-- /rote:worth -->
+
 ## 3. The verdict
 
 The last object has `answer` (did the compiled skill give the same answer),
