@@ -112,6 +112,15 @@ The module:
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.
 
+When the module reads a pipeline input field (a key of `request`) that the
+input schema in the message does not declare, and the skill says the
+caller supplies that value, declare it in `input_fields`: one entry
+`{name, type, required, description, quote}` each, where `quote` is the
+skill's own words asking for the value, verbatim. rote only adds the
+field to the input schema and lists it for review. It never renames,
+retypes or removes one, and a field the sample input lacks cannot be
+required. Leave `input_fields` empty otherwise.
+
 The test file:
 
 - imports what it tests as `from extracted.<module> import <name>`, and
