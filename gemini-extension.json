@@ -1,0 +1,16 @@
+{
+  "name": "rote",
+  "version": "0.17.0",
+  "description": "Trigger compiled agent-skill pipelines as MCP tools. Compile a skill once with rote, register it, and call it from Gemini CLI.",
+  "mcpServers": {
+    "rote": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "rote-cli[serve]",
+        "rote",
+        "serve"
+      ]
+    }
+  }
+}

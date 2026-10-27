@@ -112,3 +112,16 @@ The wheel also ships `rote/mcp/client_metadata.json`, the client
 metadata document a login compares the published one against. It is
 byte-identical to `docs/oauth/rote-cli.json`
 (`tests/test_mcp_client.py::test_packaged_client_metadata_is_the_published_document`).
+
+## Listings that update themselves on release
+
+- The release workflow publishes `server.json` to the official MCP Registry
+  after the PyPI publish (job `publish-mcp-registry`). It needs the
+  `mcp-name: io.github.trevhud/rote` marker in README.md, which PyPI serves
+  as the package description, so never drop that comment.
+- `gemini-extension.json` is crawled daily by the Gemini CLI extension
+  gallery. Its `version` must equal the tag; the test job checks it.
+- `llms-install.md` is what Cline's marketplace and other agents read to
+  install `rote serve`. Keep its launch command in step with the `serve`
+  extra.
+
