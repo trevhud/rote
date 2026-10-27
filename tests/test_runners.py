@@ -882,7 +882,9 @@ def test_run_pipeline_dispatches_temporal(tmp_path: Path, monkeypatch: pytest.Mo
     target = RunTarget(kind="pipeline", path=tmp_path, runtime="temporal")
     outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=5.0)
     assert outcome.run.output == {"temporal": True}
-    assert "park_watch" not in captured["kwargs"]  # temporal never parks on auth
+    # Temporal never parks on auth, but its watcher prints the gates it reaches.
+    watch = captured["kwargs"].pop("park_watch")
+    assert callable(watch)
     assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 5.0}
 
 

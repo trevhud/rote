@@ -45,6 +45,7 @@ from rote.adapters._common import (
     agent_loop_named_types,
     agent_loop_output,
     effort_env_vars,
+    gate_message_names,
     mcp_tool_arguments,
     override_env_vars,
     safe_block_comment_line,
@@ -57,6 +58,7 @@ from rote.inference import (
 )
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
+    GATE_MESSAGE_PLACEHOLDER,
     LLMSignature,
     Node,
     NodeKind,
@@ -885,6 +887,105 @@ function missingInputsError(pipelineInput: unknown, required: string[]): string 
         : null;
 }
 """
+
+
+#: The emitted ``renderGateMessage``: the TS twin of the Python
+#: ``_render_gate_message`` (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY``),
+#: whose docstrings state the rule. Change it in both and run
+#: tests/test_gate_message.py with ``-m "slow or not slow"``.
+GATE_MESSAGE_HELPER_TS = (
+    r"""/** A gate's message: each `{name}` filled from `values`, its bound inputs.
+ *
+ * A string is used as is; any other value is written as JSON.stringify
+ * writes it, which the Python runtimes reproduce (`_render_gate_message`),
+ * so one run reads the same on every runtime. A placeholder whose value the
+ * run does not have (`roteGateField`) is kept as written. Then every
+ * invisible character (controls, format characters such as bidi overrides,
+ * line and paragraph separators, lone surrogates) is spelled `\uXXXX`, so a
+ * value cannot drive the terminal the message is shown on. The newline and
+ * the tab stay. */
+const ROTE_GATE_PLACEHOLDER = new RegExp(__PLACEHOLDER__, "g");
+const ROTE_GATE_INVISIBLE = /^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]$/u;
+
+/** `source[field]`, or undefined when the run does not have that value (an
+ * omitted optional input, a key an upstream result lacks), so its
+ * placeholder is kept as written. The Python twin is `_gate_input`. */
+function roteGateField(source: unknown, field: string): unknown {
+    return source !== null &&
+        typeof source === "object" &&
+        !Array.isArray(source) &&
+        Object.prototype.hasOwnProperty.call(source, field)
+        ? (source as Record<string, unknown>)[field]
+        : undefined;
+}
+
+function renderGateMessage(template: string, values: Record<string, unknown>): string {
+    const filled = template.replace(ROTE_GATE_PLACEHOLDER, (whole: string, name: string) => {
+        const value = Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+        if (value === undefined) return whole;
+        return typeof value === "string" ? value : String(JSON.stringify(value));
+    });
+    let out = "";
+    for (const ch of filled) {
+        if (ch !== "\n" && ch !== "\t" && ROTE_GATE_INVISIBLE.test(ch)) {
+            const code = ch.codePointAt(0) as number;
+            out +=
+                code <= 0xffff
+                    ? `\\u${code.toString(16).padStart(4, "0")}`
+                    : `\\U${code.toString(16).padStart(8, "0")}`;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+"""
+).replace("__PLACEHOLDER__", json.dumps(GATE_MESSAGE_PLACEHOLDER))
+
+
+def gate_report_ts(node: Node, wait: str | None = None) -> str:
+    """The object a TS runtime reports when its run reaches ``node``.
+
+    The twin of ``_py_common.gate_report_py``: ``{gate, signal, message}``,
+    the message rendered from the gate's actual inputs, or null when the
+    gate has no ``message_template``, plus the wait's step id when ``wait``
+    is given (the log marker's de-duplication key). Every IR string is a
+    JSON literal (invariant #7).
+    """
+    template = node.notify.message_template if node.notify else None
+    if template:
+        entries = []
+        for name in gate_message_names(node):
+            ref = (node.inputs or {})[name]
+            parsed = parse_input_ref(ref)
+            base = "pipelineInput" if parsed.node_id is None else f"{parsed.node_id}_result"
+            entries.append(
+                f"{json.dumps(name)}: "
+                + (
+                    ref_to_ts_expr(ref)
+                    if parsed.field is None
+                    else f"roteGateField({base}, {json.dumps(parsed.field)})"
+                )
+            )
+        values = ", ".join(entries)
+        message = f"renderGateMessage({json.dumps(template)}, {{ {values} }})"
+    else:
+        message = "null"
+    entries = [
+        f"gate: {json.dumps(node.id)}",
+        f"signal: {json.dumps(node.signal)}",
+        f"message: {message}",
+        *([f"wait: {json.dumps(wait)}"] if wait is not None else []),
+    ]
+    return "{ " + ", ".join(entries) + " }"
+
+
+def gate_message_helper_ts(pipeline: Pipeline) -> str:
+    """:data:`GATE_MESSAGE_HELPER_TS` when a gate has a message, else ""."""
+    has_message = any(
+        n.notify and n.notify.message_template for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    )
+    return GATE_MESSAGE_HELPER_TS if has_message else ""
 
 
 def required_inputs_ts_guard(pipeline: Pipeline, error_class: str, indent: str) -> list[str]:

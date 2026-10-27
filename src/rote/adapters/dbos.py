@@ -95,6 +95,8 @@ from rote.adapters._py_common import (
     cli_input_check,
     fan_out_binding,
     fan_out_list_helper,
+    gate_message_helper,
+    gate_report_py,
     has_legacy_judges,
     helper_module_names,
     impl_kwargs_expr,
@@ -112,6 +114,7 @@ from rote.adapters._py_common import (
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
+from rote.mcp.parked import GATE_STATUS_EVENT
 
 #: The DBOS the emitted main.py targets (rote-cli's own `dbos` extra pins the same).
 DBOS_REQUIREMENT = "dbos>=3.3,<4"
@@ -436,6 +439,11 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     timeout_seconds = _duration_to_seconds(timeout_str)
     return (
         f"    # ─── HITL gate: {node.id} ───\n"
+        f"    # Says which gate the run waits at, and the gate's message, in\n"
+        f"    # the workflow event `rote run` watches. Display only: nothing\n"
+        f"    # is sent to a person or a channel.\n"
+        f"    _rote_gates.append({gate_report_py(node)})\n"
+        f'    DBOS.set_event("{GATE_STATUS_EVENT}", {{"reached": list(_rote_gates)}})\n'
         f"    # Durable receive: the workflow parks in the system database until\n"
         f"    # DBOS.send(workflow_id, payload, topic={node.signal!r})\n"
         f"    # delivers the resume message. Survives process restarts.\n"
@@ -459,6 +467,9 @@ def _is_mcp_backed(node: Node, cfg: DbosAdapterConfig) -> bool:
 def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
+    if pipeline.nodes_by_kind(NodeKind.HITL_GATE):
+        lines.append("    # Every gate this run has reached, for the rote_gate_status event.")
+        lines.append("    _rote_gates: list[dict] = []")
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
@@ -687,6 +698,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         header += "\n\n" + fan_out_list_helper()
     if pipeline.needs_input_check:
         header += "\n\n" + missing_inputs_helper(pipeline)
+    if gate_helper := gate_message_helper(pipeline):
+        header += "\n\n" + gate_helper
 
     has_impls = needs_call_impl(pipeline)
     if has_impls or mcp_backed or has_legacy_judges(pipeline):

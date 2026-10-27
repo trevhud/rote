@@ -35,6 +35,7 @@ from rote.adapters._common import (
     EmitWriter,
     _to_pascal_case,
     agent_loop_output,
+    gate_message_names,
     mcp_tool_arguments,
     py_str_literal,
     safe_docstring_line,
@@ -42,6 +43,7 @@ from rote.adapters._common import (
 from rote.inference import passthrough_answer_schema, structured_output_schema
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
+    GATE_MESSAGE_PLACEHOLDER,
     LLMSignature,
     Node,
     NodeKind,
@@ -226,6 +228,179 @@ def fan_out_list_helper() -> str:
     drift, the same broken pipeline reports differently per target.
     """
     return _FAN_OUT_LIST_HELPER_PY
+
+
+# ───────── gate messages ─────────
+
+#: The emitted ``_render_gate_message`` and what it needs. The TS twin is
+#: ``rote.adapters._ts_common.GATE_MESSAGE_HELPER_TS``; change a rule in
+#: both and run tests/test_gate_message.py with ``-m "slow or not slow"``.
+GATE_MESSAGE_HELPER_PY = r'''
+def _gate_number(value: float) -> str:
+    """``value`` as JavaScript's ``JSON.stringify`` writes a number.
+
+    Both languages pick the same shortest digits; only the layout differs
+    (Python ``2.0`` and ``1e+16``, JavaScript ``2`` and
+    ``10000000000000000``), so the digits come from ``repr`` and the layout
+    follows ECMAScript's Number::toString.
+    """
+    import decimal
+    import math
+
+    if not math.isfinite(value):
+        return "null"
+    if value == 0:
+        return "0"
+    _, digit_tuple, exponent = decimal.Decimal(repr(abs(value))).as_tuple()
+    assert isinstance(exponent, int)
+    padded = "".join(str(d) for d in digit_tuple)
+    digits = padded.rstrip("0")
+    exponent += len(padded) - len(digits)
+    k = len(digits)
+    n = exponent + k
+    if k <= n <= 21:
+        text = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        text = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        text = "0." + "0" * -n + digits
+    else:
+        e = n - 1
+        mantissa = digits if k == 1 else digits[0] + "." + digits[1:]
+        text = mantissa + "e" + ("+" if e >= 0 else "-") + str(abs(e))
+    return ("-" if value < 0 else "") + text
+
+
+def _gate_json(value: object) -> str:
+    """``value`` as JavaScript's ``JSON.stringify`` writes it, compact.
+
+    An integer beyond 2**53 is the double JavaScript would hold, and an
+    object lists its array-index keys ("0", "7") first in numeric order,
+    then the rest in insertion order, as a JavaScript object does. A value
+    JSON cannot carry fails, naming its type.
+    """
+    import json
+    import re
+
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        if abs(value) <= 2**53:
+            return str(value)
+        try:
+            return _gate_number(float(value))
+        except OverflowError:
+            return "null"
+    if isinstance(value, float):
+        return _gate_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_gate_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        for key in value:
+            if not isinstance(key, str):
+                raise TypeError(f"object key {key!r} is not a string")
+        index = sorted(
+            (k for k in value if re.fullmatch("0|[1-9][0-9]*", k) and int(k) <= 2**32 - 2),
+            key=int,
+        )
+        rest = [k for k in value if k not in set(index)]
+        return (
+            "{"
+            + ",".join(
+                json.dumps(k, ensure_ascii=False) + ":" + _gate_json(value[k])
+                for k in index + rest
+            )
+            + "}"
+        )
+    raise TypeError(f"{type(value).__name__} is not a JSON value")
+
+
+def _gate_input(name: str, source: object, field: str) -> dict:
+    """``{name: source[field]}`` when the run has that value, else nothing.
+
+    Spread into a gate's message values, so a value the run does not have
+    (an omitted optional input, a key an upstream result lacks) is absent
+    and its placeholder is kept as written, never a KeyError at the gate.
+    The TS twin is ``roteGateField``.
+    """
+    return {name: source[field]} if isinstance(source, dict) and field in source else {}
+
+
+def _render_gate_message(template: str, values: dict) -> str:
+    """A gate's message: each ``{name}`` filled from ``values``, its bound inputs.
+
+    A string is used as is; any other value is written as JSON, the way the
+    TypeScript runtimes write it (``renderGateMessage``), so one run reads
+    the same on every runtime. A placeholder whose input the run left out
+    (``_gate_input``) is kept as written. Then every invisible
+    character (controls, format characters such as bidi overrides, line
+    and paragraph separators, lone surrogates) is spelled ``\\uXXXX``, so a
+    value cannot drive the terminal the message is shown on. The newline
+    and the tab stay.
+    """
+    import re
+    import unicodedata
+
+    def fill(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in values:
+            return match.group(0)
+        value = values[name]
+        return value if isinstance(value, str) else _gate_json(value)
+
+    out = []
+    for ch in re.sub(__PLACEHOLDER__, fill, template):
+        if ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Cs"):
+            code = ord(ch)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+'''.lstrip("\n").replace("__PLACEHOLDER__", json.dumps(GATE_MESSAGE_PLACEHOLDER))
+
+_gate_namespace: dict[str, Any] = {}
+exec(GATE_MESSAGE_HELPER_PY, _gate_namespace)
+#: The emitted renderer itself, for rote's own tests and callers.
+render_gate_message: Any = _gate_namespace["_render_gate_message"]
+
+
+def gate_message_helper(pipeline: Pipeline) -> str:
+    """:data:`GATE_MESSAGE_HELPER_PY` when a gate has a message, else ""."""
+    has_message = any(
+        n.notify and n.notify.message_template for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    )
+    return GATE_MESSAGE_HELPER_PY if has_message else ""
+
+
+def gate_report_py(node: Node) -> str:
+    """The dict a Python runtime reports when its run reaches ``node``.
+
+    ``{"gate", "signal", "message"}``, the message rendered from the gate's
+    actual inputs, or None when the gate has no ``message_template``. The
+    template is an escaped literal (invariant #7).
+    """
+    template = node.notify.message_template if node.notify else None
+    if template:
+        entries = []
+        for name in gate_message_names(node):
+            parsed = parse_input_ref((node.inputs or {})[name])
+            base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+            entries.append(
+                f"{json.dumps(name)}: {base}"
+                if parsed.field is None
+                else f"**_gate_input({json.dumps(name)}, {base}, {json.dumps(parsed.field)})"
+            )
+        message = f"_render_gate_message({py_str_literal(template)}, {{{', '.join(entries)}}})"
+    else:
+        message = "None"
+    gate, signal = json.dumps(node.id), json.dumps(node.signal)
+    return f'{{"gate": {gate}, "signal": {signal}, "message": {message}}}'
 
 
 _ASYNC_RUNNER_HELPER_PY = '''\

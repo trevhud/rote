@@ -128,6 +128,8 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_message_helper_ts,
+    gate_report_ts,
     impl_input_type_block,
     judge_env_arg,
     llm_clients,
@@ -137,7 +139,7 @@ from rote.adapters._ts_common import (
     required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
-from rote.mcp.parked import AUTH_PARK_MARKER
+from rote.mcp.parked import AUTH_PARK_MARKER, GATE_PARK_MARKER
 
 _GENERATED_BY = "rote.adapters.inngest"
 
@@ -642,7 +644,14 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
         f"        // arrives (inngest.send / POST to the event API). waitForEvent\n"
         f"        // returns null on timeout — and a timed-out wait is memoized, so\n"
         f"        // retrying could never conjure the missing approval. Throw\n"
-        f"        // NonRetriableError: silence is not approval.\n"
+        f"        // NonRetriableError: silence is not approval. First it tells\n"
+        f"        // `rote run` which gate it waits at, and the gate's message (it\n"
+        f"        // prints again on replay; the wait id de-duplicates it). Display\n"
+        f"        // only: nothing is sent anywhere.\n"
+        f"        console.error(\n"
+        f'            "{GATE_PARK_MARKER} " +\n'
+        f"                JSON.stringify({gate_report_ts(node, wait=node.id)}),\n"
+        f"        );\n"
         f"        const {node.id}_event = await step.waitForEvent(\n"
         f"            {json.dumps(node.id)},\n"
         f"            {{ event: {quoted_event}, timeout: {json.dumps(timeout)} }},\n"
@@ -843,6 +852,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
     if pipeline.needs_input_check:
         sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
+    if gate_helper := gate_message_helper_ts(pipeline):
+        sections.append(gate_helper.rstrip("\n"))
     impl_input = impl_input_type_block(function_block)
     if impl_input:
         sections.append(impl_input.rstrip("\n"))

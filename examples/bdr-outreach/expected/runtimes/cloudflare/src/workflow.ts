@@ -111,6 +111,52 @@ function missingInputsError(pipelineInput: unknown, required: string[]): string 
         : null;
 }
 
+/** A gate's message: each `{name}` filled from `values`, its bound inputs.
+ *
+ * A string is used as is; any other value is written as JSON.stringify
+ * writes it, which the Python runtimes reproduce (`_render_gate_message`),
+ * so one run reads the same on every runtime. A placeholder whose value the
+ * run does not have (`roteGateField`) is kept as written. Then every
+ * invisible character (controls, format characters such as bidi overrides,
+ * line and paragraph separators, lone surrogates) is spelled `\uXXXX`, so a
+ * value cannot drive the terminal the message is shown on. The newline and
+ * the tab stay. */
+const ROTE_GATE_PLACEHOLDER = new RegExp("\\{([A-Za-z_][A-Za-z0-9_]*)\\}", "g");
+const ROTE_GATE_INVISIBLE = /^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]$/u;
+
+/** `source[field]`, or undefined when the run does not have that value (an
+ * omitted optional input, a key an upstream result lacks), so its
+ * placeholder is kept as written. The Python twin is `_gate_input`. */
+function roteGateField(source: unknown, field: string): unknown {
+    return source !== null &&
+        typeof source === "object" &&
+        !Array.isArray(source) &&
+        Object.prototype.hasOwnProperty.call(source, field)
+        ? (source as Record<string, unknown>)[field]
+        : undefined;
+}
+
+function renderGateMessage(template: string, values: Record<string, unknown>): string {
+    const filled = template.replace(ROTE_GATE_PLACEHOLDER, (whole: string, name: string) => {
+        const value = Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+        if (value === undefined) return whole;
+        return typeof value === "string" ? value : String(JSON.stringify(value));
+    });
+    let out = "";
+    for (const ch of filled) {
+        if (ch !== "\n" && ch !== "\t" && ROTE_GATE_INVISIBLE.test(ch)) {
+            const code = ch.codePointAt(0) as number;
+            out +=
+                code <= 0xffff
+                    ? `\\u${code.toString(16).padStart(4, "0")}`
+                    : `\\U${code.toString(16).padStart(8, "0")}`;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
 /** The input type an impl declares, so a call can be checked against it.
  *
  * The implement skill says to replace a stub's `unknown` input with a real
@@ -267,7 +313,14 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── HITL gate: contact_review_gate ───
         // Workflow suspends here until an event of type 'contact_review_approved'
         // arrives. Survives hibernation; events that arrive before this
-        // line is reached are buffered and delivered when reached.
+        // line is reached are buffered and delivered when reached. First
+        // it tells `rote run` which gate it waits at, and the gate's
+        // message (it can print again on replay; the wait name
+        // de-duplicates it). Display only: nothing is sent anywhere.
+        console.error(
+            "rote-gate-park " +
+                JSON.stringify({ gate: "contact_review_gate", signal: "contact_review_approved", message: renderGateMessage("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", { "drug_brand": roteGateField(pipelineInput, "drug_brand"), "condition_acronym": roteGateField(pipelineInput, "condition_acronym") }), wait: "contact_review_gate" }),
+        );
         const contact_review_gate_event = await step.waitForEvent<any>(
             "contact_review_gate",
             { type: "contact_review_approved", timeout: "7 days" },
@@ -368,7 +421,14 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── HITL gate: manual_enrollment_handoff ───
         // Workflow suspends here until an event of type 'bdr_enrollment_complete'
         // arrives. Survives hibernation; events that arrive before this
-        // line is reached are buffered and delivered when reached.
+        // line is reached are buffered and delivered when reached. First
+        // it tells `rote run` which gate it waits at, and the gate's
+        // message (it can print again on replay; the wait name
+        // de-duplicates it). Display only: nothing is sent anywhere.
+        console.error(
+            "rote-gate-park " +
+                JSON.stringify({ gate: "manual_enrollment_handoff", signal: "bdr_enrollment_complete", message: renderGateMessage("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", { "campaign_name": roteGateField(pipelineInput, "drug_brand"), "report_markdown": roteGateField(pre_enrollment_report_result, "report_markdown") }), wait: "manual_enrollment_handoff" }),
+        );
         const manual_enrollment_handoff_event = await step.waitForEvent<any>(
             "manual_enrollment_handoff",
             { type: "bdr_enrollment_complete", timeout: "14 days" },

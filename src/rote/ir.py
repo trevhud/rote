@@ -97,7 +97,9 @@ _PIPELINE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 #: A ``notify.message_template`` placeholder: ``{name}``, one key of the
 #: node's ``inputs:``. The compiled skill's driver fills it with this exact
 #: pattern (``rote.skill_target._driver._GATE_PLACEHOLDER``, pinned by a
-#: parity test). No other runtime sends the message.
+#: parity test), and so does every workflow runtime's emitted renderer
+#: (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY`` and its TS twin).
+#: No runtime sends the message anywhere; see ``NotifyConfig``.
 GATE_MESSAGE_PLACEHOLDER = r"\{([A-Za-z_][A-Za-z0-9_]*)\}"
 _GATE_MESSAGE_PLACEHOLDER_RE = re.compile(GATE_MESSAGE_PLACEHOLDER)
 
@@ -271,22 +273,51 @@ class TerminationConfig(BaseModel):
 
 
 class NotifyConfig(BaseModel):
-    """How a hitl_gate notifies the human reviewer."""
+    """What a hitl_gate tells the person it waits for.
+
+    Display only, on every runtime. ``message_template`` is rendered and
+    shown; ``channel`` and ``target`` are documentation that nothing reads,
+    so no Slack message, email or webhook is ever sent.
+
+    On the workflow runtimes (dbos, dbos-ts, temporal, cloudflare, inngest;
+    python refuses gates) the gate renders ``message_template`` with its
+    actual input values when the run reaches it, and reports
+    ``{gate, signal, message}`` where ``rote run`` watches the run: the
+    ``rote_gate_status`` workflow event on DBOS, the ``rote_gate_status``
+    query on Temporal, and a ``rote-gate-park`` log line on Cloudflare and
+    Inngest (``rote.mcp.parked``). ``rote run`` prints the message on stderr
+    when it says the run waits at that gate. The rule is one rule in both
+    languages (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY``): a string
+    value as is, any other value as JavaScript's ``JSON.stringify`` writes
+    it, a placeholder whose value the run does not have (an omitted optional
+    input, a key an upstream result lacks) kept as written, and
+    invisible characters spelled ``\\uXXXX``. The compiled skill shows the
+    message in its HUMAN block (``rote.skill_target``), by its own rule.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     # Both optional: a skill rarely names where its approval goes, the compile
-    # must not invent one, and no runtime sends to them (the compiled skill
-    # reaches the person through its agent, with the message alone).
-    channel: str | None = Field(default=None, description="slack | email | webhook")
+    # must not invent one, and no runtime sends to them.
+    channel: str | None = Field(
+        default=None,
+        description="slack | email | webhook. Documentation only: no runtime sends to it",
+    )
     target: str | None = Field(
-        default=None, description="Channel name, email address, or webhook URL"
+        default=None,
+        description=(
+            "Channel name, email address, or webhook URL. Documentation only: "
+            "no runtime sends to it"
+        ),
     )
     message_template: str | None = Field(
         default=None,
         description=(
             "Message for the person. Each {name} placeholder is a key of the "
-            "gate's inputs: (validated) and is filled with that input's value."
+            "gate's inputs: (validated) and is filled with that input's value. "
+            "Workflow runtimes render it when the run reaches the gate and "
+            "`rote run` prints it; the compiled skill shows it in its HUMAN "
+            "block. It is never sent to a channel."
         ),
     )
 
