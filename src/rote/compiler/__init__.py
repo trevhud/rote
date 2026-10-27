@@ -70,6 +70,7 @@ from rote.compiler.update import (
     build_update_plan,
     render_update_brief,
 )
+from rote.compiler.usage import CompileUsage, compile_usage
 from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
@@ -117,10 +118,17 @@ class CompilationResult:
     #: verification is not ``ok`` still returns: the artifacts are the
     #: output of a paid run. The CLI reports it and exits non-zero.
     verification: Verification | None = None
+    #: What the compile's model calls are known to have used, stage by
+    #: stage (:mod:`rote.compiler.usage`). ``None`` when the compiler that
+    #: built this result reported none, which the CLI reports as unknown.
+    usage: CompileUsage | None = None
 
 
-def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
-    """Persist bounded metrics before adapters can fail; never copy driver prose."""
+def _write_compile_metrics(result: DriverResult, output_dir: Path) -> CompileUsage:
+    """Persist bounded metrics before adapters can fail; never copy driver prose.
+
+    Returns the usage it recorded, which the CLI reports, so the file and
+    every other report are one computation."""
     metadata: dict[str, Any] = {}
     for key in (
         "input_tokens",
@@ -146,7 +154,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     ):
         metadata["session_id"] = session_id
     source = result.metadata.get("usage_source")
-    if source in ("stream", "usage", "modelUsage", "generations"):
+    if source in ("stream", "usage", "modelUsage", "generations", "turn.completed"):
         metadata["usage_source"] = source
     complete = result.metadata.get("usage_complete")
     if isinstance(complete, bool):
@@ -162,10 +170,14 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     search = result.metadata.get("web_search_usd")
     if isinstance(search, (int, float)) and not isinstance(search, bool) and search >= 0:
         metadata["web_search_usd"] = search
+    usage = compile_usage(result.driver_name, metadata, output_dir)
     payload: dict[str, Any] = {
         "schema_version": 1,
         "driver": result.driver_name,
         "metadata": metadata,
+        # Every stage, so an empty metadata object reads as unmeasured, not
+        # as a free run (rote.compiler.usage).
+        "usage": usage.as_dict(),
     }
     if "cost_usd" in metadata:
         payload["cost_basis"] = "driver_estimate"
@@ -190,6 +202,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    return usage
 
 
 def _default_compiler_skill_dir() -> Path:
@@ -589,6 +602,8 @@ class Compiler:
                     driver_metadata={
                         "update": "no source sections changed; previous pipeline kept"
                     },
+                    # No model call ran: a measured zero, not a missing count.
+                    usage=CompileUsage([]),
                 )
 
         driver = self.select_driver()
@@ -929,7 +944,7 @@ class Compiler:
             else:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
-            _write_compile_metrics(result, output_dir)
+            usage = _write_compile_metrics(result, output_dir)
             tool_grounding.write_declared(output_dir, grounding.tools)
             if self.emit_target is not None and self.emit_target.external_backend in BACKENDS:
                 # Beside the IR, never in it: a later `rote emit` must not
@@ -1007,6 +1022,7 @@ class Compiler:
                 driver_name=result.driver_name,
                 driver_metadata=metadata,
                 verification=verification,
+                usage=usage,
             )
 
     async def _generate_text(
@@ -1325,6 +1341,10 @@ class Compiler:
                 # and lays text.yaml over it, so an edit to pipeline.yaml alone
                 # is undone and the same error comes back.
                 instruction += SYSTEM1_REPAIR_NOTE
+            if portable_judges:
+                # A refused input field is not a verification finding: say why,
+                # or the agent sees only the field still missing.
+                instruction += system1.added_inputs.refusal_note(artifact_dir) or ""
             if invalid:
                 invalid_attempts += 1
             else:

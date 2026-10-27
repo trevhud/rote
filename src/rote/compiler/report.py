@@ -211,8 +211,13 @@ def _open_questions(
         if not impl.blocks_run:
             continue
         reason = impl.reason or "no reason given"
+        title = (
+            f"### Unresolved call: {impl.node_id}"
+            if impl.unsent_constants
+            else f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})"
+        )
         lines += [
-            f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})",
+            title,
             "",
             _quoted(reason),
             "",

@@ -297,13 +297,81 @@ def test_compile_metrics_survive_adapter_failure(
     assert "may hold a partial emit" in err
     assert "Nothing in" not in err
     metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
+    tokens = {"input": 32, "output": 71693, "cache_write": 226483, "cache_read": 3270597}
     assert metrics == {
         "schema_version": 1,
         "driver": "fake",
         "metadata": metadata,
         "cost_basis": "driver_estimate",
+        "usage": {
+            "status": "complete",
+            "complete": True,
+            "tokens": tokens,
+            "stages": [{"stage": "agent", "status": "measured", "tokens": tokens}],
+            "missing": [],
+        },
     }
     assert (output / "compiled" / "pipeline.yaml").is_file()
+
+
+def test_a_compile_with_no_driver_usage_reads_as_unavailable_everywhere(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#295: a codex compile's driver reported no usage, and the progress
+    summary said four zeros and ``usage_complete: true``. Every report must
+    say unknown: compile-metrics.json, ``--json``, the human summary and the
+    final progress.jsonl line."""
+    from rote.cli import main
+
+    class _NoUsageDriver(_FakeDriver):
+        name = "codex"
+
+    driver = _NoUsageDriver(VALID_YAML, metadata={"driver": "codex"})
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    output = tmp_path / "run"
+    main(
+        [
+            "compile",
+            str(fake_skill_dir),
+            "--local",
+            "--tiebreak",
+            "none",
+            "--structure",
+            "rules",
+            "--runtime",
+            "dbos",
+            "--no-eval",
+            "--json",
+            "--out",
+            str(output),
+        ]
+    )
+    captured = capsys.readouterr()
+    reason = "agent: the codex driver reported no token usage"
+
+    metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
+    assert metrics["metadata"] == {}
+    assert metrics["usage"]["status"] == "unavailable"
+    assert metrics["usage"]["complete"] is False
+    assert metrics["usage"]["tokens"] is None
+    assert metrics["usage"]["missing"] == [reason]
+
+    payload = json.loads(captured.out)
+    assert payload["usage"] == metrics["usage"]
+
+    lines = (output / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+    summary = json.loads(lines[-1])
+    assert summary["type"] == "summary"
+    assert summary["total_tokens"] is None
+    assert summary["usage_complete"] is False
+    assert summary["usage_status"] == "unavailable"
+    assert summary["usage_missing"] == [reason]
+    assert "cost_usd" not in summary
+
+    assert f"  usage: unavailable ({reason})" in captured.err
 
 
 @pytest.mark.asyncio
@@ -335,6 +403,8 @@ async def test_compile_metrics_exclude_prose_and_preserve_incomplete_usage(
     await Compiler(system1=False).compile(fake_skill_dir, output)
     text = (output / "compile-metrics.json").read_text()
     assert "sensitive-value" not in text
+    known = {"input": 3, "output": None, "cache_write": None, "cache_read": 61263}
+    why = "the fake driver's usage is incomplete (no output, cache_write count)"
     assert json.loads(text) == {
         "schema_version": 1,
         "driver": "fake",
@@ -344,6 +414,14 @@ async def test_compile_metrics_exclude_prose_and_preserve_incomplete_usage(
             "cache_read_tokens": 61263,
             "usage_complete": False,
             "usage_source": "stream",
+        },
+        # Known amounts kept; the unknown ones stay null, never zero.
+        "usage": {
+            "status": "partial",
+            "complete": False,
+            "tokens": known,
+            "stages": [{"stage": "agent", "status": "partial", "tokens": known, "reason": why}],
+            "missing": [f"agent: {why}"],
         },
     }
 

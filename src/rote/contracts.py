@@ -569,15 +569,22 @@ class NodeImplementation:
     #: stop a run. False on the ``api`` backend and on python and temporal,
     #: where the function is the call.
     mcp_backed: bool = False
+    #: Constants an MCP-backed node never sends its tool
+    #: (:func:`rote.adapters._common.unsent_constants`): the call runs without
+    #: the values the skill states, so the node cannot do its job.
+    unsent_constants: tuple[str, ...] = ()
 
     @property
     def blocks_run(self) -> bool:
-        """Whether the emitted app fails on this node: its function is called
-        and is not implemented. ``rote run``'s preflight reads the same
-        answer off the emitted directory (``unimplemented_stubs``)."""
+        """Whether the emitted app cannot do this node's work: its function is
+        called and is not implemented, or its MCP call never receives the
+        values the skill states. ``rote run``'s preflight reads the stub half
+        off the emitted directory (``unimplemented_stubs``)."""
+        if self.mcp_backed and self.unsent_constants:
+            return True
         return self.status != "implemented" and not self.mcp_backed
 
-    def as_dict(self) -> dict[str, str | bool | None]:
+    def as_dict(self) -> dict[str, str | bool | list[str] | None]:
         return {
             "node": self.node_id,
             "kind": self.kind,
@@ -585,6 +592,7 @@ class NodeImplementation:
             "status": self.status,
             "reason": self.reason,
             "mcp_backed": self.mcp_backed,
+            "unsent_constants": list(self.unsent_constants),
         }
 
 
@@ -653,7 +661,7 @@ def implementation_status(
     NotImplementedError somewhere" check cannot give once a module mixes
     real functions with stubs.
     """
-    from rote.adapters._common import mcp_backed
+    from rote.adapters._common import mcp_backed, unsent_constants
 
     root = Path(artifact_dir)
     trees: dict[Path, ast.Module | None] = {}
@@ -670,6 +678,14 @@ def implementation_status(
                 # check_contracts reports why the module is unreadable.
                 trees[path] = None
         status, reason = _symbol_status(trees[path], symbol)
+        backed = mcp_backed(node, runtime, external_backend)
+        unsent = tuple(unsent_constants(node)) if backed else ()
+        if unsent:
+            assert node.mcp is not None
+            reason = (
+                f"its {', '.join(unsent)} never reach {node.mcp.server}.{node.mcp.tool}: "
+                "mcp.args names none of them"
+            )
         statuses.append(
             NodeImplementation(
                 node_id=node.id,
@@ -677,7 +693,8 @@ def implementation_status(
                 impl=node.impl,
                 status=status,
                 reason=reason,
-                mcp_backed=mcp_backed(node, runtime, external_backend),
+                mcp_backed=backed,
+                unsent_constants=unsent,
             )
         )
     return statuses

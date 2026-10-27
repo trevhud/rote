@@ -143,6 +143,20 @@ def judge_override_readme(pipeline: Pipeline) -> str:
 # ───────── Prose → safe code comment/docstring ─────────
 
 
+def unsent_constants(node: Node) -> list[str]:
+    """The constants an MCP-bound node never sends its tool.
+
+    A constant reaches a tool only when ``mcp.args`` names it
+    (:func:`mcp_tool_arguments`); an omitted ``mcp.args`` sends the inputs,
+    never the constants. So a constant ``mcp.args`` does not name is dead
+    config: the document id or search query the skill states never reaches
+    the call (#291). Empty for a node with no binding."""
+    if node.mcp is None or not node.constants:
+        return []
+    named = {v for v in (node.mcp.args or {}).values() if isinstance(v, str)}
+    return [c for c in node.constants if c not in named]
+
+
 def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     """How an MCP-bound step builds its tool arguments, on every runtime.
 

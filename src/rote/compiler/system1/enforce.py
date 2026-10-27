@@ -12,6 +12,11 @@ The agent may also write ``system1/proposals.yaml`` (a list of
 (does the node exist, is the field a decision, would the IR still load
 with it) and listed in the report with that verdict. They are not applied:
 applying one would be an LLM making a decision.
+
+The one exception is a pipeline input field a module needs: the agent may
+add one through ``system1/input_fields.yaml``, which code checks and lays
+over the skeleton's input schema at every settle
+(:mod:`rote.compiler.system1.added_inputs`).
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Any
 
 import yaml
 
+from rote.compiler.system1 import added_inputs
 from rote.compiler.system1.skeleton import BRIEF_DIRNAME, SKELETON_FILENAME
 from rote.ir import Pipeline
 
@@ -159,8 +165,19 @@ def _merge_spec(
     return merged
 
 
-def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
+def enforce(
+    work_dir: Path,
+    *,
+    final: bool = False,
+    skill_dir: Path | None = None,
+    sample_payload: Any = None,
+) -> list[str]:
     """Restore System-1's decisions in ``work_dir/pipeline.yaml``; return what changed.
+
+    The decided input schema is the skeleton's plus the fields the agent
+    added through ``system1/input_fields.yaml``, each checked against
+    ``skill_dir`` and the sample (:mod:`rote.compiler.system1.added_inputs`).
+    That is the only decision the agent can extend, and only by adding.
 
     A ``pipeline.yaml`` the agent left unparseable (a real compile wrote a
     description with an unquoted colon) is left alone during repair rounds,
@@ -169,6 +186,7 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
     review and the skeleton is restored: the decisions never depended on it.
     """
     skeleton = _load(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME)
+    added = added_inputs.settle(work_dir, skeleton, skill_dir, sample_payload)
     path = work_dir / "pipeline.yaml"
     changes: list[str] = []
     try:
@@ -177,7 +195,12 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
         if not final:
             return _record(work_dir, ["pipeline.yaml is not valid YAML; sent back for repair"])
         shutil.copyfile(path, work_dir / BRIEF_DIRNAME / INVALID_AGENT_PIPELINE)
-        shutil.copyfile(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME, path)
+        if added.applied:
+            path.write_text(
+                yaml.safe_dump(skeleton, sort_keys=False, allow_unicode=True), encoding="utf-8"
+            )
+        else:
+            shutil.copyfile(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME, path)
         detail = " ".join(str(err).split())[:160]
         return _record(
             work_dir,

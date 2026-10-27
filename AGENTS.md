@@ -402,6 +402,17 @@ Event lines (`None` fields omitted):
   instead of running `rote analyze` again. `roteness`/`node_kinds` are
   terminal (they need the finished pipeline), so they appear only here, not in
   the per-turn stream.
+- `total_tokens` covers every stage that called a model (`usage_stages`: the
+  System-1 structure pass, tie-break and decision model, then the agent's run
+  with its repair rounds). `usage_status` is `complete`, `partial` or
+  `unavailable`, and `usage_missing` names each stage that was not measured.
+  Nothing measured is `total_tokens: null` with `usage_complete: false`, never
+  zeros. `--json` and `compiled/compile-metrics.json` carry the same `usage`
+  block.
+- `verification.status` is `failed` exactly when the compile exits 1 for an
+  unresolved problem (`error_count` of them); the human summary then shows no
+  checkmark and no `rote run` suggestion. `contract_errors` counts the static
+  contract check's errors and final verification's, each once.
 
 ## MCP-authenticated steps: the park-on-auth loop
 

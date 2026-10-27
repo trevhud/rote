@@ -27,7 +27,16 @@ the compile report itself. Your job is the implementations, and only those.
 
 If you think a decision is wrong, add an entry to `system1/proposals.yaml`
 (a YAML list of `{node, field, value, reason}`). rote lists it for a person
-and never applies it. **Never cite `system1/` files or `pipeline.yaml` in a
+and never applies it.
+
+The one decision you can extend is the pipeline input. When a module needs
+a value the skill says the caller supplies and the input schema lacks it,
+add an entry to `system1/input_fields.yaml` (a YAML list of `{name, type,
+required, description, quote}`: an identifier, a JSON type, true or false,
+one line, and the skill's own words that ask for the value, verbatim). rote
+adds it to the input schema and lists it for review. It only adds: it never
+renames, retypes or removes a field, and a field the sample input lacks
+cannot be required. **Never cite `system1/` files or `pipeline.yaml` in a
 `# skill:` comment.** Cite only the skill's own text.
 
 ## What you write, in four turns (five with `--backend api`)

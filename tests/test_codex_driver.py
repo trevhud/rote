@@ -412,3 +412,97 @@ async def test_empty_last_message_yields_minimal_metadata(
     driver = CodexDriver()
     result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata == {"driver": "codex"}
+
+
+# ───────── Usage (#295) ─────────
+
+
+def _event(obj: dict[str, Any]) -> str:
+    import json
+
+    return json.dumps(obj)
+
+
+@pytest.mark.asyncio
+async def test_usage_is_the_last_turn_completed_split_into_buckets(
+    fake_skills: tuple[Path, Path, Path],
+    fake_codex_subprocess,  # noqa: ANN001
+) -> None:
+    """``turn.completed`` carries the thread's running total (codex-rs fills
+    it from ``ThreadTokenUsageUpdated.total``), so the last one is the run:
+    summing would count the first turn twice. Its ``input_tokens`` holds the
+    cached reads and cache writes, which are split out, never left inside
+    the uncached input."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    stdout = "\n".join(
+        [
+            _event({"type": "thread.started", "thread_id": "t"}),
+            _event({"type": "turn.started"}),
+            _event(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 40,
+                        "cache_write_input_tokens": 10,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 0,
+                    },
+                }
+            ),
+            "not json",
+            _event({"type": "item.completed", "item": {"type": "agent_message", "text": "x"}}),
+            _event(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 300,
+                        "cached_input_tokens": 120,
+                        "cache_write_input_tokens": 30,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 8,
+                    },
+                }
+            ),
+        ]
+    )
+    recorder = fake_codex_subprocess(
+        stdout_text=stdout, write_files={"pipeline.yaml": VALID_PIPELINE_YAML}
+    )
+    result = await CodexDriver().run(skill_dir, compiler_dir, work_dir)
+    assert "--json" in list(recorder.calls[0]["args"])
+    meta = result.metadata
+    assert meta["input_tokens"] == 150
+    assert meta["cache_read_tokens"] == 120
+    assert meta["cache_write_tokens"] == 30
+    # Reasoning is already inside output_tokens: not added again.
+    assert meta["output_tokens"] == 20
+    assert meta["usage_source"] == "turn.completed"
+    assert meta["usage_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_reports_no_usage_rather_than_zero(
+    fake_skills: tuple[Path, Path, Path],
+    fake_codex_subprocess,  # noqa: ANN001
+) -> None:
+    """A run that wrote the pipeline but never completed a turn has no
+    usage report; no token key may appear, or it would read as zero."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    stdout = "\n".join(
+        [
+            _event({"type": "turn.started"}),
+            _event({"type": "turn.failed", "error": {"message": "stream disconnected"}}),
+        ]
+    )
+    fake_codex_subprocess(
+        stdout_text=stdout, returncode=1, write_files={"pipeline.yaml": VALID_PIPELINE_YAML}
+    )
+    result = await CodexDriver().run(skill_dir, compiler_dir, work_dir)
+    assert not {
+        "input_tokens",
+        "output_tokens",
+        "cache_write_tokens",
+        "cache_read_tokens",
+        "usage_complete",
+    } & set(result.metadata)
