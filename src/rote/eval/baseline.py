@@ -196,6 +196,11 @@ def mcp_servers_from_registry() -> dict[str, dict[str, Any]]:
     return servers
 
 
+#: How :func:`read_only_allowlist` begins the reason for a server it could
+#: not list because it needs a login.
+AUTH_SKIP_PREFIX = "not authenticated"
+
+
 async def read_only_allowlist(
     server_names: list[str],
 ) -> tuple[list[str], list[str], dict[str, str]]:
@@ -224,7 +229,7 @@ async def read_only_allowlist(
             async with client:
                 tools = await client.list_tools()
         except RoteMcpAuthNeeded:
-            skipped[server] = "not authenticated — rote mcp login " + server
+            skipped[server] = AUTH_SKIP_PREFIX + " — rote mcp login " + server
             continue
         except Exception as e:  # noqa: BLE001 — a dead server must not sink the baseline
             skipped[server] = f"unreachable ({type(e).__name__}: {e})"

@@ -201,6 +201,7 @@ def test_the_picker_shows_host_scope_work_and_reasons(tmp_path: Path) -> None:
         def checkbox(self, message: str, choices: Any, *, flag: str, default: Any = ()) -> Any:
             if flag == "--only":
                 seen["choices"] = {c.label: c for c in choices}
+                seen["order"] = [c.label for c in choices]
             return super().checkbox(message, choices, flag=flag, default=default)
 
     servers = {**DEFAULT_SERVERS, "deepwiki": _http("https://mcp.deepwiki.com/mcp")}
@@ -219,6 +220,16 @@ def test_the_picker_shows_host_scope_work_and_reasons(tmp_path: Path) -> None:
     assert "stdio" not in {c.label for c in choices.values()}
     assert "local_tool" not in choices  # not importable: a row, not a choice
     assert "WORK" not in choices["mslearn"].hint
+    # What can be imported leads, the user's own before work servers, and
+    # what is already registered comes last.
+    order = seen["order"]
+    assert order[-1] == "deepwiki"
+    assert order.index("mslearn") < order.index("acme_crm")
+    assert all(
+        order.index(n) < order.index("acme_crm")
+        for n in order
+        if n not in ("acme_crm", "deepwiki") and "WORK" not in choices[n].hint
+    )
 
 
 def test_only_picks_by_name_and_refuses_what_it_cannot_import(tmp_path: Path) -> None:
