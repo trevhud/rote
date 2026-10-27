@@ -20,6 +20,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   retry. A declared `retry:` is unchanged. `tests/test_retry_parity*.py`
   counts the attempts on all six runtimes.
 
+- **A failing generated test shows its local values to the repair.** The
+  test run passes `--showlocals`, so a failed assertion on an overall
+  outcome now carries the finding that caused it (a $2,500 meals line that
+  also trips the $75 meals cap). pytest shortens each value when not
+  verbose, so the output budget holds.
+- **System-1's test rules name the three mistakes behind most red tests.**
+  GENERATE.md now says to build each case from one clean fixture changing
+  only the field a rule reads, to compute expected numbers in the test
+  instead of by hand, and to pass inputs shaped like the sample (JSON
+  numbers, never `Decimal`).
+
 ### Fixed
 
 - **A compile checks the boundaries its generated tests cannot see (#291).**
