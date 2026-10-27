@@ -309,11 +309,13 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
     (case,) = [c for c in load_cases(EXAMPLES / "expense-audit").cases if c.id == "second_batch"]
     (reply,) = case.gates
     install(capsys, compiled, tmp_path / "expense-audit", tmp_path, skill=compiled.parent / "skill")
-    # The report lands under the working directory: the driver runs in the agent's.
-    # EXPENSE_AUDIT_REPORT_DIR is set only on the DBOS side below, because
-    # `rote skill run` passes the driver an allowlisted environment
-    # (rote.skill_target.launch.child_env), so a module's own env var never
-    # reaches it there. That gap is trevhud/rote#267.
+    # One finance folder for both sides. file_report declares
+    # EXPENSE_AUDIT_REPORT_DIR (env: in pipeline.yaml), so `rote skill run`
+    # passes it to the driver's allowlisted environment as DBOS's full one has
+    # it (#267). The working directory is elsewhere, so a run that dropped the
+    # variable would write to <cwd>/reports instead and fail below.
+    reports = tmp_path / "finance"
+    monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(reports))
     monkeypatch.chdir(tmp_path)
     said = "Approve 2410 and 2440, reject 2403 and 2413. Priya"
     done, asked = drive_to_done(
@@ -323,19 +325,21 @@ def test_expense_audit_with_a_controllers_answer_matches_its_pipeline(
     gate = json.loads((run_dir(done) / "nodes" / "controller_review.json").read_text())
     assert (gate["answered_by"], gate["said"]) == ("human", said)
     skill_side = result_of(done)
+    skill_report = (reports / Path(skill_side["file_report"]["report_path"]).name).read_bytes()
     pipeline_side = pipeline_result(
         compiled,
         case.input,
         tmp_path / "p",
-        env={"EXPENSE_AUDIT_REPORT_DIR": str(tmp_path / "pipeline-reports")},
+        env={"EXPENSE_AUDIT_REPORT_DIR": str(reports)},
         gates={"controller_review": reply},
     )
-    # Each side wrote its own report file: the same name and the same bytes.
-    paths = [Path(r["file_report"].pop("report_path")) for r in (skill_side, pipeline_side)]
-    assert paths[0].parent == tmp_path / "reports"
-    assert paths[1].parent == tmp_path / "pipeline-reports"
-    assert paths[0].name == paths[1].name
-    assert paths[0].read_text(encoding="utf-8") == paths[1].read_text(encoding="utf-8")
+    # Both sides wrote the same file in the same folder, with the same bytes,
+    # and nothing landed in the working directory's default.
+    paths = [Path(r["file_report"]["report_path"]) for r in (skill_side, pipeline_side)]
+    assert paths[0] == paths[1]
+    assert paths[0].parent == reports
+    assert paths[0].read_bytes() == skill_report
+    assert not (tmp_path / "reports").exists()
     assert differing_fields(skill_side, pipeline_side) == []
     assert skill_side["file_report"]["reviewer"] == "Priya Shah"
 

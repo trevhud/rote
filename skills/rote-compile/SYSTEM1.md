@@ -76,6 +76,8 @@ How the modules plug in:
   list, because a later node fans out over it.
 - Import rule-table values from `extracted.rule_tables` instead of
   retyping them.
+- A module that reads an environment variable reads it by a literal name,
+  and its node lists the name in `env:` in pipeline.yaml.
 
 `system1/text.yaml` maps node ids to the text fields only you can write:
 

@@ -34,6 +34,7 @@ nodes:
     kind: external_call
     description: Search Gmail for dock activity threads.
     impl: extracted/gmail.py:search_dock_emails
+    env: [GMAIL_ACCESS_TOKEN]
     mcp:
       server: gmail
       tool: search_threads

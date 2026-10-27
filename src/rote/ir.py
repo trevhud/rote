@@ -33,6 +33,8 @@ from pydantic import (
     model_validator,
 )
 
+from rote.env_vars import ENV_NAME_RE, reserved_reason
+
 # ───────── Data-flow input references ─────────
 #
 # A node declares where its runtime inputs come from via ``inputs:``,
@@ -735,6 +737,28 @@ class Node(BaseModel):
                 raise ValueError(f"constant key {key!r} must be a valid identifier")
         return v
 
+    @field_validator("env")
+    @classmethod
+    def _validate_env(cls, v: list[str] | None) -> list[str] | None:
+        """Each name is passed through into a compiled skill's driver, so it must
+        be a variable name and not one the driver's allowlist exists to keep out
+        or sets itself (:func:`rote.env_vars.reserved_reason`)."""
+        if v is None:
+            return None
+        for name in v:
+            if not ENV_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"env name {name!r} must be a variable name (letters, digits, "
+                    "underscore; not starting with a digit)"
+                )
+            reason = reserved_reason(name)
+            if reason is not None:
+                raise ValueError(f"env cannot declare {name}: {reason}")
+        dupes = sorted({n for n in v if v.count(n) > 1})
+        if dupes:
+            raise ValueError(f"env names {', '.join(dupes)} more than once")
+        return v
+
     @field_validator("phase", mode="before")
     @classmethod
     def _coerce_phase_to_string(cls, v: Any) -> str | None:
@@ -804,6 +828,17 @@ class Node(BaseModel):
             "'percent' (75 is 75 percent), 'currency:USD', 'days', 'count'... "
             "Documentation for the module's author and the reviewer; the impl "
             "still receives the bare number as its keyword argument."
+        ),
+    )
+    env: list[str] | None = Field(
+        default=None,
+        description=(
+            "pure_function / external_call only: the environment variables "
+            "this node's code reads (os.environ / os.getenv), by name. Every "
+            "workflow runtime runs code in the full process environment; a "
+            "compiled skill's driver gets an allowlisted one, so it passes "
+            "exactly these from the caller (rote.skill_target.launch). "
+            "Verification refuses a literal read a node does not declare."
         ),
     )
     cache: CacheConfig | None = None
@@ -976,6 +1011,12 @@ class Node(BaseModel):
         # agent loop "mandatory" — that's a no-op)
         if self.mandatory and kind is NodeKind.AGENT_LOOP:
             raise ValueError(f"Node {self.id!r}: mandatory=true is not allowed on agent_loop nodes")
+
+        # Only an impl reads the environment: other kinds run no node code.
+        if self.env and kind not in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
+            raise ValueError(
+                f"Node {self.id!r}: env is only allowed on pure_function and external_call nodes"
+            )
 
         # An MCP binding is only meaningful on an external_call (it's how that
         # node reaches a vendor). Reject it elsewhere so the field can't drift.

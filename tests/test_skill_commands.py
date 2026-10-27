@@ -1319,3 +1319,90 @@ def test_the_driver_keeps_rotes_bytecode_and_writes_none_into_the_skill(
         assert status == 0, out + err
         assert header(out)["kind"] == "DONE"
     assert list(digest.rglob("__pycache__")) == []
+
+
+# ───────── the variables a node's code reads (#267) ─────────
+
+ENV_PIPELINE: dict[str, Any] = {
+    "name": "where-to",
+    "version": "0.1.0",
+    "input": {"type": "In", "required": ["n"]},
+    "nodes": [
+        {
+            "id": "located",
+            "kind": "pure_function",
+            "description": "Say where the report goes.",
+            "impl": "extracted/where.py:locate",
+            "env": ["WHERE_TO_REPORT_DIR"],
+            "inputs": {"n": "pipeline.input.n"},
+        }
+    ],
+    "edges": [],
+    "entry_nodes": ["located"],
+    "exit_nodes": ["located"],
+}
+WHERE_MODULE = (
+    "import os\n\n\n"
+    "def locate(n):\n"
+    "    return {'dir': os.environ.get('WHERE_TO_REPORT_DIR'),\n"
+    "            'other': os.environ.get('WHERE_TO_OTHER')}\n"
+)
+
+
+def test_a_run_passes_exactly_the_variables_the_ir_declares(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module's own variable reaches the driver when its node declares it, and
+    a variable the same module reads undeclared does not: the allowlist widens
+    by the declaration and nothing else."""
+    out = _emit_note_taker(tmp_path, ENV_PIPELINE, {"where.py": WHERE_MODULE}, name="where-to")
+    status, said, err = _cli(capsys, "skill", "install", str(out), "--yes")
+    assert status == 0, err
+    assert "passes WHERE_TO_REPORT_DIR from the environment it is run in" in said + err
+    record = _trust_record(out)
+    assert record is not None and record["bindings"]["env"] == ["WHERE_TO_REPORT_DIR"]
+    monkeypatch.setenv("WHERE_TO_REPORT_DIR", str(tmp_path / "finance"))
+    monkeypatch.setenv("WHERE_TO_OTHER", "leaked")
+    status, block, err = _cli(capsys, "skill", "run", "where-to", "start", '{"n": 1}')
+    assert status == 0, block + err
+    assert result_of(block) == {"located": {"dir": str(tmp_path / "finance"), "other": None}}
+
+
+def test_changing_the_declared_variables_needs_a_new_trust(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The names are bound in the install record: a record that names others
+    (here, an install from before the plan declared any) is refused by name."""
+    from dataclasses import replace
+
+    from rote.app_registry import render_apps
+
+    out = _emit_note_taker(tmp_path, ENV_PIPELINE, {"where.py": WHERE_MODULE}, name="where-to")
+    assert _cli(capsys, "skill", "install", str(out), "--yes")[0] == 0
+    apps = registered_apps()
+    (app,) = [a for a in apps if a.path == out.resolve()]
+    assert app.trust is not None
+    older = {**app.trust, "bindings": {**app.trust["bindings"], "env": []}}
+    apps_path().write_text(
+        render_apps([replace(a, trust=older) if a is app else a for a in apps]), encoding="utf-8"
+    )
+    status, block, _ = _cli(capsys, "skill", "run", "where-to", "start", '{"n": 1}')
+    assert status == 1
+    assert (
+        "the environment variables passed through from the caller were [] at install and "
+        "are ['WHERE_TO_REPORT_DIR'] now"
+    ) in block
+    assert "rote skill trust where-to" in block
+
+
+def test_a_plan_edited_to_pass_a_reserved_variable_is_refused() -> None:
+    """The IR refuses the name; a plan.json edited to carry one anyway is refused
+    before anything is recorded or run."""
+    from rote.skill_target import trust
+    from rote.skill_target.trust import SkillTrustError
+
+    plan = {"steps": [{"kind": "call", "id": "a", "env": ["ROTE_MCP_CONFIG"]}]}
+    with pytest.raises(SkillTrustError, match="passes ROTE_MCP_CONFIG through"):
+        trust.plan_env(plan)
+    body = {"steps": [{"kind": "loop", "id": "l", "body": [{"kind": "call", "env": ["X_DIR"]}]}]}
+    assert trust.plan_env(body) == ["X_DIR"]

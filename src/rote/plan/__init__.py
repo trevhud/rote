@@ -24,7 +24,8 @@ copy of these rules (generated Python, say) is how payload semantics drift.
 Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
 ``bindings`` (``[param, source, node_id, field]`` per input):
 
-- ``call``: ``module``, ``symbol``, ``constants``, ``fan_param``, ``retry``.
+- ``call``: ``module``, ``symbol``, ``constants``, ``fan_param``, ``retry``,
+  and ``env`` (the variable names its code reads) when the node declares any.
 - ``mcp``: ``server``, ``tool``, ``url``, ``args``, ``fan_param``,
   ``retry``; recorded plans add ``observed`` and ``probe_shapes``.
 - ``judge``: ``prompt``, ``references`` (the dotted paths the prompt
@@ -221,13 +222,19 @@ def build_plan(
         if kind == "call":
             assert node.impl is not None
             module, symbol = _module_of(node.impl)
-            return {
+            call_step: dict[str, Any] = {
                 "module": module,
                 "symbol": symbol,
                 "constants": node.constants,
                 "fan_param": fan,
                 "retry": _retry(node),
             }
+            if node.env:
+                # The variables a compiled skill's run passes its code
+                # (rote.skill_target.trust.plan_env); absent when none, so a
+                # plan that reads none is byte for byte what it was.
+                call_step["env"] = list(node.env)
+            return call_step
         if kind == "do":
             return {
                 "description": node.description.strip(),

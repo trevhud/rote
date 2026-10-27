@@ -57,6 +57,7 @@ from rote.compiler.drivers import (
     GenerationRequest,
     Generator,
 )
+from rote.compiler.env_reads import declarable_reads
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
 from rote.compiler.grounding import Grounding
 from rote.compiler.provenance import PROVENANCE_NODE
@@ -1361,6 +1362,11 @@ def text_entries(ctx: Context, judges: dict[str, dict[str, Any]]) -> dict[str, d
             entry["input_schema"] = ctx.judge_input_schema(node)
         if "termination" in iface:
             entry["termination"] = iface["termination"]
+        env = declarable_reads(node, ctx.work_dir)
+        if env:
+            # Read from the module the piece wrote: code, not a model, keeps
+            # the declaration complete (rote.compiler.env_reads).
+            entry["env"] = env
         if node.id in judges:
             entry["signature_spec"] = {
                 "input_schema": ctx.judge_input_schema(node),

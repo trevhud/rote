@@ -54,6 +54,7 @@ from typing import Literal
 
 from rote.compiler.api_docs import WebResearch, api_view, docs_findings
 from rote.compiler.boundaries import boundary_findings
+from rote.compiler.env_reads import env_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -1224,6 +1225,9 @@ def _verify(
             )
             findings += prefix.findings
     findings += boundary_findings(pipeline, root)
+    env_errors, env_questions = env_findings(pipeline, root)
+    findings += env_errors
+    questions += env_questions
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
     vendor_paths: tuple[Path, ...] = ()

@@ -168,6 +168,17 @@ def _require_person(mode: Any, prompter: Any, plan: Plan, why: str | None, comma
 # ───────── install ─────────
 
 
+def _env_notes(bound: dict[str, Any]) -> list[str]:
+    """The variables a run passes its code from the caller's environment."""
+    names = bound.get("env") or []
+    if not names:
+        return []
+    return [
+        f"passes {', '.join(names)} from the environment it is run in: its code reads "
+        "them (env: in pipeline.yaml)"
+    ]
+
+
 def install_plan(
     skill: trust.SkillDir, read: Snapshot, apps: list[RegisteredApp], now: trust.Scan
 ) -> tuple[Plan, str | None]:
@@ -224,6 +235,7 @@ def install_plan(
         )
     if bound.get("read_only"):
         reasons.append(f"letting {skill.name} call servers registered read-only")
+    notes += _env_notes(bound)
     record = trust.install_record(now, writes=writes)
     updated = [
         replace(a, trust=None) if a in displaced else a for a in apps if a.path != skill.root
@@ -466,6 +478,7 @@ def trust_plan(
         notes.append(
             f"relies on {server} at {url} being read-only (registered so): every tool on it runs"
         )
+    notes += _env_notes(bound)
     if isinstance(writes, dict) and (writes.get("plan_sha256") != trust.plan_sha256(now) or moved):
         notes.append(
             "the earlier write consent is dropped (the plan or what it depends on changed)"

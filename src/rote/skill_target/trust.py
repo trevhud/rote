@@ -25,10 +25,12 @@ use a registered name. Three pieces, all here:
   hashes to its name.
 
 Besides the state paths, the record binds ``ROTE_CLOUD_CRED_PATH``, the
-proxy variables, the CA bundles (path and hash), and the servers the plan
-calls that the user registered read-only (name and URL). A read-only
-declaration lets every tool on a server run, so it is write consent by
-another name and is bound the same way.
+proxy variables, the CA bundles (path and hash), the servers the plan
+calls that the user registered read-only (name and URL), and the names of
+the environment variables the plan's code reads (``Node.env``), which a run
+passes through from the caller's environment. A read-only declaration lets
+every tool on a server run, so it is write consent by another name and is
+bound the same way.
 
 The state paths are bound, not merely read, because each can widen trust
 without touching a file in the skill: a forged ``ROTE_MCP_CONFIG`` can
@@ -58,6 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.app_registry import RegisteredApp, apps_path
+from rote.env_vars import CA_VARS, PROXY_VARS, reserved_reason
 
 #: The app registry runtime a compiled skill is recorded under.
 SKILL_RUNTIME = "skill"
@@ -203,22 +206,6 @@ def drift(now: Scan, recorded: Mapping[str, str]) -> Drift:
 # ───────── the state paths ─────────
 
 
-#: Proxy variables a run may use, recorded at install and passed only as recorded.
-PROXY_VARS = (
-    "HTTPS_PROXY",
-    "https_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-    "NO_PROXY",
-    "no_proxy",
-)
-#: CA bundle variables, recorded by path and the bundle's hash: a proxy plus a
-#: CA the attacker chose reads every bearer token.
-CA_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
-
-
 def _file_sha(path: str) -> str:
     try:
         return _sha(Path(path).read_bytes())
@@ -247,6 +234,26 @@ def plan_servers(plan: Mapping[str, Any]) -> set[str]:
                 used.add(str(body["server"]))
         used.update(str(s) for s in (step.get("tool_servers") or {}).values())
     return used
+
+
+def plan_env(plan: Mapping[str, Any]) -> list[str]:
+    """The environment variables the plan's code reads (``Node.env``), sorted:
+    a run passes exactly these from the caller's environment, beyond the
+    allowlist. A name no node may declare (:func:`rote.env_vars.reserved_reason`)
+    is refused: the IR refuses it too, so only an edited plan carries one."""
+    names: set[str] = set()
+    for step in plan.get("steps") or []:
+        for each in (step, *(step.get("body") or [])):
+            names.update(str(n) for n in each.get("env") or [])
+    for name in sorted(names):
+        reason = reserved_reason(name)
+        if reason is not None:
+            raise SkillTrustError(
+                f"the skill's plan passes {name} through from the caller's environment, "
+                f"which no skill may: {reason}.",
+                "re-emit the skill from its pipeline.yaml (rote emit --runtime skill)",
+            )
+    return sorted(names)
 
 
 def relied_read_only(plan: Mapping[str, Any]) -> dict[str, str]:
@@ -280,6 +287,7 @@ def bindings(plan: Mapping[str, Any], environ: Mapping[str, str] | None = None) 
         "cloud_cred": str(credential_path().resolve()),
         **network_env(environ),
         "read_only": relied_read_only(plan),
+        "env": plan_env(plan),
     }
 
 
@@ -296,6 +304,11 @@ def moved_bindings(recorded: Mapping[str, Any], now: Mapping[str, Any]) -> list[
     ):
         if (recorded.get(key) or {}) != (now.get(key) or {}):
             lines.append(f"{what} were {recorded.get(key) or {}} at install and are {now[key]} now")
+    if (recorded.get("env") or []) != (now.get("env") or []):
+        lines.append(
+            "the environment variables passed through from the caller were "
+            f"{recorded.get('env') or []} at install and are {now.get('env') or []} now"
+        )
     return lines
 
 

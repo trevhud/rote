@@ -121,6 +121,9 @@ kind. The validator enforces kind-specific requirements.
   mandatory: false               # optional, default false
   constants:                     # optional, arbitrary key/value dict
     batch_size: 10
+  env: [BDR_EXPORT_DIR]          # optional, pure_function / external_call only:
+                                 # every variable its code reads (os.environ /
+                                 # os.getenv) by name; rote checks it is complete
   cache:                         # optional
     strategy: persistent
     ttl: 30d
