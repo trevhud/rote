@@ -17,13 +17,14 @@ from typing import Any
 
 import pytest
 
-from rote.compiler import Compiler
+from rote.compiler import Compiler, tool_grounding
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.compiler.grounding import GROUNDING_DIRNAME, Grounding, Sample
 from rote.compiler.prefix import run_prefix
 from rote.compiler.tool_grounding import (
     TOOL_SCHEMAS_FILENAME,
     ToolSchema,
+    ToolSchemas,
     brief,
     discover,
     recorded,
@@ -1189,3 +1190,121 @@ def test_only_the_offered_servers_a_plan_binds_become_grounding() -> None:
     assert unused == ["figma"]
     # Binding nothing adopts nothing.
     assert adopt_offered(candidates, []) == ({}, ["atlassian", "figma"])
+
+
+# ───────── a field read from an MCP result is checked against what is known (#253) ─────────
+
+
+def _reader(fan_out: bool = False, field: str = "content") -> Pipeline:
+    """fetch_doc calls docs.get_page; summarize reads one field of its result."""
+    return Pipeline.model_validate(
+        {
+            "name": "fields",
+            "version": "0.1.0",
+            "input": {"type": "In", "required": [], "optional": []},
+            "nodes": [
+                {
+                    "id": "fetch_doc",
+                    "kind": "external_call",
+                    "description": "Fetch the page.",
+                    "mcp": {"server": "docs", "tool": "get_page"},
+                    **({"fan_out": True} if fan_out else {}),
+                },
+                {
+                    "id": "summarize",
+                    "kind": "pure_function",
+                    "description": "Summarize it.",
+                    "impl": "extracted/s.py:summarize",
+                    "inputs": {"text": f"fetch_doc.output.{field}"},
+                },
+            ],
+            "edges": [{"from": "fetch_doc", "to": "summarize"}],
+            "entry_nodes": ["fetch_doc"],
+            "exit_nodes": ["summarize"],
+        }
+    )
+
+
+def _declared(output_schema: dict[str, Any] | None) -> ToolSchemas:
+    return {
+        ("docs", "get_page"): ToolSchema(
+            "docs", "get_page", {"type": "object"}, "tools/list", True, output_schema
+        )
+    }
+
+
+def test_a_field_read_from_a_result_declared_as_text_is_an_error() -> None:
+    findings, questions = tool_grounding.result_field_checks(
+        _reader(), _declared({"type": "string"}), ()
+    )
+    assert questions == []
+    (finding,) = findings
+    assert (finding.node_id, finding.kind, finding.severity) == (
+        "summarize",
+        "result_field_missing",
+        "error",
+    )
+    assert "is a string, which has no fields" in finding.message
+    assert "declared by the server's tools/list" in finding.message
+
+
+def test_a_closed_object_without_the_field_is_an_error_and_with_it_is_fine() -> None:
+    closed = {"type": "object", "properties": {"body": {"type": "string"}, "id": {}}}
+    findings, _ = tool_grounding.result_field_checks(_reader(), _declared(closed), ())
+    (finding,) = findings
+    assert "has no field `content` (its fields: `body`, `id`)" in finding.message
+    assert tool_grounding.result_field_checks(_reader(field="body"), _declared(closed), ()) == (
+        [],
+        [],
+    )
+
+
+def test_an_open_object_or_an_untyped_result_proves_nothing() -> None:
+    open_ = {"type": "object", "properties": {"body": {}}, "additionalProperties": True}
+    for schema in (open_, {"type": "object"}, {}):
+        findings, questions = tool_grounding.result_field_checks(_reader(), _declared(schema), ())
+        assert findings == [], schema
+
+
+def test_a_recorded_result_decides_before_a_declared_schema() -> None:
+    """A run returned a list: there is no `content` to read, whatever the
+    server's outputSchema claims."""
+    recorded_list = (ObservedToolCall("docs", "get_page", {}, json.dumps([{"content": "x"}])),)
+    findings, _ = tool_grounding.result_field_checks(
+        _reader(), _declared({"type": "object"}), recorded_list
+    )
+    (finding,) = findings
+    assert "observed in a recorded run" in finding.message
+    assert "is an array, which has no fields" in finding.message
+
+
+def test_an_unknown_result_is_an_open_question_not_a_guess() -> None:
+    findings, questions = tool_grounding.result_field_checks(_reader(), {}, ())
+    assert findings == []
+    ((node_id, text),) = questions
+    assert node_id == "summarize"
+    assert "no recorded run or declared outputSchema shows what docs.get_page returns" in text
+
+
+def test_a_fanned_producers_result_is_not_read_by_field() -> None:
+    assert tool_grounding.result_field_checks(
+        _reader(fan_out=True), _declared({"type": "string"}), ()
+    ) == ([], [])
+
+
+def test_verification_sends_a_field_read_from_text_back_to_repair(tmp_path: Path) -> None:
+    import yaml
+
+    root = tmp_path / "deliverable"
+    (root / "extracted").mkdir(parents=True)
+    (root / "pipeline.yaml").write_text(
+        yaml.safe_dump(_reader().model_dump(mode="json", by_alias=True, exclude_none=True))
+    )
+    (root / "extracted" / "s.py").write_text("def summarize(text):\n    return {}\n")
+    text = _declared({"type": "string"})
+    v = verify_deliverable(root, grounding=Grounding(tools=text), run_tests=False)
+    assert "result_field_missing" in {f.kind for f in v.errors} and not v.ok
+    assert "reads `content` from fetch_doc's result" in (v.repair_instruction(root) or "")
+    unknown = verify_deliverable(root, grounding=Grounding(), run_tests=False)
+    assert "result_field_missing" not in {f.kind for f in unknown.errors}
+    assert any("reads `content` from fetch_doc's result" in q.text for q in unknown.questions)

@@ -22,6 +22,28 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **A compile checks the boundaries its generated tests cannot see (#291).**
+  A real compile passed 38 generated tests while every MCP call went out with
+  no arguments, two gate consumers read keys their gates never declared, and
+  a renderer required an input field the contract left out. Verification now
+  reads the deliverable for each:
+  - an MCP call whose node holds constants `mcp.args` never sends is an error
+    when the tool's schema names its parameters, and an unresolved call
+    (listed, blocking the run, never guessed) when no schema does;
+  - code that reads a key a gate does not declare is an error;
+  - code that reads a pipeline-input field the contract does not declare is
+    an error.
+  Gates that split one section's items between them are held to what they
+  collect together, not each to the whole section.
+
+- **A compile no longer ships a field read from an MCP result that has no
+  such field.** Verification checks every `<node>.output.<field>` read of an
+  MCP-bound node against the result a recorded run returned, else the
+  outputSchema the server declares. A result that is text or a list, or a
+  closed object without the field, goes back to the agent as an error,
+  because the run would fail at that read. With nothing recorded or
+  declared, it is an Open question in the report.
+
 - **`rote run` on a temporal app names the exception a failed step raised**,
   not only Temporal's "Activity task failed" wrapper.
 

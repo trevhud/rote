@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Literal
 
 from rote.compiler.api_docs import WebResearch, api_view, docs_findings
+from rote.compiler.boundaries import boundary_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -69,12 +70,15 @@ from rote.compiler.provenance import (
 )
 from rote.compiler.tool_grounding import (
     DECLARED_TOOL_UNBOUND,
+    MCP_ARGS_UNGROUNDED,
+    result_field_checks,
     schema_sources,
     stale_bundled,
     tool_findings,
     tool_questions,
     unbound_tool_findings,
     unchecked_tools,
+    unsent_constant_findings,
 )
 from rote.contracts import (
     ContractFinding,
@@ -610,7 +614,7 @@ UNUSED_CONSTANT = "unused_constant"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
-REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND})
+REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND, MCP_ARGS_UNGROUNDED})
 
 
 def unused_constant_findings(
@@ -1186,15 +1190,20 @@ def _verify(
         called = api_view(pipeline) if api_backend else pipeline
         findings += grounding_findings(called, skill_dir, grounding.sample)
         findings += tool_findings(called, grounding.tools)
+        findings += unsent_constant_findings(called, grounding.tools)
         unchecked = unchecked_tools(called, grounding.tools)
         tool_sources = schema_sources(called, grounding.tools)
         stale = stale_bundled(called, grounding.tools, grounding.bundled)
         # The full pipeline: on the api backend a binding stays declared
         # even though its impl is what runs.
         findings += unbound_tool_findings(pipeline, skill_dir, grounding.tools)
+        field_findings, field_questions = result_field_checks(
+            called, grounding.tools, grounding.observations
+        )
+        findings += field_findings
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
-            for node_id, text in tool_questions(called, grounding.tools)
+            for node_id, text in [*tool_questions(called, grounding.tools), *field_questions]
         ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(
@@ -1207,6 +1216,7 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
+    findings += boundary_findings(pipeline, root)
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
     vendor_paths: tuple[Path, ...] = ()

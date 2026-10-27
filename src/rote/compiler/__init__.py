@@ -1341,6 +1341,10 @@ class Compiler:
                 # and lays text.yaml over it, so an edit to pipeline.yaml alone
                 # is undone and the same error comes back.
                 instruction += SYSTEM1_REPAIR_NOTE
+            if portable_judges:
+                # A refused input field is not a verification finding: say why,
+                # or the agent sees only the field still missing.
+                instruction += system1.added_inputs.refusal_note(artifact_dir) or ""
             if invalid:
                 invalid_attempts += 1
             else:

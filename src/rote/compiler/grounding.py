@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.contracts import ContractFinding
-from rote.ir import NodeKind, Pipeline, is_field_name, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline, is_field_name, parse_input_ref
 from rote.skill_source import parse_sections
 
 #: Where a skill bundles a sample input, in the order they are tried. A
@@ -596,24 +596,37 @@ def gate_findings(
         _heading_key(h): (h, items)
         for h, items in (named_human_items(skill_dir) if skill_dir is not None else {}).items()
     }
+    # Several gates may split one section's items between them (one gate per
+    # item the person supplies, #291), so a section is held to what all of
+    # its gates collect together; each gate need not collect its siblings'.
+    by_section: dict[str, list[Node]] = {}
     for gate in gates:
         cited = gate.source.section if gate.source is not None else None
-        section, items = named.get(_heading_key(cited), (None, None)) if cited else (None, None)
+        if cited:
+            by_section.setdefault(_heading_key(cited), []).append(gate)
+    for key, citing in by_section.items():
+        section, items = named.get(key, (None, None))
         if not items:
             continue
-        have = gate.output_keys
+        gate = citing[0]
+        have = frozenset().union(*(g.output_keys for g in citing))
         absent = [(t, k) for t, k in items if k not in have]
         if absent:
             renames = ", ".join(f"**{t}** -> `{k}`" for t, k in absent)
             declared = ", ".join(sorted(have)) or "none"
+            who = (
+                f"gate {gate.id} collects"
+                if len(citing) == 1
+                else f"gates {', '.join(g.id for g in citing)} together collect"
+            )
             findings.append(
                 ContractFinding(
                     node_id=gate.id,
                     kind="gate_payload_not_skill_nouns",
                     severity="error",
                     message=(
-                        f'gate {gate.id} collects what section "{section}" asks the person '
-                        f"for, but its payload keys ({declared}) do not use "
+                        f'{who} what section "{section}" asks the person '
+                        f"for, but their payload keys ({declared}) do not use "
                         f"the skill's names for those items: {renames}. Name each key after "
                         f"the item, in snake_case, and update the code that reads them"
                     ),
