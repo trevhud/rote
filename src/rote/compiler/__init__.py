@@ -74,7 +74,7 @@ from rote.compiler.usage import CompileUsage, compile_usage
 from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
-from rote.ir import Pipeline, load_pipeline
+from rote.ir import Pipeline, load_pipeline, save_pipeline
 from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
 from rote.vendor_specs import SpecStore
 
@@ -708,10 +708,13 @@ class Compiler:
                         error.usage = usage  # type: ignore[attr-defined]
                         raise error from e
                     raise CompilerError(str(e)) from e
-                # An offered server the plan binds a step to is now grounding
-                # like any other; one it binds nothing of is left unused.
+                # An offered server the plan binds a step to, or whose tool a
+                # loop lists, is now grounding like any other; one it uses
+                # nothing of is left unused.
                 adopted, unused = tool_grounding.adopt_offered(
-                    candidates, (n.mcp["server"] for n in s1_plan.nodes if n.mcp)
+                    candidates,
+                    (n.mcp["server"] for n in s1_plan.nodes if n.mcp),
+                    (t for n in s1_plan.nodes for t in n.tools or ()),
                 )
                 for server in sorted({s for s, _ in adopted}):
                     self._emit(
@@ -893,6 +896,10 @@ class Compiler:
                         f"at {kept}. Re-run, or run a full compilation if the "
                         f"restructure is intentional."
                     )
+
+            pipeline = self._pin_loop_tools(
+                Path(result.pipeline_yaml_path), pipeline, grounding.tools
+            )
 
             # The final verdict, after any repair rounds: what the CLI
             # reports, and what decides its exit code. Run before the move
@@ -1496,6 +1503,31 @@ class Compiler:
             f"disagree, trust the traffic and note the discrepancy in the "
             f"compilation report."
         )
+
+    def _pin_loop_tools(
+        self, pipeline_yaml: Path, pipeline: Pipeline, tools: tool_grounding.ToolSchemas
+    ) -> Pipeline:
+        """Pin each agent-loop tool to the one grounded server that offers it.
+
+        One place for every path (legacy, System-1, update): after the agent's
+        last stop and System-1's settle, before the final verification, so
+        what is verified is what ships. A pin already in the IR wins.
+        """
+        pins = tool_grounding.loop_tool_pins(pipeline, tools)
+        if not pins:
+            return pipeline
+        for node_id, pinned in sorted(pins.items()):
+            servers = ", ".join(f"{t} -> {s}" for t, s in sorted(pinned.items()))
+            self._emit("log", f"tool schemas: pinned {node_id}'s tools: {servers}")
+        if not tool_grounding.write_loop_pins(pipeline_yaml, pipeline, pins):
+            pinned_pipeline = tool_grounding.with_loop_pins(pipeline, pins)
+            save_pipeline(pinned_pipeline, pipeline_yaml)
+            self._emit(
+                "warning",
+                "pipeline.yaml was rewritten whole to add tool_servers (its layout did not "
+                "allow a line edit), so its YAML comments were not kept",
+            )
+        return load_pipeline(pipeline_yaml)
 
     @staticmethod
     def _repoint_source_skill(

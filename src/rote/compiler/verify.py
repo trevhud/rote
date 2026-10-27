@@ -70,6 +70,7 @@ from rote.compiler.provenance import (
 )
 from rote.compiler.tool_grounding import (
     DECLARED_TOOL_UNBOUND,
+    LOOP_TOOL_UNSERVED,
     MCP_ARGS_UNGROUNDED,
     result_field_checks,
     schema_sources,
@@ -79,6 +80,7 @@ from rote.compiler.tool_grounding import (
     unbound_tool_findings,
     unchecked_tools,
     unsent_constant_findings,
+    unserved_loop_tool_findings,
 )
 from rote.contracts import (
     ContractFinding,
@@ -614,7 +616,9 @@ UNUSED_CONSTANT = "unused_constant"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
-REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND, MCP_ARGS_UNGROUNDED})
+REVIEW_GAP_KINDS = frozenset(
+    {UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND, MCP_ARGS_UNGROUNDED, LOOP_TOOL_UNSERVED}
+)
 
 
 def unused_constant_findings(
@@ -1201,6 +1205,9 @@ def _verify(
             called, grounding.tools, grounding.observations
         )
         findings += field_findings
+        findings += unserved_loop_tool_findings(
+            pipeline, skill_dir, grounding.tools, grounding.unlisted
+        )
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
             for node_id, text in [*tool_questions(called, grounding.tools), *field_questions]

@@ -1179,7 +1179,17 @@ Two behaviors to preserve:
   from what the baseline actually *called* (`cross_check`'s
   `resolved_agent_tools`), and leaves a tool served by two servers in one
   trial unresolved — pinning either would silently send the loop to the
-  wrong endpoint. An authored value always beats inference.
+  wrong endpoint. An authored value always beats inference. The compile
+  pins the same way from tool grounding, on every path, after the agent's
+  last stop (`tool_grounding.loop_tool_pins`, written as a line edit so
+  the agent's YAML comments survive): one grounded server offering the
+  tool pins it, two leave it unpinned as an Open question. A loop tool no
+  grounded server offers is `loop_tool_unserved`, only when a live
+  tools/list answered for every server the skill names (no listing proves
+  nothing). It is a review gap, never an error: rote does not contact a
+  registered server the skill never names, which may offer the tool. The
+  structure pass's own `<loop id>_tool` placeholder is exempt by that exact
+  name.
 - **Discovery is best-effort, binding is not.** A server that is down may
   not be one this loop needed, so it is recorded and skipped; a declared
   tool no reachable server provides is fatal. When an auth failure

@@ -60,7 +60,7 @@ from rote.compiler.system1.parse import (
     walk,
 )
 from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
-from rote.compiler.tool_grounding import parameters
+from rote.compiler.tool_grounding import parameters, placeholder_loop_tool
 from rote.ir import GATE_MESSAGE_PLACEHOLDER
 from rote.tool_schema import checkable
 
@@ -1837,9 +1837,6 @@ def to_plan(
 ) -> Plan:
     """The checked answer as a :class:`Plan` the skeleton writer renders."""
     units = {u.index: u for u in skill.units}
-    by_tool: dict[str, str] = {}
-    for server, tool in declared:
-        by_tool.setdefault(tool, server)
     nodes: list[NodePlan] = []
     by_id: dict[str, NodePlan] = {}
     for n in answer.get("nodes") or []:
@@ -1963,13 +1960,15 @@ def to_plan(
             node.decide("system", {k: system.get(k) for k in ("io", "how", "name")}, conf, rule)
         if kind == "agent_loop":
             lp = n.get("loop") or {}
+            # No tool_servers here: the compile pins each loop tool to the one
+            # grounded server that lists it, on every path
+            # (tool_grounding.loop_tool_pins), and never to the first of two.
             node.tools = list(lp.get("tools") or [])
-            node.tool_servers = {t: by_tool[t] for t in node.tools if t in by_tool}
             if node.tools:
                 node.decide("tools", node.tools, conf, rule)
             else:
                 # The IR needs a tool; no server declares one this loop can use.
-                node.tools = [f"{node.id}_tool"]
+                node.tools = [placeholder_loop_tool(node.id)]
                 node.decide("tools", node.tools, 0.2, "no declared tool: placeholder, needs review")
             stop, bound = str(lp.get("stop_condition") or ""), int(lp.get("max_iterations") or 0)
             if stop and bound > 0:
