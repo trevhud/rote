@@ -108,10 +108,19 @@ class Priors:
     """Streaming throughput for judge output generation."""
 
     tokens_per_input_field: float = 60.0
-    """Expected payload tokens per input-schema property of a judge call
-    (we can count the prompt template exactly, but the runtime payload
-    filling its holes is only known at run time).
+    """Tokens assumed for one value whose size nothing else states: a
+    scalar field of a judge's input, a pipeline-input field, the output of
+    a pure function that reads nothing. A value with a known source is
+    sized from that source instead: a whole external result carries
+    ``tokens_per_external_call_result`` (or its per-tool override) to every
+    judge and agent loop that receives it.
     """
+
+    elements_per_list: int = 10
+    """Elements assumed in a list-typed value whose length the IR cannot
+    know: an ``array`` in a judge's input or output schema, a free-form
+    object's keys. A list is sized as a range, one element up to this many,
+    never as one short scalar."""
 
     tokens_per_output_field: float = 40.0
     """Expected generated tokens per output-schema property of a judge —
