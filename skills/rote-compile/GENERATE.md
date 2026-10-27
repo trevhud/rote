@@ -77,7 +77,11 @@ The module:
    adapters call it as `fn(**payload)`.
 2. Reads each parameter as its schema in the message says. A parameter
    named after an upstream node is that node's whole return value. On a
-   `fan_out` node, the element parameter is ONE item.
+   `fan_out` node, the element parameter is ONE item. Read a gate's answer
+   only by the keys the gate declares, and a pipeline-input field only when
+   the input contract declares it: rote reads the code for literal keys and
+   sends back any other, and the tests build those fixtures from the
+   declared keys, never from the module's own names.
 3. Returns a value that validates against the node's `output_schema`.
    rote runs the deterministic nodes on the sample input and checks each
    result against its schema, so a set, a tuple, a `Decimal` or a missing

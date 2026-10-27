@@ -1037,6 +1037,74 @@ def _field_missing(schema: Mapping[str, Any], field: str) -> str | None:
     return f"has no field `{field}` (its fields: {listed})"
 
 
+#: An MCP call never sends constants the skill states, and its tool's schema
+#: says which parameters take them: the agent binds them.
+MCP_CONSTANT_UNSENT = "mcp_constant_unsent"
+#: The same, with no schema to bind them by: grounding is missing.
+MCP_ARGS_UNGROUNDED = "mcp_args_ungrounded"
+
+
+def unsent_constant_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFinding]:
+    """Every MCP call whose node holds constants ``mcp.args`` never sends (#291).
+
+    The skill's document ids and search query sat in ``constants`` while
+    every binding had ``mcp.args: {}``, so each call went out empty and the
+    summary still said the nodes ran via their binding. With the tool's
+    declared, checkable input schema the agent can bind each constant to its
+    parameter, so it is an error. Without one, guessing parameter names is
+    worse than stopping: it is a review gap naming the server to register,
+    and the node blocks the run (:attr:`rote.contracts.NodeImplementation.blocks_run`).
+    An empty ``mcp.args`` on a node with no constants is a zero-argument call
+    and is left alone.
+    """
+    from rote.adapters._common import unsent_constants
+
+    findings: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        unsent = unsent_constants(node)
+        if not unsent:
+            continue
+        assert node.mcp is not None
+        call = f"{node.mcp.server}.{node.mcp.tool}"
+        names = ", ".join(f"`{c}`" for c in unsent)
+        schema = tools.get((node.mcp.server, node.mcp.tool))
+        view = checkable(schema.input_schema) if schema is not None and schema.declared else None
+        if view is not None:
+            params = ", ".join(f"`{p}`" for p in sorted(view.get("properties") or {})) or "none"
+            findings.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind=MCP_CONSTANT_UNSENT,
+                    severity="error",
+                    message=(
+                        f"{node.id} holds constants {names} that its call to {call} never "
+                        f"sends: `mcp.args` names none of them, so the call goes out without "
+                        f"the values the skill states. Map each to the tool's parameter in "
+                        f"`mcp.args` (parameter: constant name). {call} takes {params}"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+        else:
+            findings.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind=MCP_ARGS_UNGROUNDED,
+                    severity="warning",
+                    message=(
+                        f"{node.id} holds constants {names} that its call to {call} never "
+                        f"sends, and no schema for {call} says which parameters take them, "
+                        f"so this call cannot run as the skill describes. Register and log "
+                        f"in to {node.mcp.server} (rote mcp add {node.mcp.server} <url>, "
+                        f"rote mcp login {node.mcp.server}) and compile again, so rote can "
+                        f"read its tools/list and bind them"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+    return findings
+
+
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
     """``(node id, text)`` for every binding whose arguments nothing could check."""
     questions: list[tuple[str, str]] = []
