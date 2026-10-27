@@ -218,3 +218,28 @@ def test_retry_after_reads_an_http_date() -> None:
     assert 18 <= (helper._retry_after_s({"retry-after": when}) or 0) <= 20
     assert helper._retry_after_s({"retry-after": "soon"}) is None
     assert helper._retry_after_s(None) is None
+
+
+def test_codex_usage_puts_each_token_in_one_bucket() -> None:
+    """Codex's input_tokens already holds the cached reads and the cache
+    writes; the structure pass used to take out only the reads, so every
+    cache write was counted twice (found by #299's review)."""
+    from rote.compiler.system1.lane_call import usage_row
+
+    row = usage_row(
+        {
+            "input_tokens": 1000,
+            "cached_input_tokens": 600,
+            "cache_write_input_tokens": 300,
+            "output_tokens": 50,
+        }
+    )
+    assert row == {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_write_tokens": 300,
+        "cache_read_tokens": 600,
+    }
+    assert sum(v for k, v in row.items() if k != "output_tokens") == 1000
+    unreported = usage_row({"cached_input_tokens": 5})
+    assert set(unreported.values()) == {None}
