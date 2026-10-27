@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import re
 import sys
@@ -59,6 +60,7 @@ from rote.compiler.drivers import (
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
 from rote.compiler.grounding import Grounding
 from rote.compiler.provenance import PROVENANCE_NODE
+from rote.compiler.system1 import added_inputs
 from rote.compiler.system1.decide import NodePlan, Plan
 from rote.compiler.system1.enforce import TEXT_FILENAME
 from rote.compiler.system1.skeleton import (
@@ -262,6 +264,9 @@ class Context:
     tables: list[str]
     #: ``{node id: {"description", "output_schema", "termination"?}}``, once known.
     interface: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The input schema with the fields the module pieces added so far
+    #: (:mod:`rote.compiler.system1.added_inputs`), once one has.
+    added_input_schema: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, work_dir: Path, plan: Plan, grounding: Grounding) -> Context:
@@ -298,6 +303,8 @@ class Context:
     # ── schemas code can state without a model ──
 
     def input_schema(self) -> dict[str, Any]:
+        if self.added_input_schema is not None:
+            return dict(self.added_input_schema)
         return dict(self.pipeline.input.input_schema or {}) if self.pipeline.input else {}
 
     def gate_schema(self, node: Any) -> dict[str, Any]:
@@ -714,6 +721,9 @@ ANSWER_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        # Pipeline input fields a module needs and the skeleton lacks
+        # (rote.compiler.system1.added_inputs): added only, checked by code.
+        "input_fields": {"type": "array", "items": added_inputs.ENTRY_SCHEMA},
         "edits": {
             "type": "array",
             "items": {
@@ -737,6 +747,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "prompt",
         "client",
         "passthrough",
+        "input_fields",
         "edits",
     ],
     "additionalProperties": False,
@@ -744,7 +755,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text, [] for output_fields, passthrough and edits, '
+    '"" for text, [] for output_fields, passthrough, input_fields and edits,'
     '{"condition": "", "max_iterations": 0} '
     'for termination, and "anthropic" for client.'
 )
@@ -1518,9 +1529,13 @@ class TextWriter:
         run_tests: bool = False,
         trust_skill: bool = False,
         redecide: Redecide | None = None,
+        sample_payload: Any = None,
     ) -> None:
         self.redecide = redecide
         self.skill_dir = skill_dir
+        #: The compile's sample input: a field it lacks cannot be required.
+        self.sample_payload = sample_payload
+        self._skill_text: added_inputs.SkillText | None = None
         self.run_tests = run_tests
         self.trust_skill = trust_skill
         self.driver = driver
@@ -1631,11 +1646,52 @@ class TextWriter:
             _json(self.ctx.interface), encoding="utf-8"
         )
 
+    def _added_inputs(self, entries: list[Any]) -> tuple[dict[str, Any], added_inputs.Outcome]:
+        """The skeleton with ``entries`` laid over its input, the way settle lays them."""
+        doc = copy.deepcopy(self.ctx.doc)
+        if not entries:
+            return doc, added_inputs.Outcome()
+        if self.skill_dir is None:
+            raise ValueError("an input field the agent adds needs the skill dir to check its quote")
+        if self._skill_text is None:
+            self._skill_text = added_inputs.SkillText.read(self.skill_dir)
+        return doc, added_inputs.apply(doc, entries, self._skill_text, self.sample_payload)
+
+    def input_field_entries(self, skip: str | None = None) -> list[Any]:
+        """Every module piece's input_fields, in node order (one file, one order)."""
+        return [
+            e
+            for node_id, answer in sorted(self.modules.items())
+            if node_id != skip
+            for e in answer.get("input_fields") or []
+        ]
+
+    def _input_field_problems(self, node: Any, answer: dict[str, Any]) -> list[str]:
+        """This piece's input_fields that settle would refuse, beside the others' entries."""
+        mine = list(answer.get("input_fields") or [])
+        if not mine:
+            return []
+        _, out = self._added_inputs([*self.input_field_entries(skip=node.id), *mine])
+        return [
+            f"input_fields entry `{e.get('name')}` was not added: {why}"
+            for e, why in out.refused
+            if any(e is m for m in mine)
+        ]
+
+    def _refresh_inputs(self) -> None:
+        """Show every piece written after this the input schema with the added fields."""
+        entries = self.input_field_entries()
+        doc, out = self._added_inputs(entries)
+        self.ctx.added_input_schema = (
+            dict(doc["input"].get("input_schema") or {}) if out.applied else None
+        )
+
     async def _checks(self, node: Any, answer: dict[str, Any]) -> list[str]:
         """Every check one piece can pass alone, cheapest first."""
         if node.kind is NodeKind.LLM_JUDGE:
             return judge_problems(self.ctx, node, answer)
-        problems = module_problems(self.ctx, node, answer)
+        problems = self._input_field_problems(node, answer)
+        problems += module_problems(self.ctx, node, answer)
         if problems:
             return problems
         return await asyncio.to_thread(
@@ -1678,6 +1734,14 @@ class TextWriter:
                 self._emit("warning", f"generate: {node.id} gave no answer ({e})")
                 break
             answer, problems = apply_answer(prior, payload, keys)
+            fields = list(payload.get("input_fields") or [])
+            if is_judge and fields:
+                problems.append(
+                    "a judge cannot add pipeline input fields: leave input_fields empty"
+                )
+            elif not is_judge:
+                # An empty list keeps the prior entries, like a file left empty.
+                answer["input_fields"] = fields or list((prior or {}).get("input_fields") or [])
             if is_judge:
                 # An empty list keeps the prior choice: a repair returns only
                 # what it changes, like a file left empty.
@@ -1706,6 +1770,7 @@ class TextWriter:
         if not problems and answer is not None:
             store[node.id] = answer
             self.unresolved.pop(node.id, None)
+            self._refresh_inputs()
             return
         if current is not None:
             # The repair made things worse: keep the files that passed alone.
@@ -1716,6 +1781,7 @@ class TextWriter:
             return
         if answer is not None:
             store[node.id] = answer
+            self._refresh_inputs()
         self.unresolved[node.id] = problems
         self._emit(
             "warning",
@@ -1759,6 +1825,15 @@ class TextWriter:
         (work / BRIEF_DIRNAME / TEXT_FILENAME).write_text(
             yaml.safe_dump(text, sort_keys=False, allow_unicode=True), encoding="utf-8"
         )
+        fields = work / BRIEF_DIRNAME / added_inputs.FILENAME
+        entries = self.input_field_entries()
+        if entries:
+            # The file the single-session agent writes, so settle applies both alike.
+            fields.write_text(
+                yaml.safe_dump(entries, sort_keys=False, allow_unicode=True), encoding="utf-8"
+            )
+        else:
+            fields.unlink(missing_ok=True)
 
     async def repair(self, verify: Callable[[Path], Any]) -> tuple[Any, int]:
         """Verify, then re-ask only the nodes a finding names. Returns (verdict, rounds)."""
@@ -1790,6 +1865,7 @@ class TextWriter:
                     self._emit("log", f"generate: {change}")
                 if any(": re-bound to " in c for c in changes):
                     self.ctx.reload()
+                    self._refresh_inputs()
                     rounds += 1
                     verification = self.verified(verify)
                     continue
@@ -1882,6 +1958,7 @@ async def write_text(
         run_tests=run_tests,
         trust_skill=trust_skill,
         redecide=redecide,
+        sample_payload=getattr(plan.sample, "payload", None),
     )
     rounds = 0
     try:

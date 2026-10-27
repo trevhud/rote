@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from rote.compiler.system1.decision_model import DecisionModel, Verdict, Verdicts
@@ -188,6 +189,9 @@ class Plan:
     input_fields: dict[str, str] | None = None
     #: The structure pass's record (:class:`rote.compiler.system1.structure.Structure`).
     structure: Any = None
+    #: The skill this plan was decided from: the text an input field the agent
+    #: adds must quote (:mod:`rote.compiler.system1.added_inputs`).
+    skill_dir: Path | None = None
 
 
 # ── kinds and segmentation ────────────────────────────────────────────────
