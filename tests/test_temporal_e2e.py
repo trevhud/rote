@@ -29,6 +29,7 @@ from temporalio.client import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
+from rote.runners.temporal import start_with_retries
 from tests._helpers import FAN_OUT_ELEMENTS, fan_out_element
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -248,7 +249,7 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
         "target_quota": 3,
     }
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_with_retries(WorkflowEnvironment.start_time_skipping) as env:
         task_queue = f"rote-bdr-test-{uuid4()}"
 
         async with Worker(

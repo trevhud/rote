@@ -27,11 +27,14 @@ import contextlib
 import importlib
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
+
+T = TypeVar("T")
 
 
 def _load_app_modules(app_dir: Path) -> tuple[type, list[Any]]:
@@ -98,8 +101,10 @@ async def _run_async(
     # ("Cluster Id in Cluster Metadata config is not a valid uuid") comes
     # from its fresh in-memory persistence on every start, not from rote
     # or the app, and reads like a failure to a first-time user.
-    env = await WorkflowEnvironment.start_local(
-        ui=True, ui_port=ui_port, dev_server_log_level="error"
+    env = await start_with_retries(
+        lambda: WorkflowEnvironment.start_local(
+            ui=True, ui_port=ui_port, dev_server_log_level="error"
+        )
     )
     print(
         f"rote run: temporal dev UI: http://127.0.0.1:{ui_port} (live while the run lasts)",
@@ -184,3 +189,25 @@ def _failure_chain(error: BaseException) -> str:
             messages.append(text)
         current = getattr(current, "cause", None)
     return ": ".join(messages)
+
+
+#: How many times to start a Temporal server before giving up.
+START_ATTEMPTS = 3
+
+
+async def start_with_retries(start: Callable[[], Awaitable[T]]) -> T:
+    """``start()``, run again when the server it launches does not answer in time.
+
+    temporalio's dev and test servers must answer within 5 seconds of
+    launch, a limit set in its Rust core that no Python option changes (as
+    of 1.34). A loaded machine misses it now and then, and the launch fails
+    with "Failed starting ... server" though nothing is wrong (#261, seen in
+    CI). That failure is retried with a fresh launch, up to
+    :data:`START_ATTEMPTS`; any other error, and the last one, is raised."""
+    for attempt in range(1, START_ATTEMPTS + 1):
+        try:
+            return await start()
+        except RuntimeError as e:
+            if attempt == START_ATTEMPTS or "Failed starting" not in str(e):
+                raise
+    raise AssertionError("unreachable")
