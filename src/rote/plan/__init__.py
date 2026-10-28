@@ -199,6 +199,11 @@ def build_plan(
                 "answer_schema": declared_answer_schema(node),
                 "timeout_s": _gate_timeout_s(node, pipeline),
             }
+            if node.when is not None:
+                # Absent otherwise, so a plan with no conditional gate is byte
+                # for byte what it was.
+                ref = parse_input_ref(node.when)
+                gate["when"] = {"node": ref.node_id, "field": ref.field}
             if node.id in answers:
                 # The sample says what the person answered: the gate's
                 # result, so the nodes after it run on the sample too.
@@ -481,7 +486,9 @@ def _step_kind(
     from rote.adapters._common import mcp_backed
 
     if node.kind is NodeKind.HITL_GATE:
-        return "gate" if live or node.id in answers else "skip"
+        # A conditional gate is a step even with no sample answer: on a sample
+        # where its condition is false it is skipped, and the run goes on.
+        return "gate" if live or node.id in answers or node.when is not None else "skip"
     if node.mcp is not None and (not live or mcp_backed(node, "skill", backend)):
         return "mcp"
     if node.kind in CONSTANT_ARGUMENT_KINDS and node.impl is not None:

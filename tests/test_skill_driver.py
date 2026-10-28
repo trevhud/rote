@@ -550,6 +550,54 @@ def test_a_gate_answer_needs_the_persons_words_and_records_them(gate_skill: Path
     assert (node["answered_by"], node["said"]) == ("human", "yes, ship it")
 
 
+CONDITIONAL = """\
+def table(notes, review):
+    return {"table": "| " + " | ".join(notes) + " |", "rows": len(notes), "needs_review": review}
+
+
+def finish(approval):
+    if approval is None:
+        return {"approved": None, "asked": False}
+    return {"approved": approval["approved"], "asked": True}
+"""
+
+
+def _conditional_skill(tmp_path: Path) -> Path:
+    pipeline = _gated({"table": "tabled.output.table"})
+    tabled, gate, _ = pipeline["nodes"]
+    tabled["inputs"]["review"] = "pipeline.input.review"
+    tabled["output"] = {"table": "str", "rows": "int", "needs_review": "bool"}
+    gate["when"] = "tabled.output.needs_review"
+    pipeline["input"]["required"] = ["notes", "review"]
+    return make_skill(tmp_path, pipeline, {"gate.py": CONDITIONAL})
+
+
+def test_a_gate_whose_condition_is_false_is_skipped_with_a_null_result(tmp_path: Path) -> None:
+    """A skill that asks only when something holds asked on every run (#309)."""
+    scripts = _conditional_skill(tmp_path)
+    status, done = drive(scripts, "start", '{"notes": ["a"], "review": false}')
+    assert status == 0 and header(done)["kind"] == "DONE"
+    assert result_of(done) == {"finished": {"approved": None, "asked": False}}
+    # Nothing stands in for the skipped gate on disk: a resume derives it again.
+    assert not (run_dir(done) / "nodes" / "approve.json").exists()
+
+
+def test_a_gate_whose_condition_is_true_asks_the_person(tmp_path: Path) -> None:
+    scripts = _conditional_skill(tmp_path)
+    _, out = drive(scripts, "start", '{"notes": ["a"], "review": true}')
+    assert (header(out)["kind"], header(out)["step"]) == ("HUMAN", "approve")
+    answer = '{"approved": true, "approver": "Dana"}'
+    _, done = drive(scripts, "answer", header(out)["run"], "approve", answer, "--said", "ok")
+    assert result_of(done) == {"finished": {"approved": True, "asked": True}}
+
+
+def test_a_gate_condition_that_is_not_a_boolean_ends_the_run(tmp_path: Path) -> None:
+    scripts = _conditional_skill(tmp_path)
+    status, out = drive(scripts, "start", '{"notes": ["a"], "review": "yes"}')
+    assert header(out)["kind"] == "ERROR", out
+    assert "waits only when tabled.output.needs_review is true, and it is str" in out
+
+
 def test_a_gate_answer_that_does_not_fit_asks_the_person_again(gate_skill: Path) -> None:
     _, out = drive(gate_skill, "start", '{"notes": ["a"]}')
     run = header(out)["run"]

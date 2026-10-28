@@ -44,8 +44,10 @@ from rote.adapters._py_common import (
     _signature_path_parts,
     agent_loop_call,
     call_impl_helper,
+    conditional_gate_py,
     fan_out_binding,
     fan_out_list_helper,
+    gate_condition_helper,
     gate_message_helper,
     gate_report_py,
     impl_kwargs_expr,
@@ -551,7 +553,15 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
             body_lines.append(_emit_fan_out_call(n, pipeline, cfg))
 
         for h in hitl:
-            body_lines.append(_emit_hitl_block(h).rstrip("\n"))
+            # Non-retryable, as for missing inputs: a plain exception in
+            # workflow code fails the workflow task, retried forever.
+            block = conditional_gate_py(
+                h,
+                _emit_hitl_block(h),
+                "raise ApplicationError(_when_error, non_retryable=True)",
+                " " * 8,
+            )
+            body_lines.append(block.rstrip("\n"))
 
     body_lines.append("")
     body_lines.append("        return {")
@@ -624,8 +634,11 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
         parts.append("\n" + fan_out_list_helper() + "\n")
     if gate_helper := gate_message_helper(pipeline):
         parts.append("\n" + gate_helper + "\n")
+    if condition_helper := gate_condition_helper(pipeline):
+        parts.append("\n" + condition_helper + "\n")
     if pipeline.needs_input_check:
         parts.append("\n" + missing_inputs_helper(pipeline) + "\n")
+    if pipeline.needs_input_check or pipeline.conditional_gates:
         parts[0] = parts[0].replace(
             "from temporalio.common import RetryPolicy\n",
             "from temporalio.common import RetryPolicy\n"

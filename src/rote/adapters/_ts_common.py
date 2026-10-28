@@ -861,6 +861,81 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
 """
 
 
+GATE_CONDITION_HELPER_TS = """\
+/** Why a gate with a `when` cannot tell whether to wait, or null.
+ *
+ * The condition must be exactly true or false: a count or a list would be
+ * truthy here and an error on another runtime, so anything else stops the
+ * run naming the gate and the reference. The Python runtimes emit the same
+ * check (`_gate_condition_error`). */
+function gateConditionError(
+    result: unknown,
+    field: string,
+    gate: string,
+    ref: string,
+): string | null {
+    if (
+        result === null ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        !Object.prototype.hasOwnProperty.call(result, field)
+    ) {
+        return (
+            `hitl_gate '${gate}' waits only when ${ref} is true, ` +
+            `but that result has no '${field}'`
+        );
+    }
+    const value = (result as Record<string, unknown>)[field];
+    if (typeof value === "boolean") {
+        return null;
+    }
+    const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    return (
+        `hitl_gate '${gate}' waits only when ${ref} is true, ` +
+        `and it is ${kind}, not true or false`
+    );
+}
+"""
+
+
+def gate_condition_helper_ts(pipeline: Pipeline) -> str:
+    """:data:`GATE_CONDITION_HELPER_TS` when a gate has a ``when``, else ""."""
+    return GATE_CONDITION_HELPER_TS if pipeline.conditional_gates else ""
+
+
+def conditional_gate_ts(node: Node, wait_block: str, error_class: str, indent: str) -> str:
+    """``wait_block`` run only when ``node.when`` is true, with the gate's
+    result null otherwise. The block binds ``const <id>_result = ...`` once;
+    the result is declared before the branch instead, so later waves see it.
+    A gate with no ``when`` gets its block unchanged. ``error_class`` fails
+    the run without a retry (Inngest's retries are function-level)."""
+    if node.when is None:
+        return wait_block
+    ref = parse_input_ref(node.when)
+    assert ref.node_id is not None and ref.field is not None
+    binding = f"{indent}const {node.id}_result = "
+    assert wait_block.count(binding) == 1, node.id
+    body = wait_block.replace(binding, f"{indent}{node.id}_result = ")
+    nested = "".join(
+        f"    {line}" if line.strip() else line for line in body.splitlines(keepends=True)
+    )
+    result, field = f"{ref.node_id}_result", json.dumps(ref.field)
+    return (
+        f"{indent}// {node.id} asks the person only when {node.when} is true;\n"
+        f"{indent}// otherwise it is skipped and its result is null.\n"
+        f"{indent}const {node.id}_whenError = gateConditionError(\n"
+        f"{indent}    {result}, {field}, {json.dumps(node.id)}, {json.dumps(node.when)},\n"
+        f"{indent});\n"
+        f"{indent}if ({node.id}_whenError !== null) {{\n"
+        f"{indent}    throw new {error_class}({node.id}_whenError);\n"
+        f"{indent}}}\n"
+        f"{indent}let {node.id}_result: Record<string, unknown> | null = null;\n"
+        f"{indent}if (({result} as Record<string, unknown>)[{field}] === true) {{\n"
+        f"{nested}"
+        f"{indent}}}\n"
+    )
+
+
 MISSING_INPUTS_HELPER_TS = """\
 /** Why `pipelineInput` cannot start a run, or null when it can.
  *

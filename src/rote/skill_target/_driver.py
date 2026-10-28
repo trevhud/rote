@@ -292,6 +292,28 @@ def _resolve(binding: list[Any], run_input: dict[str, Any], results: dict[str, A
     return upstream[fld]
 
 
+def _gate_waits(step: dict[str, Any], results: dict[str, Any]) -> bool | str:
+    """Whether a gate with a ``when`` asks the person, or why it cannot tell.
+
+    The same rule as every workflow runtime's (``_gate_condition_error``):
+    the field must be exactly true or false."""
+    when = step["when"]
+    gate, ref = step["id"], f"{when['node']}.output.{when['field']}"
+    result = results.get(when["node"])
+    if not isinstance(result, dict) or when["field"] not in result:
+        return (
+            f"hitl_gate {gate!r} waits only when {ref} is true, "
+            f"but that result has no {when['field']!r}"
+        )
+    value = result[when["field"]]
+    if isinstance(value, bool):
+        return value
+    return (
+        f"hitl_gate {gate!r} waits only when {ref} is true, and it is "
+        f"{type(value).__name__}, not true or false"
+    )
+
+
 def _payload(
     step: dict[str, Any], run_input: dict[str, Any], results: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1073,6 +1095,26 @@ class Driver:
             for step in in_wave:
                 if step["id"] in results:
                     continue
+                if step["kind"] == "gate" and step.get("when"):
+                    waits = _gate_waits(step, results)
+                    if isinstance(waits, str):
+                        with self._locked(path):
+                            state = self._read(path)
+                            state["state"] = "error"
+                            state["error"] = waits
+                            self._write(path, state)
+                        return self._error(
+                            path.name,
+                            f"{waits}.",
+                            "recompile the skill (rote compile)",
+                            step=step["id"],
+                        )
+                    if not waits:
+                        # Skipped: its result is null. Nothing is written, so
+                        # a resumed run derives the skip again from the
+                        # result it depends on, and no file can stand in for it.
+                        results[step["id"]] = None
+                        continue
                 if step["kind"] == "loop":
                     return self._ask_loop(path, step, results)
                 if step["kind"] in ("judge", "gate", "do"):

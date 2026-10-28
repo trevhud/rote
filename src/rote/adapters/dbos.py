@@ -93,8 +93,10 @@ from rote.adapters._py_common import (
     async_runner_helper,
     call_impl_helper,
     cli_input_check,
+    conditional_gate_py,
     fan_out_binding,
     fan_out_list_helper,
+    gate_condition_helper,
     gate_message_helper,
     gate_report_py,
     has_legacy_judges,
@@ -437,6 +439,16 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     assert node.signal is not None
     timeout_str = node.timeout or pipeline.config.hitl.default_timeout
     timeout_seconds = _duration_to_seconds(timeout_str)
+    # A failed workflow body is not retried on DBOS, so a plain raise ends the run.
+    return conditional_gate_py(
+        node,
+        _hitl_wait_block(node, timeout_str, timeout_seconds),
+        "raise ValueError(_when_error)",
+        "    ",
+    )
+
+
+def _hitl_wait_block(node: Node, timeout_str: str, timeout_seconds: float) -> str:
     return (
         f"    # ─── HITL gate: {node.id} ───\n"
         f"    # Says which gate the run waits at, and the gate's message, in\n"
@@ -700,6 +712,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         header += "\n\n" + missing_inputs_helper(pipeline)
     if gate_helper := gate_message_helper(pipeline):
         header += "\n\n" + gate_helper
+    if condition_helper := gate_condition_helper(pipeline):
+        header += "\n\n" + condition_helper
 
     has_impls = needs_call_impl(pipeline)
     if has_impls or mcp_backed or has_legacy_judges(pipeline):

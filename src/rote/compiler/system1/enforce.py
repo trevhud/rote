@@ -59,6 +59,7 @@ DECISION_FIELDS = (
     "tool_servers",
     "loop_body",
     "signal",
+    "when",
     "notify",
     "timeout",
     "retry",

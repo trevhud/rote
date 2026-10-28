@@ -109,6 +109,13 @@ UNVERIFIED_TOOL_RESULT = (
     "Test each shape."
 )
 
+#: What a reader of a gate that may be skipped (``when:``) is told.
+SKIPPABLE_GATE = (
+    "  This is the person's answer at gate `{gate}`, which asks only when `{when}` is true. "
+    "When it is false the gate is skipped and this value is None, not an answer. Handle "
+    "None the way the skill says to carry on without asking, and test both cases."
+)
+
 #: Modules a generated module or test may import besides the stdlib.
 _ALLOWED_TEST_IMPORTS = frozenset({"pytest"})
 
@@ -378,6 +385,9 @@ class Context:
             # Gmail's search returns, on every run. Untyped, it takes either.
             return {}
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
+        if ref.node_id is not None and self.node(ref.node_id).when is not None:
+            # A skipped gate's result is null (the IR has its readers bind it whole).
+            return {"anyOf": [schema, {"type": "null"}]}
         if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
             schema = {"type": "array", "items": schema}
         if ref.field is not None:
@@ -502,6 +512,8 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
         lines.append(_json(ctx.param_schema(node, param)))
         if source is not None and ctx.unverified_tool_result(source):
             lines.append(UNVERIFIED_TOOL_RESULT)
+        if source is not None and ctx.node(source).when is not None:
+            lines.append(SKIPPABLE_GATE.format(gate=source, when=ctx.node(source).when))
         sample = ctx.param_sample(node, param)
         if sample is not None:
             lines.append(

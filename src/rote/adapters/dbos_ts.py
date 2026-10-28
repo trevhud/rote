@@ -111,6 +111,7 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     SCHEMA_ERRORS_TS,
+    conditional_gate_ts,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -119,6 +120,7 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -381,6 +383,11 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
 
 
 def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
+    # A thrown workflow function fails the run on DBOS; nothing retries it.
+    return conditional_gate_ts(node, _hitl_wait_block(node, pipeline), "Error", " " * 8)
+
+
+def _hitl_wait_block(node: Node, pipeline: Pipeline) -> str:
     assert node.signal is not None
     timeout_str = node.timeout or pipeline.config.hitl.default_timeout
     timeout_seconds = _seconds_literal(_duration_to_seconds(timeout_str))
@@ -749,6 +756,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
     if gate_helper := gate_message_helper_ts(pipeline):
         unwrap_block += f"\n{gate_helper.rstrip(chr(10))}\n"
+    if condition_helper := gate_condition_helper_ts(pipeline):
+        unwrap_block += f"\n{condition_helper.rstrip(chr(10))}\n"
     impl_input = impl_input_type_block("\n".join([*step_blocks, body]))
     if impl_input:
         unwrap_block += f"\n{impl_input.rstrip(chr(10))}\n"

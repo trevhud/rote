@@ -2046,6 +2046,37 @@ values; touch either converter and run it.
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
 
+### A gate with `when:` is skipped with a null result, on every runtime
+
+A skill that asks the person only when something holds compiled to a gate
+that waited on every run (#309). `Node.when` (hitl_gate only) names
+`<node>.output.<field>`, a boolean an earlier node computes. Rules to keep:
+
+- **Exactly true or false.** Every runtime refuses any other value naming
+  the gate (`_gate_condition_error` in `_py_common`, `gateConditionError`
+  in `_ts_common`, `_gate_waits` in the skill driver and the prefix
+  runner). Truthiness differs between Python and JS, so never "simplify"
+  to `if value:`. Temporal raises it non-retryable and Inngest as
+  `NonRetriableError`, like the missing-input check.
+- **A skipped gate's result is null, so readers bind it whole.** The IR
+  refuses a read of `<gate>.output.<field>` on a conditional gate, a
+  fan_out over one, and a judge input schema that does not admit null for
+  it (`Pipeline._validate_gate_conditions`). That is what lets every
+  emitter leave reference rendering alone: only the wait is wrapped
+  (`conditional_gate_py`, `conditional_gate_ts`, which declares the
+  result `let <id>_result: Record<string, unknown> | null` before the
+  branch).
+- **The compiled skill writes nothing for a skip.** The driver derives it
+  again from the result it depends on, so no file can stand in for a gate
+  a person never answered.
+- **The structure pass decides it from evidence** (`gate.when` and a
+  verbatim `when_quote`, `_check_gate_when`). One that still fails after
+  the repairs is dropped, so the gate asks every run, and an Open question
+  says so: never a guessed condition. The skeleton types the key `bool`.
+
+`tests/test_conditional_gate_parity*.py` runs all five workflow runtimes
+live (true, false, and a string).
+
 ### Optional pipeline inputs are left out; required ones fail on entry
 
 `Pipeline.optional_input_fields` (listed in `input.optional`, or a schema
