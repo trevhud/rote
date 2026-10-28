@@ -930,7 +930,9 @@ def conditional_gate_ts(node: Node, wait_block: str, error_class: str, indent: s
         f"{indent}    throw new {error_class}({node.id}_whenError);\n"
         f"{indent}}}\n"
         f"{indent}let {node.id}_result: Record<string, unknown> | null = null;\n"
-        f"{indent}if (({result} as Record<string, unknown>)[{field}] === true) {{\n"
+        # Indexed plainly, as ref_to_ts_expr does: `as Record<...>` fails tsc
+        # (TS2352) when the step returns an interface.
+        f"{indent}if ({result}[{field}] === true) {{\n"
         f"{nested}"
         f"{indent}}}\n"
     )

@@ -1540,6 +1540,13 @@ class Pipeline(BaseModel):
             if source.id in conditional:
                 errors.append(f"{head}: {source.id!r} is a gate that may be skipped")
                 continue
+            if source.fan_out:
+                errors.append(
+                    f"{head}: {source.id!r} is a fan_out, so its result is a list of "
+                    "per-element results with no fields. Compute the condition in a "
+                    "node that reads that list"
+                )
+                continue
             declared_type = _declared_field_type(source, ref.field)
             if declared_type is _UNDECLARED:
                 errors.append(
@@ -1566,7 +1573,7 @@ class Pipeline(BaseModel):
                         f"A skipped gate's result is null, so bind it whole "
                         f"(`{ref.node_id}.output`) and handle null"
                     )
-                elif node.fan_out:
+                elif node.fan_out and param == _fan_element_or_none(node, self):
                     errors.append(
                         f"{where}: a fan_out cannot dispatch over a gate that may be "
                         "skipped, since a skipped gate's result is null"
@@ -2098,6 +2105,14 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
                 f"beside it."
             )
     return message
+
+
+def _fan_element_or_none(node: Node, pipeline: Pipeline) -> str | None:
+    """The fanned param, or None when emission would refuse the fan anyway."""
+    try:
+        return fan_out_element_param(node, pipeline)
+    except ValueError:
+        return None
 
 
 #: :func:`_declared_field_type` for a node that lists its keys without this one.

@@ -2074,8 +2074,16 @@ that waited on every run (#309). `Node.when` (hitl_gate only) names
   the repairs is dropped, so the gate asks every run, and an Open question
   says so: never a guessed condition. The skeleton types the key `bool`.
 
+- **The Cloudflare runner answers only a gate that announced itself.** It
+  infers a park from step-output stability, so a slow step after a skipped
+  gate looked like a park; the payload it then sent was never consumed, and
+  the stuck-gate check failed a good run. A payload now goes out once its
+  gate's `rote-gate-park` line is in the log.
+- **Index the condition plainly in TS.** `(x as Record<string, unknown>)[f]`
+  fails tsc when the step returns an interface (the `step.do` cast trap).
+
 `tests/test_conditional_gate_parity*.py` runs all five workflow runtimes
-live (true, false, and a string).
+live (true, false, and a string), plus tsc on interface-typed steps.
 
 ### Optional pipeline inputs are left out; required ones fail on entry
 

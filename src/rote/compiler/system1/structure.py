@@ -1112,6 +1112,11 @@ def _check_gate_when(
         )
     elif source.get("in_loop"):
         out.append(f"{where}: when {when!r} reads a node that runs inside a loop")
+    elif source.get("fan_out_over"):
+        out.append(
+            f"{where}: when {when!r} reads a node that fans out, whose result is a list "
+            "with no keys; compute the condition in a node that reads that list"
+        )
     quote = str(gate.get("when_quote") or "")
     if u is None or len(quote.split()) < AFTER_QUOTE_MIN_WORDS or not _appears(quote, u.text):
         out.append(

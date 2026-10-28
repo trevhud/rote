@@ -43,6 +43,7 @@ from rote.mcp.parked import (
     AuthParkWatcher,
     LogMarkerChannel,
     ParkWatchFactory,
+    parse_gate_park_markers,
     watches_park,
 )
 from rote.runners._node import (
@@ -188,14 +189,22 @@ def _drive_instance(
 ) -> MeasuredRun:
     """Deliver gate payloads on each inferred park until the run ends.
 
-    Once every payload is out, a "park" is usually a step sleeping
-    between retry attempts, so the runner keeps waiting for a terminal
-    state (bounded by ``deadline``) and reports what actually failed.
-    The exception is a stuck gate: the last payload was never consumed
-    (a consumed payload adds a step output) and no step has logged an
-    error, so nothing is retrying. That fails at once.
+    A gate's payload goes out only once that gate has announced itself
+    (its :data:`~rote.mcp.parked.GATE_PARK_MARKER` line, printed just before
+    it waits). A gate with ``when:`` may be skipped and never announce:
+    sending its payload on a park inferred from a slow step after it left
+    an event nothing consumes, and the stuck-gate check below then failed a
+    run that was fine (PR #313 review).
+
+    A "park" with no announced gate to answer is usually a step sleeping
+    between retry attempts or a slow step, so the runner keeps waiting for
+    a terminal state (bounded by ``deadline``) and reports what actually
+    failed. The exception is a stuck gate: the last payload was never
+    consumed (a consumed payload adds a step output) and no step has
+    logged an error, so nothing is retrying. That fails at once.
     """
     steps_at_last_payload: int | None = None
+    answered: set[str] = set()
     while True:
         try:
             state = _wait_until_parked_or_complete(port, instance_id, deadline=deadline)
@@ -227,7 +236,20 @@ def _drive_instance(
                 error=_failure_message(status, state, log_path),
             )
         steps = len(state.get("__LOCAL_DEV_STEP_OUTPUTS", []))
-        if not pending:
+        announced = {g.signal for g in parse_gate_park_markers(_log_text(log_path))}
+        ready = next((i for i, (gate, _) in enumerate(pending) if gate in announced), None)
+        unanswerable = sorted(announced - answered - {gate for gate, _ in pending})
+        if ready is None and unanswerable:
+            return MeasuredRun(
+                wall_seconds=time.monotonic() - started,
+                output=None,
+                error=(
+                    f"workflow waits for signal(s) {', '.join(unanswerable)}, and no "
+                    "--signal answers them. Check that each --signal name matches its "
+                    "gate's signal"
+                ),
+            )
+        if ready is None:
             if steps == steps_at_last_payload and not _step_errors(log_path):
                 return MeasuredRun(
                     wall_seconds=time.monotonic() - started,
@@ -241,11 +263,19 @@ def _drive_instance(
                 )
             continue
         steps_at_last_payload = steps
-        gate, payload = pending.pop(0)
+        gate, payload = pending.pop(ready)
+        answered.add(gate)
         http_post_json(
             f"http://127.0.0.1:{port}/event/{instance_id}/{gate}",
             payload if isinstance(payload, dict) else {"payload": payload},
         )
+
+
+def _log_text(log_path: Path) -> str:
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")

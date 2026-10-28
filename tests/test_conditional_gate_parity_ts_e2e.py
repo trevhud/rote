@@ -88,3 +88,77 @@ def test_ts_asks_only_when_the_condition_holds(
 ) -> None:
     run = run_case(runtime, case, tmp_path)
     check(case, run, capsys.readouterr().err)
+
+
+#: The condition's node typed as an interface, the way the implement skill
+#: has users write it. An interface has no implicit index signature, so a
+#: `as Record<string, unknown>` cast of its result fails tsc (TS2352).
+_INTERFACE_IMPLS = {
+    **_IMPLS,
+    "detect_owner": (
+        "export interface Detected {\n"
+        "    ambiguous: boolean;\n"
+        "    candidates: string[];\n"
+        "}\n"
+        "\n"
+        "export async function detectOwner(input: {\n"
+        "    notes: string;\n"
+        "    flag: unknown;\n"
+        "}): Promise<Detected> {\n"
+        '    return { ambiguous: input.flag === true, candidates: ["ana", "bo"] };\n'
+        "}\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("runtime", ["cloudflare", "dbos-ts", "inngest"])
+def test_a_condition_on_an_interface_typed_result_compiles(runtime: str, tmp_path: Path) -> None:
+    """Found by review: the emitted condition cast its node's result to a
+    Record, which tsc refuses for an interface on Cloudflare and DBOS-TS."""
+    import subprocess
+
+    from tests import _node_trees as node_trees
+
+    app = tmp_path / runtime
+    get_adapter(runtime).emit(PIPELINE, app)
+    for node_id, source in _INTERFACE_IMPLS.items():
+        (app / "src" / "extracted" / f"{node_id}.ts").write_text(source, encoding="utf-8")
+    node_trees.install(app)
+    tsc = subprocess.run(
+        ["npx", "--no-install", "tsc", "--noEmit"],
+        cwd=app,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert tsc.returncode == 0, tsc.stdout
+
+
+def test_cloudflare_runs_past_a_skipped_gate_into_a_slow_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: `rote run` inferred a park from a step slower than
+    its stability window after a skipped gate, sent the gate's payload,
+    nothing consumed it, and the stuck-gate check failed a good run. The
+    runner now answers only a gate that has announced itself."""
+    from rote.runners.cloudflare import run_cloudflare
+
+    app = tmp_path / "cloudflare"
+    get_adapter("cloudflare").emit(PIPELINE, app)
+    slow = _IMPLS["recap"].replace(
+        "}): Promise<{ recap: string; owner: string; asked: boolean }> {\n",
+        "}): Promise<{ recap: string; owner: string; asked: boolean }> {\n"
+        "    await new Promise((resolve) => setTimeout(resolve, 6000));\n",
+    )
+    assert slow != _IMPLS["recap"]
+    for node_id, source in {**_IMPLS, "recap": slow}.items():
+        (app / "src" / "extracted" / f"{node_id}.ts").write_text(source, encoding="utf-8")
+    run = run_cloudflare(
+        app,
+        CASES["skips"][0],
+        signals=SIGNALS,
+        gate_order=["owner"],
+        timeout_seconds=180,
+        park_watch=watch_factory(False),
+    )
+    check("skips", run, capsys.readouterr().err)

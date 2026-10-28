@@ -1413,3 +1413,26 @@ def test_a_condition_on_a_node_that_states_no_type_is_left_to_the_run() -> None:
     false) decides, never a guess here."""
     pipeline = Pipeline.model_validate(_conditional(detect_owner__output=None))
     assert pipeline.conditional_gates == {"ask_owner"}
+
+
+def test_a_gate_condition_cannot_read_a_fan_out_result() -> None:
+    """A fan_out's result is the list of its per-element results, with no
+    fields, so the condition would fail every run (PR #313 review)."""
+    raw = _conditional(
+        detect_owner__fan_out=True, detect_owner__inputs={"notes": "pipeline.input.notes"}
+    )
+    with pytest.raises(ValueError, match="is a fan_out, so its result is a list"):
+        Pipeline.model_validate(raw)
+
+
+def test_a_fan_out_may_share_a_conditional_gate_across_its_elements() -> None:
+    """Only dispatching over the gate is refused; a fan that reads its answer
+    as a shared value beside the list it fans over is valid (PR #313 review)."""
+    raw = _conditional()
+    raw["nodes"][0]["output"]["items"] = "list"
+    recap = raw["nodes"][2]
+    recap["fan_out"] = True
+    recap["inputs"] = {"item": "detect_owner.output.items", "answer": "ask_owner.output"}
+    raw["edges"].append({"from": "detect_owner", "to": "recap", "fan_out": True})
+    pipeline = Pipeline.model_validate(raw)
+    assert pipeline.node_by_id("recap").fan_out
