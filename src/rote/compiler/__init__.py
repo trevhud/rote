@@ -71,7 +71,7 @@ from rote.compiler.update import (
     render_update_brief,
 )
 from rote.compiler.usage import CompileUsage, compile_usage
-from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
+from rote.compiler.verify import UNAPPLIED_PROPOSAL, EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline, save_pipeline
@@ -1361,13 +1361,15 @@ class Compiler:
             else:
                 problems = len(verification.errors)
                 gaps = len(verification.provenance_gaps)
-                dead = len(verification.review_gaps) - gaps
+                proposed = sum(1 for f in verification.review_gaps if f.kind == UNAPPLIED_PROPOSAL)
+                dead = len(verification.review_gaps) - gaps - proposed
                 tests = verification.tests
                 red = tests is not None and tests.status == "failed"
                 what = (
                     f"the deliverable failed verification ({problems} contract "
                     f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
-                    f"{f', {dead} unused constant(s)' if dead else ''}"
+                    f"{f', {dead} review gap(s)' if dead else ''}"
+                    f"{f', {proposed} unapplied proposal(s)' if proposed else ''}"
                     f"{', generated tests failing' if red else ''})"
                 )
             attempt = invalid_attempts if invalid else attempts

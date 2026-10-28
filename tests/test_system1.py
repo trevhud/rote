@@ -201,6 +201,62 @@ def test_proposals_are_checked_never_applied(tmp_path: Path) -> None:
     assert (tmp_path / "pipeline.yaml").read_text() == skeleton
 
 
+def test_a_proposal_rote_did_not_apply_is_a_review_gap(tmp_path: Path) -> None:
+    """A real compile proposed turning a renderer into the tool call the skill
+    requires and verified with nothing unresolved (#310): the proposal reached
+    only the report. It is a review gap now: the repair turn asks the agent to
+    meet the skill without it or keep it for a person, and a survivor is a
+    warning, never an exit 1 (the user's rule)."""
+    from rote.compiler.verify import UNAPPLIED_PROPOSAL, unapplied_proposal_findings
+
+    system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
+    node = yaml.safe_load((tmp_path / "pipeline.yaml").read_text())["nodes"][0]["id"]
+    assert unapplied_proposal_findings(tmp_path) == []
+    (tmp_path / "system1" / "proposals.yaml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "node": node,
+                    "field": "kind",
+                    "value": "external_call",
+                    "reason": "the skill requires the message_compose_v1 tool",
+                }
+            ]
+        )
+    )
+    [finding] = unapplied_proposal_findings(tmp_path)
+    assert (finding.kind, finding.severity, finding.node_id) == (
+        UNAPPLIED_PROPOSAL,
+        "warning",
+        node,
+    )
+    assert "the agent proposes kind -> 'external_call'" in finding.message
+    assert "message_compose_v1" in finding.message
+    assert "the compiled pipeline does not do this" in finding.message
+
+    from rote.compiler.verify import Verification, verify_deliverable
+
+    # Verification itself finds it, on every stop and at the end.
+    found = verify_deliverable(tmp_path, run_tests=False)
+    assert [f for f in found.review_gaps if f.kind == UNAPPLIED_PROPOSAL] == [finding]
+
+    verdict = Verification(pipeline=None, findings=[finding])
+    assert verdict.ok and verdict.review_gaps == [finding]
+    instruction = verdict.repair_instruction(tmp_path)
+    assert instruction is not None
+    assert "Proposals rote will not apply" in instruction
+    assert "Dead configuration" not in instruction
+
+
+def test_an_unreadable_proposals_file_is_a_review_gap_too(tmp_path: Path) -> None:
+    from rote.compiler.verify import unapplied_proposal_findings
+
+    system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
+    (tmp_path / "system1" / "proposals.yaml").write_text("- node: x\n  reason: a: b: c\n")
+    [finding] = unapplied_proposal_findings(tmp_path)
+    assert "did not parse" in finding.message and finding.severity == "warning"
+
+
 def test_text_rubric_is_system1_md_and_two_references(tmp_path: Path) -> None:
     bundle = system1.materialize_text_rubric(REPO / "skills" / "rote-compile", tmp_path / "rubric")
     assert (bundle / "SKILL.md").read_text() == (
