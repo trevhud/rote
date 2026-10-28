@@ -9,6 +9,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **A gate the skill asks only sometimes waits only then (#309).** A
+  `hitl_gate` can carry `when: <node>.output.<field>`, a boolean an earlier
+  node computes. True, the gate waits as before. False, it is skipped and
+  its result is null, so the node after it carries on without asking. Any
+  other value fails the run naming the gate. It works on the five workflow
+  runtimes that run gates and on the compiled skill, and the compile-time prefix run applies
+  the same rule. The structure pass decides it from the skill's words and
+  a verbatim quote; a condition that does not check is dropped, the gate
+  asks every run, and an Open question says so. Before this, both of a
+  meeting-recap skill's conditional questions paused every run.
+
 ### Fixed
 
 - **A change the compile agent proposes and rote does not apply is a review

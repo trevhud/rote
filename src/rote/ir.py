@@ -947,6 +947,38 @@ class Node(BaseModel):
         description="Signal name the workflow waits for (resume on signal)",
     )
     notify: NotifyConfig | None = None
+    when: str | None = Field(
+        default=None,
+        description=(
+            "hitl_gate only: `<node_id>.output.<field>`, a true-or-false value an "
+            "earlier node computes. The gate waits for the person only when it is "
+            "true. When it is false the gate is skipped and its result is null, so "
+            "a node that reads the gate binds it whole (`<gate>.output`) and "
+            "handles null. Any other value fails the run naming the gate."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_when(self) -> Self:
+        """``when`` is a gate's, and names one field of an earlier node's result.
+
+        A skill that asks the person only when something holds ("ask who
+        owns the meeting if that is ambiguous") compiled to a gate that
+        waited on every run (#309). The field is emitted as an expression
+        on every runtime, so its grammar is the ``inputs:`` one (invariant
+        #7), narrowed to a node's field: the pipeline input is not a
+        condition a step computes."""
+        if self.when is None:
+            return self
+        if self.kind is not NodeKind.HITL_GATE:
+            raise ValueError(f"Node {self.id!r}: when is only allowed on hitl_gate nodes")
+        ref = parse_input_ref(self.when)
+        if ref.node_id is None or ref.field is None:
+            raise ValueError(
+                f"hitl_gate {self.id!r}: when {self.when!r} must name one field of an "
+                f"earlier node's result, `<node_id>.output.<field>`, holding true or false"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_constant_units(self) -> Self:
@@ -1465,6 +1497,101 @@ class Pipeline(BaseModel):
             raise ValueError("\n".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_gate_conditions(self) -> Self:
+        """A gate's ``when`` reads a boolean that exists before the gate runs,
+        and nothing reads a field of a gate that may be skipped.
+
+        The condition is evaluated where the gate would wait, so its node must
+        finish in an earlier wave (the reachability rule for ``inputs:``). Its
+        field must be one the node declares, and a declared type must be a
+        boolean: a count or a list would be "truthy" in one language and an
+        error in another. A skipped gate's result is null, so a reader of one
+        of its fields would fail on every run that skipped it; readers bind the
+        gate whole, a judge's schema must admit null for it, and a fan_out
+        cannot dispatch over it."""
+        waves = self.execution_waves()
+        wave_of = {n.id: i for i, wave in enumerate(waves) for n in wave}
+        by_id = {n.id: n for n in self.nodes}
+        owned = {sub for n in self.nodes for sub in n.loop_body or ()}
+        conditional = {n.id for n in self.nodes if n.when is not None}
+        errors: list[str] = []
+        for gate in self.nodes:
+            if gate.when is None:
+                continue
+            ref = parse_input_ref(gate.when)
+            assert ref.node_id is not None and ref.field is not None
+            head = f"hitl_gate {gate.id!r} when {gate.when!r}"
+            source = by_id.get(ref.node_id)
+            if source is None:
+                errors.append(f"{head}: there is no node {ref.node_id!r}")
+                continue
+            if source.id in owned or gate.id in owned:
+                errors.append(
+                    f"{head}: a loop_body sub-node binds no top-level result, so a gate "
+                    "condition cannot be read from one or set on one"
+                )
+                continue
+            if wave_of[source.id] >= wave_of[gate.id]:
+                errors.append(
+                    f"{head}: {source.id!r} does not run before the gate. Add an edge from "
+                    f"{source.id!r} to {gate.id!r} (directly or through other nodes)"
+                )
+            if source.id in conditional:
+                errors.append(f"{head}: {source.id!r} is a gate that may be skipped")
+                continue
+            if source.fan_out:
+                errors.append(
+                    f"{head}: {source.id!r} is a fan_out, so its result is a list of "
+                    "per-element results with no fields. Compute the condition in a "
+                    "node that reads that list"
+                )
+                continue
+            declared_type = _declared_field_type(source, ref.field)
+            if declared_type is _UNDECLARED:
+                errors.append(
+                    f"{head}: {source.id!r} declares only output keys "
+                    f"{sorted(source.output_keys)}. Read one of those, or add "
+                    f"{ref.field!r} (true or false) to its output"
+                )
+            elif declared_type is not None and declared_type != "boolean":
+                errors.append(
+                    f"{head}: {source.id}.{ref.field} is declared {declared_type!r}. A gate "
+                    "condition must be true or false; compute a boolean field for it"
+                )
+        for node in self.nodes:
+            if node.id in owned:
+                continue
+            for param, raw in (node.inputs or {}).items():
+                ref = parse_input_ref(raw)
+                if ref.node_id not in conditional:
+                    continue
+                where = f"Node {node.id!r} input {param!r} reads {raw!r}"
+                if ref.field is not None:
+                    errors.append(
+                        f"{where}, a field of a gate that may be skipped (it has when:). "
+                        f"A skipped gate's result is null, so bind it whole "
+                        f"(`{ref.node_id}.output`) and handle null"
+                    )
+                elif node.fan_out and param == _fan_element_or_none(node, self):
+                    errors.append(
+                        f"{where}: a fan_out cannot dispatch over a gate that may be "
+                        "skipped, since a skipped gate's result is null"
+                    )
+                elif not _judge_property_admits_null(node, param):
+                    errors.append(
+                        f"{where}, a gate that may be skipped, but its input schema "
+                        f"property {param!r} does not admit null. Add null to its type"
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
+    @property
+    def conditional_gates(self) -> frozenset[str]:
+        """The ids of the gates with a ``when``: each may be skipped, with a null result."""
+        return frozenset(n.id for n in self.nodes if n.when is not None)
+
     def execution_waves(self) -> list[list[Node]]:
         """Topologically sort the top-level nodes into parallel waves.
 
@@ -1978,6 +2105,79 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
                 f"beside it."
             )
     return message
+
+
+def _fan_element_or_none(node: Node, pipeline: Pipeline) -> str | None:
+    """The fanned param, or None when emission would refuse the fan anyway."""
+    try:
+        return fan_out_element_param(node, pipeline)
+    except ValueError:
+        return None
+
+
+#: :func:`_declared_field_type` for a node that lists its keys without this one.
+_UNDECLARED = object()
+
+_BOOLEAN_TYPE_NAMES = frozenset({"bool", "boolean"})
+
+
+def _declared_field_type(node: Node, field: str) -> object:
+    """The type ``node`` declares for its result's ``field``: ``"boolean"``,
+    another type's name, None when nothing states a type (or the node lists
+    no keys, or its keys are an MCP tool's guess), or :data:`_UNDECLARED`
+    when the node lists its keys and this is not one."""
+    props = (node.output_schema or {}).get("properties")
+    if isinstance(props, dict) and field in props:
+        stated = props[field].get("type") if isinstance(props[field], dict) else None
+        if isinstance(stated, str):
+            return "boolean" if stated == "boolean" else stated
+        return None
+    if isinstance(node.output, dict) and field in node.output:
+        stated = node.output[field]
+        if isinstance(stated, str) and stated.strip():
+            name = stated.strip()
+            return "boolean" if name.lower() in _BOOLEAN_TYPE_NAMES else name
+        return None
+    if node.mcp is not None and _closed_object_properties(node.output_schema) is None:
+        return None
+    return _UNDECLARED if node.output_keys else None
+
+
+def _judge_property_admits_null(node: Node, param: str) -> bool:
+    """Whether a judge's input schema lets ``param`` be null. Other kinds
+    validate no payload, so their code is what has to handle null."""
+    if node.kind is not NodeKind.LLM_JUDGE or node.signature_spec is None:
+        return True
+    try:
+        root = _schema_root(node.signature_spec.input_schema)
+    except ValueError:
+        return True  # the binding check reports the schema itself
+    props = root.get("properties")
+    prop = props.get(param) if isinstance(props, dict) else None
+    if not isinstance(prop, dict):
+        return True  # an undeclared binding is the binding check's error
+    return _admits_null(prop)
+
+
+def _admits_null(schema: dict[str, Any]) -> bool:
+    """Whether a JSON Schema accepts null. Unknown (a ``$ref`` this does not
+    follow) counts as yes: a false error would have the agent rewrite a
+    correct schema."""
+    if "$ref" in schema:
+        return True
+    if "enum" in schema:
+        return isinstance(schema["enum"], list) and None in schema["enum"]
+    if "const" in schema:
+        return schema["const"] is None
+    branches = [
+        b for key in ("anyOf", "oneOf") for b in schema.get(key) or [] if isinstance(b, dict)
+    ]
+    if branches:
+        return any(_admits_null(b) for b in branches)
+    stated = schema.get("type")
+    if stated is None:
+        return True
+    return stated == "null" or (isinstance(stated, list) and "null" in stated)
 
 
 def load_pipeline(path: str | Path) -> Pipeline:

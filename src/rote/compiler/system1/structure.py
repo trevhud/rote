@@ -230,6 +230,15 @@ SCHEMA: dict[str, Any] = _obj(
                                 description="one or two sentences to the person; each "
                                 "{name} is a name in shows"
                             ),
+                            "when": _str(
+                                description="'<node id>.<output key>', a true-or-false "
+                                "value an earlier node computes, when the skill asks "
+                                "only if something holds; '' when it always asks"
+                            ),
+                            "when_quote": _str(
+                                description="the 4+ words of this node's own section that "
+                                "state the condition, or '' when when is empty"
+                            ),
                         }
                     ),
                     "loop": _obj(
@@ -366,6 +375,14 @@ Per node:
   is printed below the message, so name it in words ("Approve or decline
   each book purchase request below for the {{branch}} library."). The gate
   waits for every node in its reads and after, whatever it shows.
+  when: if the skill asks the person only when something holds ("ask who
+  owns it if that is unclear", "if anything is missing, ask for it"), the
+  earlier node and output key that is true exactly then ("<node id>.<key>",
+  a key in that node's outputs, holding true or false; that node computes
+  it, so add the key to its outputs). when_quote: at least four words
+  copied exactly from the gate's own section that state the condition.
+  Both empty when the skill always asks. A skipped gate's result is null,
+  so a node that reads it handles a null answer.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty.
 - confidence: how sure you are of this node, 0 to 1. why: one short clause.
@@ -838,6 +855,7 @@ def check(
             out += _check_gate_shows(
                 where, n, seen, listing, run_outputs, _input_names(answer, sample)
             )
+            out += _check_gate_when(where, n, seen, u)
         if kind == "agent_loop":
             lp = n.get("loop") or {}
             unknown = [t for t in lp.get("tools") or [] if t not in by_tool]
@@ -1061,6 +1079,51 @@ def _message_problem(message: str, names: set[str]) -> str | None:
         f"its message uses {', '.join(f'{{{p}}}' for p in unbound)}, which it does not "
         f"show; each {{name}} must be a name in shows ({sorted(names) or 'none'})"
     )
+
+
+def _check_gate_when(
+    where: str,
+    n: Mapping[str, Any],
+    earlier: Mapping[str, Mapping[str, Any]],
+    u: Any,
+) -> list[str]:
+    """A gate's condition is a key an earlier node returns, and the gate's own
+    section states it. Evidence only, as for ``after``: whether the skill's
+    question is conditional is the model's reading; the words it cites and
+    the key it names are checked."""
+    gate = n.get("gate") or {}
+    when = str(gate.get("when") or "")
+    if not when:
+        return []
+    out: list[str] = []
+    node_id, _, key = when.partition(".")
+    source = earlier.get(node_id)
+    if source is None or not key:
+        out.append(
+            f"{where}: when {when!r} must be '<earlier node id>.<output key>', "
+            "a true-or-false value that node computes"
+        )
+    elif source.get("kind") == "hitl_gate":
+        out.append(f"{where}: when {when!r} reads a gate; name the node that computes it")
+    elif key not in [str(k) for k in source.get("outputs") or []]:
+        out.append(
+            f"{where}: when {when!r} names a key {node_id!r} does not return (its outputs: "
+            f"{[str(k) for k in source.get('outputs') or []]}); add {key!r} to its outputs"
+        )
+    elif source.get("in_loop"):
+        out.append(f"{where}: when {when!r} reads a node that runs inside a loop")
+    elif source.get("fan_out_over"):
+        out.append(
+            f"{where}: when {when!r} reads a node that fans out, whose result is a list "
+            "with no keys; compute the condition in a node that reads that list"
+        )
+    quote = str(gate.get("when_quote") or "")
+    if u is None or len(quote.split()) < AFTER_QUOTE_MIN_WORDS or not _appears(quote, u.text):
+        out.append(
+            f"{where}: when needs when_quote, at least {AFTER_QUOTE_MIN_WORDS} words copied "
+            "exactly from the text under its own heading that state the condition"
+        )
+    return out
 
 
 def _check_gate_shows(
@@ -1623,6 +1686,18 @@ def resolve(
                 + "; ".join(w.removeprefix(f"`{nid}`: ") for w in why_not)
             )
             n["after"], n["after_quote"] = [], ""
+        gate = n.get("gate") or {}
+        if n.get("kind") == "hitl_gate" and gate.get("when"):
+            why_not = _check_gate_when(f"`{nid}`", n, {m["id"]: m for m in nodes}, u)
+            if why_not:
+                # Never a guessed condition: the gate asks on every run, and the
+                # note says the skill's question was conditional (#309).
+                notes.append(
+                    f"`{nid}`: the skill may ask this only sometimes, but its condition "
+                    f"{gate['when']!r} did not check, so the gate asks on every run: "
+                    + "; ".join(w.removeprefix(f"`{nid}`: ") for w in why_not)
+                )
+                n["gate"] = {**gate, "when": "", "when_quote": ""}
         if n.get("fan_out_over") and n["fan_out_over"] not in ids:
             # A fan runs over an earlier node's list; the pipeline input is not one.
             notes.append(f"`{nid}`: dropped its fan_out over {n['fan_out_over']!r}")
@@ -2118,6 +2193,13 @@ def to_plan(
             node.payload = list(gate["payload"])
             node.timeout = gate.get("timeout") or None
             node.message = str(gate.get("message") or "").strip() or None
+            when = str(gate.get("when") or "")
+            if when:
+                source, _, key = when.partition(".")
+                node.when = f"{source}.output.{key}"
+                node.decide("when", node.when, conf, rule)
+                if source not in node.after:
+                    node.after.append(source)
             node.decide("signal", node.signal, conf, rule)
             node.decide("payload", node.payload, conf, rule)
             if node.message is not None:

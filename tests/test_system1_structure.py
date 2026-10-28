@@ -1846,6 +1846,63 @@ def test_a_gate_shows_the_one_key_it_names_and_waits_for_what_it_reads(skill: An
     Pipeline.model_validate(doc)
 
 
+def _conditional(when: str = "render_digest.needs_review", **gate: str) -> dict[str, Any]:
+    """_showing with the approval asked only when render_digest says so (#309)."""
+    answer = _showing(DIGEST, message="Approve the digest below.")
+    answer["nodes"][2]["outputs"] = ["digest", "flagged_total", "needs_review"]
+    answer["nodes"][3]["gate"].update(
+        {"when": when, "when_quote": "Send the digest to the finance team", **gate}
+    )
+    return answer
+
+
+def test_a_conditional_gate_asks_only_when_its_key_is_true(skill: Any) -> None:
+    answer = _conditional()
+    assert _show_findings(answer, skill) == []
+    plan, rec, _ = run(skill, answer)
+    assert rec.rounds == 1
+    gate = {n.id: n for n in plan.nodes}["approve_digest"]
+    assert gate.when == "render_digest.output.needs_review"
+    doc = pipeline_doc(plan)
+    by_id = {n["id"]: n for n in doc["nodes"]}
+    assert by_id["approve_digest"]["when"] == "render_digest.output.needs_review"
+    # The IR refuses a condition of any other declared type.
+    assert by_id["render_digest"]["output"]["needs_review"] == "bool"
+    assert by_id["render_digest"]["output"]["digest"] == "Any"
+    assert {"from": "render_digest", "to": "approve_digest"} in doc["edges"]
+    # The node after the gate reads it whole, so a skipped gate's null reaches it.
+    assert by_id["send_digest"]["inputs"]["approve_digest"] == "approve_digest.output"
+    assert Pipeline.model_validate(doc).conditional_gates == {"approve_digest"}
+
+
+@pytest.mark.parametrize(
+    ("when", "gate", "finding"),
+    [
+        ("render_digest.missing", {}, "names a key 'render_digest' does not return"),
+        ("nobody.needs_review", {}, "must be '<earlier node id>.<output key>'"),
+        ("render_digest", {}, "must be '<earlier node id>.<output key>'"),
+        ("render_digest.needs_review", {"when_quote": "only when needed"}, "needs when_quote"),
+    ],
+)
+def test_a_gate_condition_the_evidence_does_not_back_goes_back(
+    skill: Any, when: str, gate: dict[str, str], finding: str
+) -> None:
+    found = _show_findings(_conditional(when, **gate), skill)
+    assert len(found) == 1 and finding in found[0], found
+
+
+def test_a_condition_still_unbacked_after_repair_asks_every_run(skill: Any) -> None:
+    """Never a guessed condition: the gate asks on every run, and the Open
+    question says the skill's question may have been conditional."""
+    bad = _conditional("render_digest.missing")
+    plan, rec, _ = run(skill, *[bad] * (structure.REPAIR_ROUNDS + 1))
+    gate = {n.id: n for n in plan.nodes}["approve_digest"]
+    assert gate.when is None
+    note = next(r for r in rec.resolved if r.startswith("`approve_digest`"))
+    assert "so the gate asks on every run" in note
+    assert "when" not in next(n for n in pipeline_doc(plan)["nodes"] if n["id"] == "approve_digest")
+
+
 def test_a_gate_that_shows_nothing_binds_nothing(skill: Any) -> None:
     """A gate that asks for data the person holds: no inputs, no message,
     and the node it read becomes an ordering edge, never a binding."""

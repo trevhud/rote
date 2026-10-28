@@ -1574,3 +1574,42 @@ def test_gates_that_split_a_section_are_held_to_what_they_collect_together(
     assert "gates ask_0, ask_1 together collect" in finding.message
     assert "**Current Dwell** -> `current_dwell`" in finding.message
     assert "Sorter Metrics" not in finding.message
+
+
+@pytest.mark.parametrize(
+    ("flag", "gate", "recap"),
+    [
+        (False, {"status": "ok", "skipped": True}, "ok"),
+        (True, {"status": "not_deterministic"}, "not_reached"),
+    ],
+)
+def test_the_prefix_skips_a_gate_whose_condition_is_false(
+    tmp_path: Path, flag: bool, gate: dict, recap: str
+) -> None:
+    """The prefix applies every runtime's rule for a gate with ``when:``
+    (#309): false, it is skipped with a null result and the run goes on; true
+    and the sample has no answer, it ends the prefix on its branch."""
+    import yaml
+
+    from tests.test_conditional_gate_parity import PIPELINE, STEPS
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    root = _write(tmp_path, {"pipeline.yaml": yaml.safe_dump(raw), "extracted/steps.py": STEPS})
+    run = _run(root, {"notes": "kickoff", "flag": flag})
+    assert run.findings == []
+    assert {k: v for k, v in run.steps["ask_owner"].items() if k != "reason"} == gate
+    # The step after a skipped gate runs on its null result.
+    assert run.steps["recap"]["status"] == recap
+
+
+def test_a_gate_condition_that_is_not_a_boolean_fails_the_prefix(tmp_path: Path) -> None:
+    import yaml
+
+    from tests.test_conditional_gate_parity import PIPELINE, STEPS
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    root = _write(tmp_path, {"pipeline.yaml": yaml.safe_dump(raw), "extracted/steps.py": STEPS})
+    run = _run(root, {"notes": "kickoff", "flag": "yes"})
+    [finding] = run.findings
+    assert finding.node_id == "ask_owner" and finding.kind == "prefix_binding_failed"
+    assert "is str, not true or false" in finding.message

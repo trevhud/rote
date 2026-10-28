@@ -55,9 +55,11 @@ def _description(n: NodePlan) -> str:
     return f"{n.unit.title}: {first}"[:400]
 
 
-def _output(n: NodePlan) -> dict[str, str] | str:
-    """The node's ``output``: the fanned list's `items`, the decided keys, or "dict"."""
-    keys = {k: "Any" for k in n.output_keys}
+def _output(n: NodePlan, conditions: frozenset[str] = frozenset()) -> dict[str, str] | str:
+    """The node's ``output``: the fanned list's `items`, the decided keys, or "dict".
+    A key a gate's ``when`` reads (``conditions``, ``<node>.output.<key>``) is
+    ``bool``: the IR refuses a condition of any other declared type."""
+    keys = {k: "bool" if f"{n.id}.output.{k}" in conditions else "Any" for k in n.output_keys}
     if n.lists_output:
         return {"items": "list", **{k: v for k, v in keys.items() if k != "items"}}
     return keys or "dict"
@@ -104,6 +106,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     request_schema = input_schema(plan)
     fanned = frozenset(x.id for x in plan.nodes if x.fan_out)
+    conditions = frozenset(x.when for x in plan.nodes if x.when)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -112,7 +115,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             "source": {"section": n.unit.section},
             "description": _description(n),
             "inputs": dict(n.inputs),
-            "output": _output(n),
+            "output": _output(n, conditions),
         }
         if n.output_schema is not None:
             node["output_schema"] = dict(n.output_schema)
@@ -150,6 +153,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
+            if n.when:
+                node["when"] = n.when
             if n.message:
                 # No channel or target: the skill names none, and the runtime
                 # that reaches the person (the compiled skill's agent) needs none.

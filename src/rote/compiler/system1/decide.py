@@ -166,6 +166,9 @@ class NodePlan:
     #: A gate's message to the person, its ``{name}`` placeholders its inputs
     #: (the structure pass's ``gate.message``); rendered as ``notify``.
     message: str | None = None
+    #: A gate's condition, ``<node>.output.<key>`` (the structure pass's
+    #: ``gate.when``): the gate asks only when it is true.
+    when: str | None = None
     #: The nodes a gate reads but does not show: they order it (edges), and a
     #: node reading the gate reads them through it (:func:`_through_gates`).
     reads_unshown: list[str] = field(default_factory=list)

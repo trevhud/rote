@@ -634,6 +634,58 @@ def test_cf_run_reports_the_step_error_from_the_wrangler_log(
     )
 
 
+#: What an emitted Cloudflare gate prints just before it waits.
+_APPROVE_GATE_PARKED = (
+    'rote-gate-park {"gate": "review", "signal": "approve", "message": null, "wait": "review"}\n'
+)
+
+
+def test_cf_run_answers_only_a_gate_that_announced_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate with ``when:`` may be skipped and never wait. A park inferred
+    from a slow step after it is not that gate, so its payload is held: sent,
+    it was never consumed and the stuck-gate check failed a good run."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text("[wrangler:info] Ready on http://localhost:1\n", encoding="utf-8")
+    slow = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
+    done = {"status": "complete", "output": {"recap": "ok"}}
+    posted = _scripted_instance(monkeypatch, [slow] * 12 + [done])
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("approve", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 30,
+        log_path=log,
+    )
+    assert run.error is None and run.output == {"recap": "ok"}
+    assert posted == []
+
+
+def test_cf_run_fails_fast_on_a_gate_no_signal_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(_APPROVE_GATE_PARKED, encoding="utf-8")
+    parked = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
+    posted = _scripted_instance(monkeypatch, [parked])
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("aprove", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 5,
+        log_path=log,
+    )
+    assert posted == []
+    assert run.error is not None and "waits for signal(s) approve" in run.error
+
+
 def test_cf_run_waits_out_a_retrying_step_after_the_last_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -642,7 +694,7 @@ def test_cf_run_waits_out_a_retrying_step_after_the_last_gate(
     from rote.runners import cloudflare as cf
 
     log = tmp_path / "wrangler-dev.log"
-    log.write_text(_WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
+    log.write_text(_APPROVE_GATE_PARKED + _WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
     quiet = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": []}
     # Parked-looking long enough for the one gate, then again (retry
     # backoff), and only then the step's retries run out.
@@ -693,7 +745,9 @@ def test_cf_run_fails_fast_on_a_gate_that_never_consumes_its_payload(
     from rote.runners import cloudflare as cf
 
     log = tmp_path / "wrangler-dev.log"
-    log.write_text("[wrangler:info] Ready on http://localhost:1\n", encoding="utf-8")
+    log.write_text(
+        "[wrangler:info] Ready on http://localhost:1\n" + _APPROVE_GATE_PARKED, encoding="utf-8"
+    )
     parked = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
     posted = _scripted_instance(monkeypatch, [parked])
     run = cf._drive_instance(

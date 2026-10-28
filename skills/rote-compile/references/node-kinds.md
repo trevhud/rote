@@ -226,6 +226,11 @@ uses this to generate the corresponding signal handler in the workflow.
 **Optional field:** `notify` tells the adapter how to alert the human
 reviewer when the workflow reaches the gate (Slack channel, email, etc.).
 
+**Optional field:** `when` makes a gate the skill asks only sometimes
+("if ownership is unclear, ask") wait only when an earlier node's boolean
+output key is true. See `ir-schema.md`; readers of such a gate get null
+when it is skipped.
+
 ---
 
 ## Decision rules for ambiguous cases

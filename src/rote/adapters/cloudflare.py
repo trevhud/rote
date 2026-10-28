@@ -67,6 +67,7 @@ from rote.adapters._ts_common import (
     SCHEMA_ERRORS_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
+    conditional_gate_ts,
     constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
@@ -74,6 +75,7 @@ from rote.adapters._ts_common import (
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -471,6 +473,11 @@ def _emit_fan_out_parkable(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
 
 
 def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
+    # Thrown from run() itself, as the input check is: it fails the instance.
+    return conditional_gate_ts(node, _hitl_gate_block(node, cfg), "Error", " " * 8)
+
+
+def _hitl_gate_block(node: Node, cfg: CloudflareAdapterConfig) -> str:
     assert node.signal is not None
     _validate_signal_name(node.signal, node.id)
     timeout = node.timeout or cfg.default_hitl_timeout
@@ -737,6 +744,8 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
     if gate_helper := gate_message_helper_ts(pipeline):
         helper_block += f"{gate_helper}\n"
+    if condition_helper := gate_condition_helper_ts(pipeline):
+        helper_block += f"{condition_helper}\n"
     impl_input = impl_input_type_block(class_block)
     if impl_input:
         helper_block += f"{impl_input}\n"

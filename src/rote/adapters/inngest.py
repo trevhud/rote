@@ -120,6 +120,7 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     SCHEMA_ERRORS_TS,
+    conditional_gate_ts,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -128,6 +129,7 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -634,6 +636,11 @@ async function runParkable(
 
 
 def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
+    # NonRetriableError: Inngest's retries are function-level.
+    return conditional_gate_ts(node, _hitl_wait_block(node, pipeline), "NonRetriableError", " " * 8)
+
+
+def _hitl_wait_block(node: Node, pipeline: Pipeline) -> str:
     assert node.signal is not None
     event_name = gate_event_name(pipeline, node)
     timeout = node.timeout or pipeline.config.hitl.default_timeout
@@ -854,6 +861,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
     if gate_helper := gate_message_helper_ts(pipeline):
         sections.append(gate_helper.rstrip("\n"))
+    if condition_helper := gate_condition_helper_ts(pipeline):
+        sections.append(condition_helper.rstrip("\n"))
     impl_input = impl_input_type_block(function_block)
     if impl_input:
         sections.append(impl_input.rstrip("\n"))
