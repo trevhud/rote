@@ -268,12 +268,12 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
         cost = tiebreak._cost(st.usage) if st.usage else st.cost_usd
         redecided = f", and re-decided {len(st.redecided)} binding(s)" if st.redecided else ""
         who = (
-            f"a structure pass: {st.model} via {st.lane} read the whole skill and proposed "
+            f"a structure pass: {st.model_label} via {st.lane} read the whole skill and proposed "
             f"every node in {st.rounds} round(s){redecided}, and code checked each one "
             "against the skill's text, its tools' schemas and the sample input"
         )
-        costs: dict[str, float | None] = {f"{st.model}, structure pass": cost}
-        sources = [f"{st.model}'s structure pass"]
+        costs: dict[str, float | None] = {f"{st.model_label}, structure pass": cost}
+        sources = [f"{st.model_label}'s structure pass"]
         model, _, decider_costs = _calls_made(work_dir)
         why = _checker_why(work_dir)
         if model is not None:

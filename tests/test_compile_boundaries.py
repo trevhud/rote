@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from rote.compiler.boundaries import boundary_findings, literal_keys_read
@@ -145,6 +146,113 @@ def test_only_literal_reads_of_the_parameter_itself_count() -> None:
     rebound = ast.parse(source).body[0]
     assert isinstance(rebound, ast.FunctionDef)
     assert literal_keys_read(rebound, "request") == set()
+
+
+def test_a_key_read_through_a_helper_in_the_module_counts(tmp_path: Path) -> None:
+    """The 0.18.0 recompile of #291's skill read all three wrong gate keys
+    through one shared helper, ``payload(value, name)``, so the literal-key
+    check saw none of them, and every run failed with ``Missing payload``."""
+    pipeline = _pipeline([_GATE, _consumer({"answer": "ask_completion.output"})])
+    helper = (
+        "def payload(value, name):\n"
+        "    if name not in value:\n"
+        "        raise ValueError(f'Missing payload: {name}')\n"
+        "    return value[name]\n\n"
+    )
+    wrong = helper + (
+        "def score(answer):\n    return {'n': payload(answer, 'opendock_appointment_completion')}\n"
+    )
+    root = _write(tmp_path, pipeline, {"score.py": wrong})
+    [finding] = boundary_findings(pipeline, root)
+    assert (finding.node_id, finding.kind) == ("score", "gate_key_undeclared")
+    assert "reads `opendock_appointment_completion`" in finding.message
+    right = (
+        helper + "def score(answer):\n    return {'n': payload(answer, 'appointment_completion')}\n"
+    )
+    assert boundary_findings(pipeline, _write(tmp_path / "ok", pipeline, {"score.py": right})) == []
+
+
+def test_helper_reads_follow_keywords_nested_helpers_and_get() -> None:
+    import ast
+
+    module = ast.parse(
+        "def require(mapping, key):\n"
+        "    return mapping.get(key)\n\n"
+        "def payload(value, name):\n"
+        "    return require(value, name)\n\n"
+        "def fixed(value):\n"
+        "    return value['always']\n\n"
+        "def f(request, other):\n"
+        "    a = payload(request, 'a')\n"
+        "    b = payload(name='b', value=request)\n"
+        "    c = fixed(request)\n"
+        "    d = payload(other, 'd')\n"
+        "    e = payload(request, computed)\n"
+        "    g = payload(*args)\n"
+    )
+    fn = module.body[-1]
+    assert isinstance(fn, ast.FunctionDef)
+    assert literal_keys_read(fn, "request", module) == {"a", "b", "always"}
+    # Without the module, helpers are not followed.
+    assert literal_keys_read(fn, "request") == set()
+
+
+def test_a_recursive_helper_does_not_loop() -> None:
+    import ast
+
+    module = ast.parse(
+        "def walk(value, name):\n"
+        "    return walk(value, name) if name else value[name]\n\n"
+        "def f(request):\n"
+        "    return walk(request, 'k')\n"
+    )
+    fn = module.body[-1]
+    assert isinstance(fn, ast.FunctionDef)
+    assert literal_keys_read(fn, "request", module) == {"k"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A comprehension variable shadows the key parameter.
+        "def opt(value, key):\n    return [value[key] for key in ('a', 'b') if key in value]\n",
+        # A lambda parameter shadows it.
+        "def opt(value, key):\n    return sorted(value, key=lambda key: value[key])\n",
+        # An except capture rebinds it.
+        "def opt(value, key):\n    try:\n        return value[key]\n"
+        "    except KeyError as key:\n        return key\n",
+        # The module rebinds the helper's name after the def.
+        "def opt(value, key):\n    return value[key]\nfrom other import opt\n",
+        "def opt(value, key):\n    return value[key]\nopt = dict.get\n",
+    ],
+)
+def test_a_helper_read_through_a_rebound_name_is_not_a_finding(source: str) -> None:
+    """A key substituted into a name that something rebinds is a key nothing
+    reads, and a false error makes the agent rewrite correct code (PR #311
+    review)."""
+    import ast
+
+    module = ast.parse(source + "\ndef step(answer):\n    return opt(answer, 'zzz')\n")
+    fn = module.body[-1]
+    assert isinstance(fn, ast.FunctionDef)
+    assert literal_keys_read(fn, "answer", module) == set()
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "def step(answer):\n    def opt(v, k):\n        return 1\n    return opt(answer, 'zzz')\n",
+        "def step(answer, opt):\n    return opt(answer, 'zzz')\n",
+        "def step(answer):\n    from other import opt\n    return opt(answer, 'zzz')\n",
+    ],
+)
+def test_a_helper_the_caller_shadows_is_not_followed(caller: str) -> None:
+    import ast
+
+    module = ast.parse("def opt(value, key):\n    return value[key]\n\n" + caller)
+    fn = module.body[-1]
+    assert isinstance(fn, ast.FunctionDef)
+    assert literal_keys_read(fn, "answer", module) == set()
 
 
 # ───────── constants an MCP call never sends ─────────
