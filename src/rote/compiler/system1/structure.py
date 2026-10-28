@@ -465,6 +465,12 @@ class Structure:
     #: Disagreements the pass settled by changing the skeleton.
     changed: list[str] = field(default_factory=list)
 
+    @property
+    def model_label(self) -> str:
+        """The model, for a person: a codex lane with no ``--model`` runs
+        Codex's configured default, and its id is empty."""
+        return self.model or "the lane's default model"
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "model": self.model,

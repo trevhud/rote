@@ -24,6 +24,7 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -411,7 +412,7 @@ async def test_empty_last_message_yields_minimal_metadata(
 
     driver = CodexDriver()
     result = await driver.run(skill_dir, compiler_dir, work_dir)
-    assert result.metadata == {"driver": "codex"}
+    assert result.metadata == {"driver": "codex", "repair_rounds": 0}
 
 
 # ───────── Usage (#295) ─────────
@@ -506,3 +507,177 @@ async def test_a_failed_turn_reports_no_usage_rather_than_zero(
         "cache_read_tokens",
         "usage_complete",
     } & set(result.metadata)
+
+
+# ───────── Repair by resuming the session ─────────
+
+
+def _usage(input_tokens: int, output_tokens: int) -> str:
+    return _event(
+        {
+            "type": "turn.completed",
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+        }
+    )
+
+
+class _Rounds:
+    """A fake ``codex exec`` that answers each invocation with its own round:
+    ``(files to write, stdout, returncode)``."""
+
+    def __init__(self, rounds: list[tuple[dict[str, str], str, int]]) -> None:
+        self.rounds = list(rounds)
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, *args: str, **kwargs: Any) -> _FakeProcess:
+        self.calls.append(
+            {"args": list(args), "cwd": kwargs.get("cwd"), "stdin": kwargs.get("stdin")}
+        )
+        files, stdout, returncode = self.rounds.pop(0)
+        work_dir = Path(args[list(args).index("--cd") + 1])
+        for rel, content in files.items():
+            (work_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (work_dir / rel).write_text(content, encoding="utf-8")
+        return _FakeProcess(stdout.encode(), b"", returncode)
+
+
+@pytest.fixture
+def codex_rounds(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    def _install(rounds: list[tuple[dict[str, str], str, int]]) -> _Rounds:
+        fake = _Rounds(rounds)
+        monkeypatch.setattr("rote.compiler.drivers.codex.asyncio.create_subprocess_exec", fake)
+        return fake
+
+    return _install
+
+
+THREAD = _event({"type": "thread.started", "thread_id": "0199-thread"})
+
+
+@pytest.mark.asyncio
+async def test_a_repair_resumes_the_same_thread_until_the_repairer_accepts(
+    fake_skills: tuple[Path, Path, Path],
+    codex_rounds,  # noqa: ANN001
+) -> None:
+    """The repairer's instruction goes back into the thread that wrote the
+    deliverable (``codex exec ... resume <thread id> <instruction>``), with
+    the first run's sandbox, work dir and output flags, from the work dir,
+    and the loop stops once the repairer returns None (#308)."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake = codex_rounds(
+        [
+            ({"pipeline.yaml": "first"}, f"{THREAD}\n{_usage(100, 10)}", 0),
+            ({"pipeline.yaml": "second"}, f"{THREAD}\n{_usage(250, 30)}", 0),
+        ]
+    )
+    seen: list[str] = []
+
+    def repair(path: Path) -> str | None:
+        seen.append(path.read_text())
+        return "fix the gate key" if len(seen) == 1 else None
+
+    result = await CodexDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+
+    assert seen == ["first", "second"]
+    first, second = (call["args"] for call in fake.calls)
+    assert "resume" not in first
+    assert second[second.index("resume") :] == ["resume", "0199-thread", "fix the gate key"]
+    for args in (first, second):
+        # Resuming needs the session on disk.
+        assert "--ephemeral" not in args
+        assert args[args.index("--sandbox") + 1] == "workspace-write"
+        assert args[args.index("--cd") + 1] == str(work_dir.resolve())
+    assert [call["cwd"] for call in fake.calls] == [work_dir.resolve()] * 2
+    # codex exec appends a piped stdin to the prompt and waits for it to
+    # close; an inherited one that never closes hung a real run.
+    assert [call["stdin"] for call in fake.calls] == [asyncio.subprocess.DEVNULL] * 2
+    meta = result.metadata
+    assert meta["repair_rounds"] == 1
+    assert "repair_warning" not in meta
+    # The resumed round reports the thread's running total: the last one is
+    # the session, not the sum.
+    assert (meta["input_tokens"], meta["output_tokens"]) == (250, 30)
+    assert meta["usage_basis"] == "cumulative"
+    assert meta["usage_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_run_nothing_will_resume_stays_ephemeral(
+    fake_skills: tuple[Path, Path, Path],
+    codex_rounds,  # noqa: ANN001
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake = codex_rounds([({"pipeline.yaml": VALID_PIPELINE_YAML}, THREAD, 0)])
+    await CodexDriver().run(skill_dir, compiler_dir, work_dir)
+    assert "--ephemeral" in fake.calls[0]["args"]
+
+
+@pytest.mark.asyncio
+async def test_a_stream_with_no_thread_id_cannot_be_repaired_and_says_so(
+    fake_skills: tuple[Path, Path, Path],
+    codex_rounds,  # noqa: ANN001
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake = codex_rounds([({"pipeline.yaml": "x"}, _usage(1, 1), 0)])
+    result = await CodexDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _path: "fix it"
+    )
+    assert len(fake.calls) == 1
+    assert result.metadata["repair_rounds"] == 0
+    assert "no thread id to resume" in result.metadata["repair_warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repair_round_ends_the_loop_with_a_warning(
+    fake_skills: tuple[Path, Path, Path],
+    codex_rounds,  # noqa: ANN001
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake = codex_rounds(
+        [
+            ({"pipeline.yaml": "first"}, f"{THREAD}\n{_usage(100, 10)}", 0),
+            ({}, "", 1),
+        ]
+    )
+    result = await CodexDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _path: "fix it"
+    )
+    assert len(fake.calls) == 2
+    meta = result.metadata
+    assert meta["repair_rounds"] == 1
+    assert "a repair round exited with code 1" in meta["repair_warning"]
+    # The failed round reported no usage, so the figure is incomplete.
+    assert meta["usage_complete"] is False
+    assert meta["input_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_totals_that_go_down_are_summed_per_round(
+    fake_skills: tuple[Path, Path, Path],
+    codex_rounds,  # noqa: ANN001
+) -> None:
+    """Cumulative totals are observed, not documented: a resumed round that
+    reports less than the round before is counted on its own."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    codex_rounds(
+        [
+            ({"pipeline.yaml": "first"}, f"{THREAD}\n{_usage(100, 10)}", 0),
+            ({}, f"{THREAD}\n{_usage(40, 5)}", 0),
+        ]
+    )
+    answers = iter(["fix it", None])
+    result = await CodexDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _path: next(answers)
+    )
+    meta = result.metadata
+    assert (meta["input_tokens"], meta["output_tokens"]) == (140, 15)
+    assert meta["usage_basis"] == "summed"
+
+
+def test_a_structure_pass_on_codexs_default_model_names_it() -> None:
+    """A codex lane with no --model has an empty model id; the summary line
+    read "structure pass by  via codex exec" on a live 0.18.0 compile."""
+    from rote.compiler.system1.structure import Structure
+
+    assert Structure(model="", lane="codex exec").model_label == "the lane's default model"
+    assert Structure(model="gpt-5.5", lane="codex exec").model_label == "gpt-5.5"

@@ -732,7 +732,7 @@ class Compiler:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
                     self._emit(
                         "log",
-                        f"system1: structure pass by {st.model} via {st.lane}, "
+                        f"system1: structure pass by {st.model_label} via {st.lane}, "
                         f"{st.rounds} round(s), {len(st.resolved)} unresolved ({cost})",
                     )
                 tb = s1_plan.tiebreak
@@ -810,8 +810,8 @@ class Compiler:
                 # the SAME agent conversation with the verbatim problems
                 # instead of shipping the paid run broken. Only drivers whose
                 # run() declares the ``repair`` parameter can resume a
-                # conversation (the in-process drivers, and claude via
-                # `--resume`).
+                # conversation (the in-process drivers, claude via
+                # `--resume`, and codex via `codex exec resume`).
                 if "repair" in inspect.signature(driver.run).parameters:
                     settle_round = (
                         None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)

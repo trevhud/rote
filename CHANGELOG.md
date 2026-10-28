@@ -9,6 +9,31 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Codex compile repairs what verification finds (#308).** `CodexDriver`
+  took no repair callback, so every `--agent codex` compile ended at "0 repair
+  round(s)" with its findings unfixed. It now resumes the same thread with
+  `codex exec resume <thread id>` for each round, under the same bounded
+  policy as the claude and api drivers, and counts the rounds. A run with a
+  repairer is no longer `--ephemeral`, because resuming needs the session on
+  disk. Usage is the thread's running total, checked to be non-decreasing and
+  summed per round otherwise.
+- **A Codex compile no longer hangs under an agent's shell.** `codex exec`
+  appends a piped stdin to its prompt and waits for it to close. The driver
+  inherited its caller's stdin, so a compile started from a shell whose stdin
+  never closes wrote nothing and never returned. The child's stdin is now
+  `/dev/null`.
+- **Gate keys and input fields read through a helper are checked (#291).**
+  The boundary checks saw only `value["key"]` and `value.get("key")` on the
+  parameter itself. They now follow a call into a function of the same module
+  with the key as a literal argument (`payload(value, "key")`), which is how
+  the 0.18.0 recompile of #291's skill read all three wrong gate keys. The
+  findings also name the System-1 fix: read the gate's declared key, and add
+  a missing input field through `system1/input_fields.yaml`.
+- The structure-pass summary names "the lane's default model" instead of a
+  blank when Codex runs its configured default.
+
 ## [0.18.0] - 2026-10-27
 
 ### Added

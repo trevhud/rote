@@ -1037,6 +1037,56 @@ async def test_repair_callback_not_passed_to_drivers_without_the_parameter(
 
 
 @pytest.mark.asyncio
+async def test_a_codex_compile_is_repaired_in_its_own_thread(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The orchestrator hands the codex driver its repairer, and the
+    verifier's finding reaches the thread that wrote the deliverable
+    (#308). Before, CodexDriver.run took no ``repair`` parameter, so every
+    codex compile ended at "0 repair round(s)" with the findings unfixed."""
+    from rote.compiler.drivers.codex import CodexDriver
+
+    calls: list[list[str]] = []
+    rounds = [INVALID_YAML, VALID_YAML]
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"type":"thread.started","thread_id":"th-1"}', b""
+
+    async def fake_exec(*args: str, **_kwargs: object) -> _Proc:
+        calls.append(list(args))
+        work_dir = Path(args[list(args).index("--cd") + 1])
+        (work_dir / "pipeline.yaml").write_text(rounds.pop(0))
+        # The rest of the deliverable: an explained stub, as _RepairableDriver writes.
+        (work_dir / "extracted").mkdir(exist_ok=True)
+        (work_dir / "extracted" / "foo.py").write_text(
+            "def only_node():\n"
+            "    raise NotImplementedError('needs the FakeInput schema, "
+            "which the skill does not state')\n"
+        )
+        return _Proc()
+
+    monkeypatch.setattr("rote.compiler.drivers.codex.asyncio.create_subprocess_exec", fake_exec)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: CodexDriver()  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "output")
+
+    assert result.pipeline.name == "fake-pipeline"
+    assert len(calls) == 2
+    resumed = calls[1]
+    assert resumed[resumed.index("resume") + 1] == "th-1"
+    # The instruction is the verifier's finding, verbatim.
+    assert "bogus_kind" in resumed[-1]
+    assert result.driver_metadata["repair_rounds"] == 1
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_ir_is_kept_after_the_paid_run(
     fake_skill_dir: Path,
     fake_compiler_skill_dir: Path,
