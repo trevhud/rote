@@ -138,6 +138,13 @@ def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
     return {key: pipeline_input[field]} if field in pipeline_input else {}
 
 
+# rote's gate-message renderer (rote.adapters._gate_runtime_helper), verbatim.
+# Every Python workflow runtime and the compiled skill's driver use it, and
+# the TS twin is GATE_MESSAGE_HELPER_TS in rote.adapters._ts_common: change a
+# rule in both and run tests/test_gate_message.py with -m "slow or not slow".
+# Stdlib only, imports inside the functions, and nothing from rote.
+
+
 def _gate_number(value: float) -> str:
     """``value`` as JavaScript's ``JSON.stringify`` writes a number.
 
@@ -215,15 +222,14 @@ def _gate_json(value: object) -> str:
         return (
             "{"
             + ",".join(
-                json.dumps(k, ensure_ascii=False) + ":" + _gate_json(value[k])
-                for k in index + rest
+                json.dumps(k, ensure_ascii=False) + ":" + _gate_json(value[k]) for k in index + rest
             )
             + "}"
         )
     raise TypeError(f"{type(value).__name__} is not a JSON value")
 
 
-def _gate_input(name: str, source: object, field: str) -> dict:
+def _gate_input(name: str, source: object, field: str) -> dict[str, object]:
     """``{name: source[field]}`` when the run has that value, else nothing.
 
     Spread into a gate's message values, so a value the run does not have
@@ -234,7 +240,7 @@ def _gate_input(name: str, source: object, field: str) -> dict:
     return {name: source[field]} if isinstance(source, dict) and field in source else {}
 
 
-def _render_gate_message(template: str, values: dict) -> str:
+def _render_gate_message(template: str, values: dict[str, object]) -> str:
     """A gate's message: each ``{name}`` filled from ``values``, its bound inputs.
 
     A string is used as is; any other value is written as JSON, the way the
@@ -249,14 +255,14 @@ def _render_gate_message(template: str, values: dict) -> str:
     import re
     import unicodedata
 
-    def fill(match: re.Match) -> str:
+    def fill(match: re.Match[str]) -> str:
         name = match.group(1)
         if name not in values:
             return match.group(0)
         value = values[name]
         return value if isinstance(value, str) else _gate_json(value)
 
-    out = []
+    out: list[str] = []
     for ch in re.sub("\\{([A-Za-z_][A-Za-z0-9_]*)\\}", fill, template):
         if ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Cs"):
             code = ord(ch)

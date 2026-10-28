@@ -294,7 +294,9 @@ class NotifyConfig(BaseModel):
     it, a placeholder whose value the run does not have (an omitted optional
     input, a key an upstream result lacks) kept as written, and
     invisible characters spelled ``\\uXXXX``. The compiled skill shows the
-    message in its HUMAN block (``rote.skill_target``), by its own rule.
+    message in its HUMAN block (``rote.skill_target``) through the same
+    renderer, shipped as ``scripts/_rote_gate.py``; there a list or object
+    stays in the block's JSON instead of inline.
     """
 
     model_config = ConfigDict(extra="forbid")

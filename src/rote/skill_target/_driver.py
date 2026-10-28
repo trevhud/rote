@@ -2174,18 +2174,16 @@ def _location(exc: BaseException, root: Path) -> str:
 def _render_message(template: str, payload: dict[str, Any]) -> tuple[str, set[str]]:
     """A gate's ``{name}`` placeholders filled from its bound scalar inputs,
     and the names it filled (the block does not show those values twice).
-    A list or object stays in the JSON below; so does an optional input the
-    run left out, whose placeholder is kept as written."""
-    used: set[str] = set()
 
-    def _sub(match: re.Match[str]) -> str:
-        value = payload.get(match.group(1), _MISSING)
-        if value is _MISSING or isinstance(value, (dict, list)):
-            return match.group(0)
-        used.add(match.group(1))
-        return "" if value is None else str(value)
-
-    return _GATE_PLACEHOLDER.sub(_sub, template), used
+    The workflow runtimes' renderer does the filling (``_rote_gate``), so a
+    value reads the same here as under ``rote run``: ``true``, not ``True``,
+    and invisible characters spelled ``\\uXXXX``. A list or object stays in
+    the JSON below instead of inline; so does an optional input the run left
+    out, whose placeholder is kept as written."""
+    scalars = {k: v for k, v in payload.items() if not isinstance(v, (dict, list))}
+    used = {m.group(1) for m in _GATE_PLACEHOLDER.finditer(template) if m.group(1) in scalars}
+    rendered = importlib.import_module("_rote_gate")._render_gate_message(template, scalars)
+    return rendered, used
 
 
 def _answer_tokens(schema: Any, depth: int = 0) -> float:

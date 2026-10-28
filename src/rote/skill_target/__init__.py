@@ -19,13 +19,15 @@ DRIVER_PATH = _HERE / "_driver.py"
 
 #: ``{name in scripts/: the module whose source it is}``. The driver imports
 #: ``_rote_inference`` always (its schema validator checks every answer, and
-#: it answers the judges of a ``--judges helper`` plan) and ``_rote_mcp`` only
-#: when a step calls MCP, by these names, from the scripts dir it puts first
-#: on ``sys.path``.
+#: it answers the judges of a ``--judges helper`` plan), ``_rote_gate`` when a gate
+#: has a message to show (the workflow runtimes' renderer, so a message reads
+#: the same everywhere), and ``_rote_mcp`` only when a step calls MCP, by these
+#: names, from the scripts dir it puts first on ``sys.path``.
 HELPER_FILES: dict[str, Path] = {
     "_rote_skill.py": DRIVER_PATH,
     "_rote_mcp.py": _HERE.parent / "mcp" / "_runtime_helper.py",
     "_rote_inference.py": _HERE.parent / "inference" / "_runtime_helper.py",
+    "_rote_gate.py": _HERE.parent / "adapters" / "_gate_runtime_helper.py",
 }
 
 
@@ -44,6 +46,13 @@ def calls_mcp(plan: dict[str, Any]) -> bool:
         ):
             return True
     return False
+
+
+def shows_gate_message(plan: dict[str, Any]) -> bool:
+    """Whether a gate in ``plan`` has a message to render (``_rote_gate``)."""
+    return any(
+        step.get("message") for step in plan.get("steps") or [] if step.get("kind") == "gate"
+    )
 
 
 def helper_judges(plan: dict[str, Any]) -> bool:
@@ -77,6 +86,7 @@ def script_files(plan: dict[str, Any]) -> dict[str, str]:
         "_rote_skill.py": True,
         "_rote_mcp.py": calls_mcp(plan),
         "_rote_inference.py": True,
+        "_rote_gate.py": shows_gate_message(plan),
     }
     files = {
         name: source.read_text(encoding="utf-8")
