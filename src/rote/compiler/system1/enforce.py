@@ -351,27 +351,33 @@ def proposals(work_dir: Path) -> tuple[list[Proposal], str | None]:
         )
     if loaded is not None and not isinstance(loaded, list):
         return [], f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} is not a list, so none was read"
-    skeleton = _load(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME)
-    ids = {n["id"] for n in skeleton["nodes"]}
+    skeleton_path = work_dir / BRIEF_DIRNAME / SKELETON_FILENAME
+    skeleton = _load(skeleton_path) if skeleton_path.is_file() else {}
+    nodes = skeleton.get("nodes") if isinstance(skeleton, dict) else None
+    ids = {n.get("id") for n in nodes if isinstance(n, dict)} if isinstance(nodes, list) else None
     out = []
     for p in loaded or []:
         if not isinstance(p, dict):
             continue
         node, fld, value = p.get("node"), p.get("field"), p.get("value")
         reason = str(p.get("reason", "")).strip()
-        if node not in ids:
+        # The file is the agent's: any shape it holds is a verdict, never a crash,
+        # because verification reads it and a crash there fails the paid run.
+        if ids is None:
+            verdict = "not checked: no System-1 skeleton to check it against"
+        elif not isinstance(node, str) or node not in ids:
             verdict = "rejected: no such node"
-        elif fld not in DECISION_FIELDS:
+        elif not isinstance(fld, str) or fld not in DECISION_FIELDS:
             verdict = "rejected: not a decision field"
         else:
             trial = copy.deepcopy(skeleton)
             for n in trial["nodes"]:
-                if n["id"] == node:
+                if isinstance(n, dict) and n.get("id") == node:
                     n[fld] = value
             try:
                 Pipeline.model_validate(trial)
                 verdict = "valid IR if applied"
-            except ValueError as err:
+            except Exception as err:  # noqa: BLE001 (any refusal is the verdict)
                 verdict = f"invalid IR if applied: {str(err).splitlines()[1:2]}"
         out.append(Proposal(node, fld, value, verdict, reason))
     return out, None

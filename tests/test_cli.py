@@ -917,6 +917,38 @@ def test_a_failed_verification_is_reported_as_failed_everywhere(
     assert summary["contract_errors"] == len(static) + 1 == payload["contract_errors"]
 
 
+def test_review_gaps_reach_json_and_the_progress_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A review gap (an unapplied proposal, #310) is not a failure, but a
+    machine reader must see it: it used to reach only the human summary."""
+    from rote.compiler.verify import UNAPPLIED_PROPOSAL, Verification
+    from rote.contracts import ContractFinding
+    from rote.ir import load_pipeline
+
+    gap = ContractFinding(
+        node_id="enrich_contacts",
+        kind=UNAPPLIED_PROPOSAL,
+        severity="warning",
+        message="the agent proposes kind -> 'external_call'",
+        path="system1/proposals.yaml",
+    )
+    pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    _install_mock_compiler(
+        monkeypatch, verification=Verification(pipeline=pipeline, findings=[gap])
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    out = tmp_path / "out"
+    cli_main(["compile", str(skill), "--out", str(out), "--runtime", "dbos", "--no-eval", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verification"]["review_gaps"] == [gap.as_dict()]
+    assert _read_ndjson(out / "progress.jsonl")[-1]["review_gaps"] == [gap.as_dict()]
+
+
 def test_contract_errors_count_a_finding_both_checks_made_once() -> None:
     """Final verification runs the same contract check the summary runs
     again after the move, so one broken symbol is in both lists."""

@@ -257,6 +257,36 @@ def test_an_unreadable_proposals_file_is_a_review_gap_too(tmp_path: Path) -> Non
     assert "did not parse" in finding.message and finding.severity == "warning"
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"node": ["a", "b"], "field": "kind", "value": "x"},
+        {"node": {"id": "a"}, "field": "kind", "value": "x"},
+        {"node": "a", "field": ["kind"], "value": "x"},
+    ],
+)
+def test_any_proposal_shape_is_a_verdict_never_a_crash(tmp_path: Path, entry: dict) -> None:
+    """Verification reads the agent's file, and a crash there fails the paid
+    run (PR #312 review): an unhashable node became a TypeError."""
+    from rote.compiler.verify import unapplied_proposal_findings
+
+    system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
+    (tmp_path / "system1" / "proposals.yaml").write_text(yaml.safe_dump([entry]))
+    [finding] = unapplied_proposal_findings(tmp_path)
+    assert "rejected" in finding.message and finding.severity == "warning"
+
+
+def test_a_proposal_with_no_skeleton_is_listed_not_checked(tmp_path: Path) -> None:
+    from rote.compiler.verify import unapplied_proposal_findings
+
+    (tmp_path / "system1").mkdir()
+    (tmp_path / "system1" / "proposals.yaml").write_text(
+        yaml.safe_dump([{"node": "a", "field": "kind", "value": "x", "reason": "r"}])
+    )
+    [finding] = unapplied_proposal_findings(tmp_path)
+    assert "not checked: no System-1 skeleton" in finding.message
+
+
 def test_text_rubric_is_system1_md_and_two_references(tmp_path: Path) -> None:
     bundle = system1.materialize_text_rubric(REPO / "skills" / "rote-compile", tmp_path / "rubric")
     assert (bundle / "SKILL.md").read_text() == (

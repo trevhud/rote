@@ -1315,6 +1315,10 @@ class Compiler:
         # fix that breaks pipeline.yaml in the last contract round must
         # still go back rather than end the paid run on a validation error.
         invalid_attempts = 0
+        # Each proposal goes back once. The agent may rightly keep one (its
+        # code cannot meet the skill without the change), and asking again
+        # buys a resumed turn whose only right answer is to change nothing.
+        sent_proposals: set[tuple[str, str]] = set()
 
         def _repair(pipeline_yaml_path: Path) -> str | None:
             nonlocal attempts, invalid_attempts
@@ -1337,9 +1341,18 @@ class Compiler:
                 web_research=web_research,
                 spec_store=spec_store,
             )
+            fresh = [
+                f
+                for f in verification.findings
+                if f.kind != UNAPPLIED_PROPOSAL or (f.node_id, f.message) not in sent_proposals
+            ]
+            verification = dataclasses.replace(verification, findings=fresh)
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None:
                 return None
+            sent_proposals.update(
+                (f.node_id, f.message) for f in fresh if f.kind == UNAPPLIED_PROPOSAL
+            )
             invalid = verification.pipeline_error is not None
             if (invalid_attempts if invalid else attempts) >= MAX_VALIDATION_REPAIRS:
                 return None

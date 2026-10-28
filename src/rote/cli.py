@@ -1632,6 +1632,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         payload["verification"] = {
             **verdict,
             "errors": [f.as_dict() for f in deliverable.errors] if deliverable else [],
+            # Repaired like errors but not failures; listed for a person.
+            "review_gaps": [f.as_dict() for f in deliverable.review_gaps] if deliverable else [],
             "implementations": (
                 [i.as_dict() for i in deliverable.implementations] if deliverable else []
             ),
@@ -1670,7 +1672,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "contract_errors": contract_errors,
                 "verification": verdict,
                 **(
-                    {"provenance": result.verification.provenance_report()}
+                    {
+                        "provenance": result.verification.provenance_report(),
+                        "review_gaps": [f.as_dict() for f in result.verification.review_gaps],
+                    }
                     if result.verification is not None
                     else {}
                 ),
