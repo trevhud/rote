@@ -11,6 +11,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **A compile's constants keep the sign the skill writes.** The structure
+  pass compared a number's absolute value to its quote, so `5` passed for
+  "below -5%" and a flipped rule shipped as decided. A number now matches its
+  quote with its sign. A negative value for an unsigned number ("a drop of
+  15%" as `-15`) is still accepted, since that is a real reading, but it is
+  listed for review like a number read from words. A minus that runs into a
+  word or digit ("5-10 days", "COVID-19") is not read as a sign.
 - **A compiled skill's gate message reads as it does on the workflow
   runtimes.** The HUMAN block filled a gate's placeholders with Python's
   `str()`, so a boolean read `True`, a whole float `2.0` and a missing owner

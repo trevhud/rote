@@ -627,8 +627,13 @@ def _appears(value: str, text: str) -> bool:
     return bool(v) and v in _normal(text)
 
 
-#: A number as a skill writes it: thousands separators and decimals allowed.
-_WRITTEN_NUMBER = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+#: A number as a skill writes it: thousands separators and decimals allowed,
+#: and a minus sign (ASCII or U+2212) that no word or digit runs into, so the
+#: "-10" of "5-10 days" or "COVID-19" is not read as negative.
+_WRITTEN_NUMBER = re.compile(
+    r"(?P<sign>(?<![\w.,])[-\u2212])?"
+    r"(?P<digits>(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+)
 
 
 def _is_number(value: Any) -> bool:
@@ -636,8 +641,23 @@ def _is_number(value: Any) -> bool:
 
 
 def _written_numbers(quote: str) -> set[Decimal]:
-    """Every number written in digits in ``quote``, as a Decimal."""
-    return {Decimal(m.group(0).replace(",", "")) for m in _WRITTEN_NUMBER.finditer(quote)}
+    """Every number written in digits in ``quote``, as a Decimal, with its sign."""
+    return {
+        Decimal(m.group("digits").replace(",", "")) * (-1 if m.group("sign") else 1)
+        for m in _WRITTEN_NUMBER.finditer(quote)
+    }
+
+
+def _sign_from_words(c: Mapping[str, Any]) -> bool:
+    """A negative value whose quote writes the number without a sign.
+
+    Kept, because "a drop of 15%" is a real way to write -15, but the sign is
+    the model's reading, so its decision is listed for a reviewer."""
+    value = c.get("value")
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value >= 0:
+        return False
+    written = _written_numbers(str(c.get("quote", "")))
+    return Decimal(str(value)) not in written and Decimal(str(-value)) in written
 
 
 def _from_words(c: Mapping[str, Any]) -> bool:
@@ -669,11 +689,11 @@ def _constant_problem(c: Mapping[str, Any], text: str) -> str | None:
         return f"constant {name!r} = {value!r} does not appear in its quote {quote!r}"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         written = _written_numbers(quote)
-        if written and Decimal(str(abs(value))) not in written:
+        if written and Decimal(str(value)) not in written and not _sign_from_words(c):
             return (
                 f"constant {name!r} = {value!r}: its quote {quote!r} writes "
-                f"{', '.join(sorted(str(w) for w in written))}, not {abs(value)}; give the "
-                "number the skill writes (75% is 75 with unit percent)"
+                f"{', '.join(sorted(str(w) for w in written))}, not {value}; give the "
+                "number the skill writes, with its sign (75% is 75 with unit percent)"
             )
     if unit and not CONSTANT_UNIT_RE.fullmatch(unit):
         return (
@@ -2010,14 +2030,21 @@ def to_plan(
         if node.constant_units:
             node.decide("constant_units", dict(node.constant_units), conf, rule)
         for c in consts:
-            if _from_words(c):
-                # The skill writes no digits for it: the number is the
-                # model's reading of words, which a reviewer confirms.
+            # The skill writes no digits for it, or no sign for a negative
+            # value: that part is the model's reading, which a reviewer confirms.
+            reading = (
+                "read from words, not digits"
+                if _from_words(c)
+                else "negative, though the skill writes no sign"
+                if _sign_from_words(c)
+                else ""
+            )
+            if reading:
                 node.decide(
                     f"constants.{c['name']}",
                     c["value"],
                     min(conf, REVIEW_BELOW - 0.01),
-                    f"read from words, not digits: {str(c['quote'])!r}",
+                    f"{reading}: {str(c['quote'])!r}",
                 )
         system = n.get("system") or {}
         if kind == "external_call":
