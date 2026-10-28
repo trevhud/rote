@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **A compiled skill's gate message reads as it does on the workflow
+  runtimes.** The HUMAN block filled a gate's placeholders with Python's
+  `str()`, so a boolean read `True`, a whole float `2.0` and a missing owner
+  an empty string, where `rote run` shows `true`, `2` and `null`, and a bidi
+  override in a value reached the agent's terminal raw. The renderer is now
+  one module (`rote.adapters._gate_runtime_helper`): the Python runtimes embed
+  its source and a compiled skill ships it as `scripts/_rote_gate.py` when a
+  gate has a message.
 - **Behavior change: a node with no `retry:` is attempted once on every
   runtime.** It ran once on dbos, python and temporal, but up to six times on
   cloudflare (`step.do`'s default of 5 retries) and four on inngest (the
