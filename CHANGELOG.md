@@ -9,8 +9,48 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-27
+
+### Added
+
+- **`rote run` shows a gate's message while the run waits (#304).** Every
+  workflow runtime now renders a `hitl_gate`'s `notify.message_template` with
+  the run's real values and reports it on the channel `rote run` already
+  watches (a `rote_gate_status` event on DBOS, a query on Temporal, a
+  `rote-gate-park` log line on Cloudflare and Inngest). `rote run` prints it
+  on stderr. Display only: `channel` and `target` are still never sent to.
+- **A node declares the environment variables its code reads (#302).**
+  `env: [NAME, ...]` on pure_function and external_call nodes. Verification
+  finds literal `os.environ` / `os.getenv` reads and sends an undeclared one
+  back for repair. `rote skill install` records each declared variable's
+  value, and a run whose value differs is refused, so a compiled skill no
+  longer silently drops a variable its module reads (expense-audit's report
+  directory). Names rote reserves (`ROTE_*`, vendor keys, proxies, `PATH`,
+  `PYTHON*` and the like) are refused in the IR.
+- **Structure-pass constants are typed, with a unit (#303).** A constant is a
+  number, boolean or string checked against the skill's own words, and a
+  number carries a unit in the new `Node.constant_units` (`percent`, `count`,
+  `days`, `currency:USD`, ...). 75% is `75` with unit `percent`, never `0.75`
+  or the text `'75%'`. A number the skill writes in words is kept and listed
+  for review.
+- **A compile's repair can declare a pipeline input field (#297).** A module
+  that reads a caller-supplied field the skeleton never declared can now add
+  it through `system1/input_fields.yaml` (or the parallel path's
+  `input_fields`), checked against the skill's text and the sample input.
+  Every applied or refused entry is an Open question in compile-report.md.
+
 ### Changed
 
+- **Agent-loop tools are pinned to the one grounded server that offers
+  them (#296).** The compile pins a loop tool to its server when exactly one
+  listed server offers it, and leaves it as an Open question when two do.
+  System-1 no longer picks the first of two servers. A loop tool no listed
+  server offers is a review gap (`loop_tool_unserved`), not an error.
+- **The static eval sizes a compiled judge's input along the IR's data flow
+  (#300).** A judge that receives a whole external result used to be priced
+  as its prompt plus a few tokens per field, so compiled cost looked far
+  too small. It now carries the same size the agent side uses, and each
+  judge and loop states its input sizes under Assumptions in the scorecard.
 - **A compile's constants keep the sign the skill writes.** The structure
   pass compared a number's absolute value to its quote, so `5` passed for
   "below -5%" and a flipped rule shipped as decided. A number now matches its
@@ -47,6 +87,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   numbers, never `Decimal`).
 
 ### Fixed
+
+- **Compile usage that was not measured reads as unknown (#299, #301).**
+  Missing token counts were reported as zeros, so an unmeasured compile looked
+  free. Each stage is now `measured`, `partial` or `unavailable`, in the
+  summary, `--json`, `compile-metrics.json` and the progress file. Codex usage
+  comes from the last `turn.completed`, with cache reads and writes split out
+  once. A deliverable that still fails verification now says `verification
+  FAILED` in the header and prints no `next: rote run` line.
 
 - **A compile checks the boundaries its generated tests cannot see (#291).**
   A real compile passed 38 generated tests while every MCP call went out with
@@ -2237,7 +2285,8 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/trevhud/rote/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/trevhud/rote/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/trevhud/rote/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0
