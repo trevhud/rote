@@ -621,12 +621,64 @@ def unused_input_questions(
 
 #: A constant the impl takes as a parameter and never reads.
 UNUSED_CONSTANT = "unused_constant"
+#: A System-1 decision the agent says is wrong, which rote did not apply.
+UNAPPLIED_PROPOSAL = "unapplied_proposal"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
 REVIEW_GAP_KINDS = frozenset(
-    {UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND, MCP_ARGS_UNGROUNDED, LOOP_TOOL_UNSERVED}
+    {
+        UNUSED_CONSTANT,
+        DECLARED_TOOL_UNBOUND,
+        MCP_ARGS_UNGROUNDED,
+        LOOP_TOOL_UNSERVED,
+        UNAPPLIED_PROPOSAL,
+    }
 )
+
+
+def unapplied_proposal_findings(root: Path) -> list[ContractFinding]:
+    """Each proposal in ``system1/proposals.yaml``, as a review gap.
+
+    A proposal is the agent saying the pipeline rote decided differs from the
+    skill: a real compile proposed turning a renderer into the tool call the
+    skill requires (#310), another a condition on two questions the skill
+    asks only sometimes (#309). rote never applies one, since that would be a
+    model overriding a decision, so the pipeline ships without it. It used to
+    reach only the report's Open questions, and the compile said it
+    verified with nothing unresolved. It is a review gap, not an error (the
+    user's rule): the agent is asked once to meet the skill without the
+    change and withdraw it, and one that survives is listed for a person."""
+    from rote.compiler.system1.enforce import PROPOSALS_FILENAME, proposals
+    from rote.compiler.system1.skeleton import BRIEF_DIRNAME
+
+    found, unreadable = proposals(root)
+    where = f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME}"
+    if unreadable is not None:
+        return [
+            ContractFinding(
+                node_id="(pipeline)",
+                kind=UNAPPLIED_PROPOSAL,
+                severity="warning",
+                message=f"{unreadable}; fix or delete it",
+                path=where,
+            )
+        ]
+    return [
+        ContractFinding(
+            node_id=str(p.node),
+            kind=UNAPPLIED_PROPOSAL,
+            severity="warning",
+            message=(
+                f"the agent proposes {p.field} -> {p.value!r} on `{p.node}` ({p.verdict}), "
+                f"because: {p.reason or 'no reason given'}. rote does not apply proposals, "
+                f"so the compiled pipeline does not do this. A person decides whether the "
+                f"skill needs it"
+            ),
+            path=where,
+        )
+        for p in found
+    ]
 
 
 def unused_constant_findings(
@@ -982,7 +1034,20 @@ class Verification:
                 "Provenance gaps (a reviewer needs these declared; close each one):\n"
                 + "\n".join(f"- {f.message}" for f in self.provenance_gaps)
             )
-        dead = [f for f in self.review_gaps if f.node_id != PROVENANCE_NODE]
+        proposed = [f for f in self.review_gaps if f.kind == UNAPPLIED_PROPOSAL]
+        if proposed:
+            parts.append(
+                "Proposals rote will not apply, so the pipeline differs from the skill "
+                "where each says. Where your code can meet the skill without the change, "
+                "do so and delete the entry from system1/proposals.yaml; where "
+                "it cannot, keep the entry and a person decides:\n"
+                + "\n".join(f"- {f.node_id}: {f.message}" for f in proposed)
+            )
+        dead = [
+            f
+            for f in self.review_gaps
+            if f.node_id != PROVENANCE_NODE and f.kind != UNAPPLIED_PROPOSAL
+        ]
         if dead:
             parts.append(
                 "Dead configuration (close each one):\n"
@@ -1237,6 +1302,7 @@ def _verify(
     questions += env_questions
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
+    findings += unapplied_proposal_findings(root)
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not

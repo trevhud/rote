@@ -11,6 +11,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **A change the compile agent proposes and rote does not apply is a review
+  gap (#310).** System-1 never applies a proposal from
+  `system1/proposals.yaml`, since that would let a model override a
+  decision. But the proposal reached only the report's Open questions, so a
+  compile that turned a required rendering-tool call into plain text
+  verified with nothing unresolved. Each proposal is now an
+  `unapplied_proposal` finding. One repair turn, once per proposal, asks
+  the agent to meet the skill without the change or keep the proposal for
+  a person. One that survives is listed as a warning in the compile output,
+  compile-report.md, and `--json` and the progress summary, which now carry
+  every review gap (`review_gaps`). Exit stays 0.
 - **A Codex compile repairs what verification finds (#308).** `CodexDriver`
   took no repair callback, so every `--agent codex` compile ended at "0 repair
   round(s)" with its findings unfixed. It now resumes the same thread with

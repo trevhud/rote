@@ -71,7 +71,7 @@ from rote.compiler.update import (
     render_update_brief,
 )
 from rote.compiler.usage import CompileUsage, compile_usage
-from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
+from rote.compiler.verify import UNAPPLIED_PROPOSAL, EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline, save_pipeline
@@ -1315,6 +1315,10 @@ class Compiler:
         # fix that breaks pipeline.yaml in the last contract round must
         # still go back rather than end the paid run on a validation error.
         invalid_attempts = 0
+        # Each proposal goes back once. The agent may rightly keep one (its
+        # code cannot meet the skill without the change), and asking again
+        # buys a resumed turn whose only right answer is to change nothing.
+        sent_proposals: set[tuple[str, str]] = set()
 
         def _repair(pipeline_yaml_path: Path) -> str | None:
             nonlocal attempts, invalid_attempts
@@ -1337,9 +1341,18 @@ class Compiler:
                 web_research=web_research,
                 spec_store=spec_store,
             )
+            fresh = [
+                f
+                for f in verification.findings
+                if f.kind != UNAPPLIED_PROPOSAL or (f.node_id, f.message) not in sent_proposals
+            ]
+            verification = dataclasses.replace(verification, findings=fresh)
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None:
                 return None
+            sent_proposals.update(
+                (f.node_id, f.message) for f in fresh if f.kind == UNAPPLIED_PROPOSAL
+            )
             invalid = verification.pipeline_error is not None
             if (invalid_attempts if invalid else attempts) >= MAX_VALIDATION_REPAIRS:
                 return None
@@ -1361,13 +1374,15 @@ class Compiler:
             else:
                 problems = len(verification.errors)
                 gaps = len(verification.provenance_gaps)
-                dead = len(verification.review_gaps) - gaps
+                proposed = sum(1 for f in verification.review_gaps if f.kind == UNAPPLIED_PROPOSAL)
+                dead = len(verification.review_gaps) - gaps - proposed
                 tests = verification.tests
                 red = tests is not None and tests.status == "failed"
                 what = (
                     f"the deliverable failed verification ({problems} contract "
                     f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
-                    f"{f', {dead} unused constant(s)' if dead else ''}"
+                    f"{f', {dead} review gap(s)' if dead else ''}"
+                    f"{f', {proposed} unapplied proposal(s)' if proposed else ''}"
                     f"{', generated tests failing' if red else ''})"
                 )
             attempt = invalid_attempts if invalid else attempts

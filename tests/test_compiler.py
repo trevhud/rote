@@ -1087,6 +1087,38 @@ async def test_a_codex_compile_is_repaired_in_its_own_thread(
 
 
 @pytest.mark.asyncio
+async def test_a_kept_proposal_goes_back_once(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """The agent may rightly keep a proposal its code cannot do without, so it
+    is sent back once (#310): a second round could only change nothing, and
+    re-reads the whole context to do it."""
+    proposal = "- {node: only_node, field: kind, value: external_call, reason: needs a tool}\n"
+    driver = _RepairableDriver(
+        [VALID_YAML],
+        files={
+            "extracted/foo.py": (
+                "def only_node():\n"
+                "    raise NotImplementedError('needs the FakeInput schema, "
+                "which the skill does not state')\n"
+            ),
+            "system1/proposals.yaml": proposal,
+        },
+    )
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "output")
+
+    [instruction] = driver.repair_instructions
+    assert "Proposals rote will not apply" in instruction
+    assert result.verification is not None
+    assert [f.kind for f in result.verification.review_gaps] == ["unapplied_proposal"]
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_ir_is_kept_after_the_paid_run(
     fake_skill_dir: Path,
     fake_compiler_skill_dir: Path,

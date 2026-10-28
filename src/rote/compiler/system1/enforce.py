@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -316,41 +317,73 @@ def all_changes(work_dir: Path) -> list[str]:
     return seen
 
 
-def check_proposals(work_dir: Path) -> list[str]:
-    """Each proposal with a mechanical verdict. Nothing is applied."""
+@dataclass(frozen=True)
+class Proposal:
+    """One entry of ``system1/proposals.yaml``, with its mechanical verdict."""
+
+    node: Any
+    field: Any
+    value: Any
+    verdict: str
+    reason: str
+
+    def line(self) -> str:
+        return (
+            f"`{self.node}` {self.field} -> {self.value!r} ({self.verdict}). "
+            f"Agent's reason: {self.reason}"
+        )
+
+
+def proposals(work_dir: Path) -> tuple[list[Proposal], str | None]:
+    """The agent's proposals with their verdicts, and why none could be read.
+    Nothing is applied."""
     path = work_dir / BRIEF_DIRNAME / PROPOSALS_FILENAME
     if not path.is_file():
-        return []
+        return [], None
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as err:
         # A malformed file must cost nothing: it is reported, not raised.
         detail = " ".join(str(err).split())[:160]
-        return [f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} did not parse, so none was read ({detail})"]
+        return (
+            [],
+            f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} did not parse, so none was read ({detail})",
+        )
     if loaded is not None and not isinstance(loaded, list):
-        return [f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} is not a list, so none was read"]
-    proposals = loaded or []
-    skeleton = _load(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME)
-    ids = {n["id"] for n in skeleton["nodes"]}
+        return [], f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} is not a list, so none was read"
+    skeleton_path = work_dir / BRIEF_DIRNAME / SKELETON_FILENAME
+    skeleton = _load(skeleton_path) if skeleton_path.is_file() else {}
+    nodes = skeleton.get("nodes") if isinstance(skeleton, dict) else None
+    ids = {n.get("id") for n in nodes if isinstance(n, dict)} if isinstance(nodes, list) else None
     out = []
-    for p in proposals:
+    for p in loaded or []:
         if not isinstance(p, dict):
             continue
         node, fld, value = p.get("node"), p.get("field"), p.get("value")
         reason = str(p.get("reason", "")).strip()
-        if node not in ids:
+        # The file is the agent's: any shape it holds is a verdict, never a crash,
+        # because verification reads it and a crash there fails the paid run.
+        if ids is None:
+            verdict = "not checked: no System-1 skeleton to check it against"
+        elif not isinstance(node, str) or node not in ids:
             verdict = "rejected: no such node"
-        elif fld not in DECISION_FIELDS:
+        elif not isinstance(fld, str) or fld not in DECISION_FIELDS:
             verdict = "rejected: not a decision field"
         else:
             trial = copy.deepcopy(skeleton)
             for n in trial["nodes"]:
-                if n["id"] == node:
+                if isinstance(n, dict) and n.get("id") == node:
                     n[fld] = value
             try:
                 Pipeline.model_validate(trial)
                 verdict = "valid IR if applied"
-            except ValueError as err:
+            except Exception as err:  # noqa: BLE001 (any refusal is the verdict)
                 verdict = f"invalid IR if applied: {str(err).splitlines()[1:2]}"
-        out.append(f"`{node}` {fld} -> {value!r} ({verdict}). Agent's reason: {reason}")
-    return out
+        out.append(Proposal(node, fld, value, verdict, reason))
+    return out, None
+
+
+def check_proposals(work_dir: Path) -> list[str]:
+    """Each proposal with a mechanical verdict, one report line each. Nothing is applied."""
+    found, unreadable = proposals(work_dir)
+    return [unreadable] if unreadable else [p.line() for p in found]
