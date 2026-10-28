@@ -9,6 +9,7 @@ constant. No inference: the model's answers are fixtures.
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ Parse the facility summary. Flag any site below 75% completion.
 ## Step 2: Sorter metrics
 
 Flag if fail rate > 5% (action needed) or if volume dropped >15% day-over-day.
+Also flag a margin below -5%.
 
 ## Step 3: Expense policy
 
@@ -183,15 +185,15 @@ def test_a_number_read_from_words_is_kept_and_listed_for_review(skill: Any) -> N
             0,
             _c("completion_floor", 0.75, "percent", "below 75% completion"),
             "node check_completion: constant 'completion_floor' = 0.75: its quote "
-            "'below 75% completion' writes 75, not 0.75; give the number the skill writes "
-            "(75% is 75 with unit percent)",
+            "'below 75% completion' writes 75, not 0.75; give the number the skill writes, "
+            "with its sign (75% is 75 with unit percent)",
         ),
         (
             2,
             _c("report_limit", 2000, "currency:USD", "report over $2,500.00"),
             "node audit_reports: constant 'report_limit' = 2000: its quote "
             "'report over $2,500.00' writes 2500.00, not 2000; give the number the skill "
-            "writes (75% is 75 with unit percent)",
+            "writes, with its sign (75% is 75 with unit percent)",
         ),
         (
             2,
@@ -217,6 +219,25 @@ def test_a_number_read_from_words_is_kept_and_listed_for_review(skill: Any) -> N
             _c("result_limit", 5, "count", "keep the first five"),
             None,
         ),
+        (
+            # The skill writes the sign, so dropping it is a different rule.
+            1,
+            _c("max_fail_rate", 5, "percent", "a margin below -5%"),
+            "node check_sorters: constant 'max_fail_rate' = 5: its quote "
+            "'a margin below -5%' writes -5, not 5; give the number the skill writes, "
+            "with its sign (75% is 75 with unit percent)",
+        ),
+        (
+            1,
+            _c("max_fail_rate", -5, "percent", "a margin below -5%"),
+            None,
+        ),
+        (
+            # A negative reading of an unsigned number is kept (and listed).
+            1,
+            _c("max_volume_drop", -15, "percent", "volume dropped >15%"),
+            None,
+        ),
     ],
 )
 def test_a_constant_is_checked_against_its_own_quote(
@@ -228,6 +249,43 @@ def test_a_constant_is_checked_against_its_own_quote(
         constant if c["name"] == constant["name"] else c for c in consts
     ]
     assert _check(skill, a) == ([] if expected is None else [expected])
+
+
+def test_a_sign_the_skill_does_not_write_is_listed_for_review(skill: Any) -> None:
+    a = answer()
+    a["nodes"][1]["constants"][1] = _c("max_volume_drop", -15, "percent", "volume dropped >15%")
+    plan, rec = _decide(skill, a)
+    assert rec.contradictions == [[]]
+    sorters = next(n for n in plan.nodes if n.id == "check_sorters")
+    assert sorters.constants["max_volume_drop"] == -15
+    assert [r for r in plan.review if "max_volume_drop" in r] == [
+        next(
+            f"`check_sorters` constants.max_volume_drop = -15 (confidence "
+            f"{d.confidence:.2f}): negative, though the skill writes no sign: "
+            "'volume dropped >15%'"
+            for d in sorters.decisions
+            if d.field == "constants.max_volume_drop"
+        )
+    ]
+    # A positive value of the same quote is not a reading of a sign.
+    assert not any("max_fail_rate" in r for r in plan.review)
+
+
+@pytest.mark.parametrize(
+    ("quote", "numbers"),
+    [
+        ("a margin below -5%", {-5}),
+        ("below \u22125.5 degrees", {Decimal("-5.5")}),
+        ("between -5 and 5", {-5, 5}),
+        ("wait 5-10 days", {5, 10}),
+        ("after COVID-19", {19}),
+        ("over $-2,500.00", {Decimal("-2500")}),
+    ],
+)
+def test_a_written_number_keeps_only_a_sign_that_stands_alone(
+    quote: str, numbers: set[Any]
+) -> None:
+    assert structure._written_numbers(quote) == {Decimal(n) for n in numbers}
 
 
 def test_a_constant_that_survives_the_repairs_wrong_is_dropped(skill: Any) -> None:
