@@ -576,7 +576,8 @@ async def test_a_repair_resumes_the_same_thread_until_the_repairer_accepts(
         seen.append(path.read_text())
         return "fix the gate key" if len(seen) == 1 else None
 
-    result = await CodexDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+    driver = CodexDriver(model="gpt-test", web_tools=True)
+    result = await driver.run(skill_dir, compiler_dir, work_dir, repair=repair)
 
     assert seen == ["first", "second"]
     first, second = (call["args"] for call in fake.calls)
@@ -587,6 +588,8 @@ async def test_a_repair_resumes_the_same_thread_until_the_repairer_accepts(
         assert "--ephemeral" not in args
         assert args[args.index("--sandbox") + 1] == "workspace-write"
         assert args[args.index("--cd") + 1] == str(work_dir.resolve())
+        assert args[args.index("--model") + 1] == "gpt-test"
+        assert args[args.index("-c") + 1] == 'web_search="live"'
     assert [call["cwd"] for call in fake.calls] == [work_dir.resolve()] * 2
     # codex exec appends a piped stdin to the prompt and waits for it to
     # close; an inherited one that never closes hung a real run.

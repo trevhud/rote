@@ -112,6 +112,10 @@ def _keys_read(
     params = _params(fn)
     if name not in params or _reassigned(fn, name):
         return set()
+    # A helper name the function binds itself (a parameter, a local def or
+    # import) is not the module's function at its calls.
+    shadowed = set(params) | _bound_names(fn.body)
+    helpers = {h: f for h, f in helpers.items() if h not in shadowed}
     literal_params = {p: v for p, v in bound.items() if p in params and not _reassigned(fn, p)}
     keys: set[str] = set()
     for sub in ast.walk(fn):
@@ -176,18 +180,20 @@ def _bind_call(fn: _Function, call: ast.Call) -> dict[str, ast.AST]:
 
 
 def _module_functions(module: ast.Module) -> dict[str, _Function]:
-    """The module's top-level functions by name. A name defined twice is left
-    out: which definition runs depends on order, not on reading it."""
-    found: dict[str, _Function] = {}
-    seen: set[str] = set()
+    """The module's top-level functions by name. A name the module binds any
+    other way too (defined twice, imported, assigned) is left out: which one
+    a call reaches depends on order, not on reading it."""
+    defs: dict[str, list[_Function]] = {}
+    others: list[ast.stmt] = []
     for stmt in module.body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-            if stmt.name in seen:
-                found.pop(stmt.name, None)
-            else:
-                found[stmt.name] = stmt
-            seen.add(stmt.name)
-    return found
+            defs.setdefault(stmt.name, []).append(stmt)
+        else:
+            others.append(stmt)
+    rebound = _bound_names(others)
+    return {
+        name: found[0] for name, found in defs.items() if len(found) == 1 and name not in rebound
+    }
 
 
 def _is_name(node: ast.AST, name: str) -> bool:
@@ -195,28 +201,36 @@ def _is_name(node: ast.AST, name: str) -> bool:
 
 
 def _reassigned(fn: _Function, name: str) -> bool:
-    for sub in ast.walk(fn):
-        targets: list[ast.AST] = []
-        if isinstance(sub, ast.Assign):
-            targets = list(sub.targets)
-        elif isinstance(
-            sub, ast.AnnAssign | ast.AugAssign | ast.For | ast.AsyncFor | ast.NamedExpr
-        ):
-            targets = [sub.target]
-        if any(_binds(target, name) for target in targets):
-            return True
-    return False
+    """Whether ``name`` is bound anywhere in ``fn``'s body, so a read of it
+    may not be the parameter: an assignment, a loop or comprehension target,
+    a ``with``/``except``/``match`` capture, an import, a nested def or class,
+    or a lambda's or nested def's own parameter. ``name["k"] = v`` and
+    ``name.a = v`` change what ``name`` holds, not which object it is."""
+    return name in _bound_names(fn.body)
 
 
-def _binds(target: ast.AST, name: str) -> bool:
-    """Whether an assignment target rebinds ``name``: the name itself, or a
-    name inside a tuple or list target. ``name["k"] = v`` and ``name.a = v``
-    change what ``name`` holds, not which object it is."""
-    if isinstance(target, ast.Tuple | ast.List):
-        return any(_binds(t, name) for t in target.elts)
-    if isinstance(target, ast.Starred):
-        return _binds(target.value, name)
-    return _is_name(target, name)
+def _bound_names(statements: list[ast.stmt]) -> set[str]:
+    """Every name ``statements`` bind, at any depth."""
+    names: set[str] = set()
+    for stmt in statements:
+        for sub in ast.walk(stmt):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store | ast.Del):
+                names.add(sub.id)
+            elif isinstance(sub, ast.arg):
+                names.add(sub.arg)
+            elif isinstance(sub, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                names.add(sub.name)
+            elif isinstance(sub, ast.ExceptHandler):
+                names.update([sub.name] if sub.name else [])
+            elif isinstance(sub, ast.alias):
+                names.add((sub.asname or sub.name).split(".")[0])
+            elif isinstance(sub, ast.MatchAs | ast.MatchStar) and sub.name:
+                names.add(sub.name)
+            elif isinstance(sub, ast.MatchMapping) and sub.rest:
+                names.add(sub.rest)
+            elif isinstance(sub, ast.Global | ast.Nonlocal):
+                names.update(sub.names)
+    return names
 
 
 def _impl_function(node: Node, root: Path) -> tuple[_Function, ast.Module] | None:
@@ -250,9 +264,10 @@ def _gate_finding(
         message=(
             f"{node.id} reads `{key}` from gate {gate.id}'s answer (its code reads "
             f"`{param}[...]`), but the "
-            f"gate declares only {declared}, so the person's answer never has it and every "
-            f"run fails at that read. Read the key the gate declares and make the tests "
-            f"build the answer from the gate's declared keys. (Renaming the gate's key "
+            f"gate declares only {declared}, so the person's answer never has it: that "
+            f"read fails, or gets nothing, on every run. Read the key the gate declares "
+            f"and make the tests build the answer from the gate's declared keys. (Renaming "
+            f"the gate's key "
             f"instead means changing the gate and every reader; on a System-1 compile the "
             f"gate's keys are decided, so read the declared one.)"
         ),
