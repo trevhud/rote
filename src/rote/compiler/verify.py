@@ -62,7 +62,12 @@ from rote.compiler.grounding import (
     contract_questions,
     grounding_findings,
 )
-from rote.compiler.prefix import PrefixRun, run_prefix
+from rote.compiler.prefix import (
+    OPTIONAL_INPUT_REQUIRED,
+    PrefixRun,
+    omission_findings,
+    run_prefix,
+)
 from rote.compiler.provenance import (
     PROVENANCE_NODE,
     REPORT_FILENAME,
@@ -635,6 +640,7 @@ REVIEW_GAP_KINDS = frozenset(
         LOOP_TOOL_UNSERVED,
         UNAPPLIED_PROPOSAL,
         GATE_PAYLOAD_NOT_SKILL_NOUNS,
+        OPTIONAL_INPUT_REQUIRED,
     }
 )
 
@@ -1298,6 +1304,18 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
+            omitted, omission_questions = omission_findings(
+                called,
+                root,
+                grounding.sample,
+                implementations,
+                prefix,
+                observations=grounding.observations,
+                trust_skill=trust_skill,
+                tools=grounding.tools,
+            )
+            findings += omitted
+            questions += omission_questions
     findings += boundary_findings(pipeline, root)
     env_errors, env_questions = env_findings(pipeline, root)
     findings += env_errors

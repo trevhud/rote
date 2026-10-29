@@ -1718,3 +1718,158 @@ def test_a_list_nested_under_a_step_that_asks_counts(tmp_path: Path) -> None:
     )
     [(_, items)] = named_human_items(skill).items()
     assert [k for _, k in items] == ["site_code", "week"]
+
+
+#: A test naming the function, so the prefix counts it as implemented.
+_RENDER_TEST = (
+    "from extracted.render import render_report\n\ndef test_it():\n    assert render_report\n"
+)
+
+_OMIT_IR = """\
+name: omit
+version: "0.1.0"
+input:
+  type: In
+  input_schema:
+    type: object
+    additionalProperties: false
+    properties:
+      title: {type: string}
+      dashboard_url: {type: string}
+    required: [title]
+nodes:
+  - id: render_report
+    kind: pure_function
+    description: Render the report.
+    impl: extracted/render.py:render_report
+    inputs: {request: pipeline.input}
+edges: []
+entry_nodes: [render_report]
+exit_nodes: [render_report]
+"""
+
+
+def _omit_root(tmp_path: Path, body: str, ir: str = _OMIT_IR) -> Path:
+    return _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/render.py": "def render_report(request):\n" + body,
+            "tests/test_render.py": _RENDER_TEST,
+        },
+    )
+
+
+def _probe(root: Path, payload: dict) -> tuple[list, list]:
+    from rote.compiler.prefix import omission_findings
+
+    pipeline = _pipeline(root)
+    sample = _sample(payload)
+    implementations = implementation_status(pipeline, root)
+    base = run_prefix(pipeline, root, sample, implementations, trust_skill=True)
+    assert base.findings == [] and base.steps["render_report"]["status"] == "ok"
+    return omission_findings(pipeline, root, sample, implementations, base, trust_skill=True)
+
+
+_SAMPLE = {"title": "t", "dashboard_url": "https://d"}
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        # #326's shape: the field is declared optional, the code requires it.
+        (
+            "    url = request.get('dashboard_url')\n"
+            "    if not isinstance(url, str) or not url:\n"
+            "        raise ValueError('dashboard_url is required')\n"
+            "    return {'report': url}\n",
+            True,
+        ),
+        ("    return {'report': request['dashboard_url']}\n", True),
+        # Genuinely optional: absence handled.
+        ("    return {'report': request.get('dashboard_url') or 'no dashboard'}\n", False),
+        # Fails, but not on the field: a replayed gate answer naming an item
+        # the trimmed run never produced looks like this.
+        (
+            "    if 'dashboard_url' not in request:\n"
+            "        raise KeyError('A-7')\n"
+            "    return {'report': 1}\n",
+            False,
+        ),
+    ],
+)
+def test_a_step_that_fails_without_an_optional_input_is_a_review_gap(
+    tmp_path: Path, body: str, flagged: bool
+) -> None:
+    """The sample carries the field, so the prefix passes; leaving it out, as
+    the contract allows, makes the step raise (#326)."""
+    from rote.compiler.prefix import OPTIONAL_INPUT_REQUIRED
+
+    found, questions = _probe(_omit_root(tmp_path, body), _SAMPLE)
+    assert questions == []
+    if not flagged:
+        assert found == []
+        return
+    [finding] = found
+    assert (finding.kind, finding.node_id, finding.severity) == (
+        OPTIONAL_INPUT_REQUIRED,
+        "render_report",
+        "warning",
+    )
+    assert "when the run's input leaves out `dashboard_url`" in finding.message
+    assert "system1/input_fields.yaml with required: true" in finding.message
+
+
+def test_a_required_field_is_never_left_out(tmp_path: Path) -> None:
+    root = _omit_root(tmp_path, "    return {'r': request['title']}\n")
+    assert _probe(root, _SAMPLE) == ([], [])
+
+
+def test_verification_lists_the_omission_as_a_review_gap(tmp_path: Path) -> None:
+    """Through verify_deliverable: repaired like an error, never a failure."""
+    from rote.compiler.prefix import OPTIONAL_INPUT_REQUIRED
+
+    root = _omit_root(tmp_path, "    return {'report': request['dashboard_url']}\n")
+    v = verify_deliverable(
+        root, grounding=Grounding(sample=_sample(_SAMPLE)), trust_skill=True, run_tests=True
+    )
+    assert [f.kind for f in v.review_gaps] == [OPTIONAL_INPUT_REQUIRED]
+    assert OPTIONAL_INPUT_REQUIRED not in {f.kind for f in v.errors}
+    instruction = v.repair_instruction(root)
+    assert instruction is not None and "leaves out `dashboard_url`" in instruction
+
+
+def test_a_probe_that_times_out_is_reported_and_ends_the_probing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.compiler.prefix as prefix
+
+    ir = _OMIT_IR.replace(
+        "      dashboard_url: {type: string}\n",
+        "      dashboard_url: {type: string}\n      zone: {type: string}\n",
+    )
+    root = _omit_root(
+        tmp_path,
+        "    while len(request) < 3:\n        pass\n    return {'r': 1}\n",
+        ir,
+    )
+    monkeypatch.setattr(prefix, "PREFIX_TIMEOUT_SECONDS", 3.0)
+    found, _ = _probe(root, {**_SAMPLE, "zone": "z"})
+    # Any omission loops. dashboard_url (first, sorted) timed out, and zone
+    # was never probed, so one finding, not two.
+    [finding] = found
+    assert finding.kind == prefix.OPTIONAL_INPUT_REQUIRED
+    assert finding.message.startswith("with `dashboard_url` left out of the input:")
+    assert "did not finish" in finding.message or "timed out" in finding.message
+
+
+def test_fields_past_the_cap_are_an_open_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.compiler.prefix as prefix
+
+    monkeypatch.setattr(prefix, "MAX_OMISSION_PROBES", 0)
+    root = _omit_root(tmp_path, "    return {'report': request['dashboard_url']}\n")
+    found, [question] = _probe(root, _SAMPLE)
+    assert found == []
+    assert question.text.endswith("not checked: `dashboard_url`")
