@@ -139,9 +139,15 @@ def gates_from_status(status: Any, run_id: str) -> list[GateReached]:
 
 
 def parse_gate_park_markers(text: str) -> list[GateReached]:
-    """Every well-formed :data:`GATE_PARK_MARKER` line in ``text``, in order."""
+    """Every well-formed :data:`GATE_PARK_MARKER` line in ``text``, in order.
+
+    Lines split on ``\\n`` only: ``JSON.stringify`` leaves U+2028, U+2029 and
+    U+0085 raw, ``str.splitlines`` splits on them, and a gate's shown data
+    (a pasted draft) carries them, which cut the marker in two and left a
+    Cloudflare run waiting for a gate it never saw announced.
+    """
     found: list[GateReached] = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         match = _GATE_MARKER_RE.search(line)
         if match is None:
             continue
@@ -308,7 +314,7 @@ def parse_auth_park_markers(text: str) -> list[dict[str, str]]:
     whose JSON does not parse is not a marker.
     """
     found: list[dict[str, str]] = []
-    for line in text.splitlines():
+    for line in text.split("\n"):  # as parse_gate_park_markers
         match = _MARKER_RE.search(line)
         if match is None:
             continue
@@ -634,7 +640,8 @@ def gate_announcement(gate: GateReached) -> str:
 
     head = f"rote run: waiting at gate {gate.gate!r} for signal {gate.signal!r}"
     text = escape_invisible(gate.message or "").rstrip("\n")
-    for name, value in (gate.shows or {}).items():
+    # By name: Temporal's query result does not keep the emitted key order.
+    for name, value in sorted((gate.shows or {}).items()):
         # What the gate shows below its message: a string as written (a draft
         # keeps its lines), anything else as compact JSON.
         shown = (

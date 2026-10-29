@@ -14,7 +14,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.mcp.parked import watch_factory
-from tests.test_gate_shows_parity import INPUT, PIPELINE, SIGNALS, check
+from tests.test_gate_shows_parity import INPUT, SIGNALS, check, gate_pipeline
 
 pytestmark = [
     pytest.mark.slow,
@@ -37,9 +37,10 @@ _IMPLS = {
 }
 
 
-def run_case(runtime: str, tmp_path: Path) -> Any:
+def run_case(runtime: str, tmp_path: Path, message: bool = True) -> Any:
+    pipeline = gate_pipeline(message)
     app = tmp_path / runtime
-    get_adapter(runtime).emit(PIPELINE, app)
+    get_adapter(runtime).emit(pipeline, app)
     for node_id, source in _IMPLS.items():
         (app / "src" / "extracted" / f"{node_id}.ts").write_text(source, encoding="utf-8")
     watch = watch_factory(False)
@@ -60,7 +61,7 @@ def run_case(runtime: str, tmp_path: Path) -> Any:
         return run_inngest(
             app,
             INPUT,
-            pipeline=PIPELINE,
+            pipeline=pipeline,
             signals=SIGNALS,
             gate_order=["draft_approved"],
             timeout_seconds=180,
@@ -71,8 +72,9 @@ def run_case(runtime: str, tmp_path: Path) -> Any:
     return run_dbos_ts(app, INPUT, signals=SIGNALS, timeout_seconds=180, park_watch=watch)
 
 
+@pytest.mark.parametrize("message", [True, False])
 @pytest.mark.parametrize("runtime", ["cloudflare", "inngest"])
 def test_ts_shows_the_gates_data(
-    runtime: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    runtime: str, message: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    check(run_case(runtime, tmp_path), capsys.readouterr().err)
+    check(run_case(runtime, tmp_path, message), capsys.readouterr().err, message)
