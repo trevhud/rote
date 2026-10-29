@@ -1827,6 +1827,14 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
     # no input references.
     for sources in (fan_edge_sources, edge_sources):
         matching = sorted(p for p, src in node_bound.items() if src in sources)
+        if len(matching) > 1:
+            # Several params read the list's producer: the list plus a shared
+            # field of the same result (#329's items and the signed-in account
+            # beside them). The one whose value the producer's own schema types
+            # as a list is the element param; anything less is still an error.
+            lists = [p for p in matching if _binds_a_declared_list(node.inputs[p], pipeline)]
+            if len(lists) == 1:
+                return lists[0]
         if len(matching) == 1:
             return matching[0]
     if not node_bound:
@@ -1853,6 +1861,37 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
             f"with `fan_out: true`"
         )
     return next(iter(node_bound))
+
+
+def _binds_a_declared_list(ref: str, pipeline: Pipeline) -> bool:
+    """Whether ``ref`` names a field its producer declares as a list.
+
+    Read from the producer's own declaration only: a judge's output schema,
+    a node's ``output_schema``, or a ``list`` type name in ``output``. A
+    producer that declares nothing rules nothing in.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None or parsed.field is None:
+        return False
+    producer = next((n for n in pipeline.nodes if n.id == parsed.node_id), None)
+    if producer is None:
+        return False
+    spec = producer.signature_spec
+    schemas = [
+        s
+        for s in (spec.output_schema if spec is not None else None, producer.output_schema)
+        if isinstance(s, dict)
+    ]
+    for schema in schemas:
+        props = schema.get("properties")
+        field = props.get(parsed.field) if isinstance(props, dict) else None
+        if isinstance(field, dict) and field.get("type") == "array":
+            return True
+    if isinstance(producer.output, dict):
+        declared = producer.output.get(parsed.field)
+        if isinstance(declared, str) and declared.split("[", 1)[0].strip().lower() == "list":
+            return True
+    return False
 
 
 def _pipeline_input_field_may_be_list(ref: InputRef, pipeline: Pipeline) -> bool:

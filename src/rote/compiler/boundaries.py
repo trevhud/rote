@@ -18,6 +18,13 @@ no sample:
 - **The pipeline input.** A step that reads a pipeline-input field by a
   literal key in its code needs the field declared, so a caller learns of it
   from the contract and the entry check, not from the last step's error.
+- **Another step's result.** A step that reads a key the value bound to it
+  cannot hold (a judge's output, a fanned item of it, a result whose schema
+  is closed) fails at that read on every run (#329).
+- **A value nothing reads.** A judge field copied from its input
+  (``passthrough``) exists only to carry that value on. When no later step
+  reads it, the value was dropped on the way: #329's signed-in account id
+  reached the judge's output and never the ticket-creation fan-out.
 
 A key read in code counts only when it is a literal: ``value["key"]``,
 ``value.get("key")`` or ``value.pop("key")`` on the parameter bound to that
@@ -32,14 +39,26 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 from rote.contracts import ContractFinding
-from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import (
+    Node,
+    NodeKind,
+    Pipeline,
+    fan_out_element_param,
+    item_passthrough,
+    parse_input_ref,
+)
 
 #: A step reads a gate key the gate does not declare.
 GATE_KEY_UNDECLARED = "gate_key_undeclared"
 #: A step's code reads a pipeline-input field the input contract does not declare.
 INPUT_FIELD_UNDECLARED = "input_field_undeclared"
+#: A step's code reads a key the value bound from another step cannot hold.
+RESULT_KEY_UNDELIVERED = "result_key_undelivered"
+#: A judge copies an input value into its output, and no later step reads it.
+PASSTHROUGH_UNREAD = "passthrough_unread"
 
 
 def boundary_findings(pipeline: Pipeline, root: Path) -> list[ContractFinding]:
@@ -67,6 +86,149 @@ def boundary_findings(pipeline: Pipeline, root: Path) -> list[ContractFinding]:
             elif ref.node_id is None and ref.field is None and fn is not None:
                 for key in sorted(literal_keys_read(fn, param, module) - declared_input):
                     findings.append(_input_finding(node, param, key, declared_input))
+            elif producer is not None and fn is not None:
+                delivered = delivered_keys(pipeline, node, param)
+                if delivered is None:
+                    continue
+                for key in sorted(literal_keys_read(fn, param, module) - delivered):
+                    findings.append(_result_finding(pipeline, node, param, key, delivered))
+    return findings + passthrough_unread_findings(pipeline, root)
+
+
+def delivered_keys(pipeline: Pipeline, node: Node, param: str) -> frozenset[str] | None:
+    """The keys the value bound to ``node``'s ``param`` can hold, when its schema
+    says so exactly, else None.
+
+    Exactly means a closed object: a judge's output (structured outputs
+    close every object, so a judge never answers a key its schema lacks), or
+    a result whose schema sets ``additionalProperties: false``. A key a module
+    reads beyond an open schema may well be there, and a false error makes
+    the agent rewrite correct code, so those are not checked.
+    """
+    ref = parse_input_ref((node.inputs or {})[param])
+    producer = pipeline.node_by_id(ref.node_id) if ref.node_id is not None else None
+    if producer is None or producer.kind is NodeKind.HITL_GATE:
+        return None
+    judge = producer.kind is NodeKind.LLM_JUDGE
+    spec = producer.signature_spec
+    root = (spec.output_schema if judge and spec is not None else producer.output_schema) or {}
+    if not root:
+        return None
+    schema: dict[str, Any] | None = root
+    if ref.field is None and producer.fan_out:
+        schema = {"type": "array", "items": root}
+    if ref.field is not None:
+        schema = _properties(root, root).get(ref.field)
+    if schema is not None and node.fan_out and param == fan_out_element_param(node, pipeline):
+        schema = _resolve(schema, root).get("items")
+    if schema is None:
+        return None
+    schema = _resolve(schema, root)
+    props = _properties(schema, root)
+    if not props or schema.get("anyOf") or schema.get("oneOf"):
+        return None
+    extra = schema.get("additionalProperties")
+    if extra not in (None, False) or (extra is None and not judge):
+        return None
+    return frozenset(props)
+
+
+def result_keys(node: Node) -> frozenset[str]:
+    """The top-level keys ``node``'s result declares, a judge's schema included."""
+    spec = node.signature_spec
+    judged = (
+        _properties(spec.output_schema, spec.output_schema)
+        if node.kind is NodeKind.LLM_JUDGE and spec is not None
+        else {}
+    )
+    return node.output_keys | frozenset(judged)
+
+
+def _resolve(schema: Any, root: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` with a local ``$ref`` (``#/$defs/X``) followed, a few deep."""
+    for _ in range(8):
+        ref = schema.get("$ref") if isinstance(schema, dict) else None
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            break
+        target: Any = root
+        for part in ref[2:].split("/"):
+            target = target.get(part) if isinstance(target, dict) else None
+        schema = target
+    return schema if isinstance(schema, dict) else {}
+
+
+def _properties(schema: Any, root: dict[str, Any]) -> dict[str, Any]:
+    props = _resolve(schema, root).get("properties")
+    return props if isinstance(props, dict) else {}
+
+
+def passthrough_unread_findings(pipeline: Pipeline, root: Path) -> list[ContractFinding]:
+    """Each judge field copied from the input that no later step reads.
+
+    A copied field exists only to carry its value on. A step reads it when
+    it binds ``<judge>.output.<field>``, or binds the whole output and either
+    its code reads the field or it has no code rote can read (a judge, a gate,
+    an agent loop, an MCP call or a stub take the whole value). The run's
+    result counts as a reader. A per-item copy (``items[].f``) rides inside
+    its list, which is read with it.
+    """
+    exits = set(pipeline.exit_nodes or ())
+    findings: list[ContractFinding] = []
+    for judge in pipeline.nodes:
+        spec = judge.signature_spec
+        if judge.kind is not NodeKind.LLM_JUDGE or spec is None or not spec.passthrough:
+            continue
+        if judge.id in exits:
+            continue
+        fields = sorted(
+            t for t, src in spec.passthrough.items() if item_passthrough(t, src) is None
+        )
+        unread = set(fields)
+        siblings: set[str] = set()
+        for reader in pipeline.nodes:
+            found: tuple[_Function, ast.Module] | None = None
+            looked = False
+            for param, source in (reader.inputs or {}).items():
+                ref = parse_input_ref(source)
+                if ref.node_id != judge.id:
+                    continue
+                if ref.field is not None:
+                    unread.discard(ref.field)
+                    siblings.add(reader.id)
+                    continue
+                if not looked:
+                    found, looked = _impl_function(reader, root), True
+                if found is None:
+                    unread.clear()
+                    continue
+                fn, module = found
+                read = literal_keys_read(fn, param, module)
+                unread -= read
+                if read:
+                    siblings.add(reader.id)
+        for name in sorted(unread):
+            source = spec.passthrough[name]
+            readers = ", ".join(f"`{r}`" for r in sorted(siblings)) or "no step"
+            origin = _origin(judge, source)
+            also = f", or `{origin}` where it came from" if origin else ""
+            findings.append(
+                ContractFinding(
+                    node_id=judge.id,
+                    kind=PASSTHROUGH_UNREAD,
+                    severity="warning",
+                    message=(
+                        f"{judge.id} copies `{source}` into its output as `{name}`, and no "
+                        f"later step reads `{judge.id}.output.{name}`, so the value is "
+                        f"dropped there. {readers} read(s) {judge.id}'s other fields. If a "
+                        f"step needs this value (an id, an account, a target the skill "
+                        f"names), bind it to that step: `{judge.id}.output.{name}`{also}. "
+                        f"Never let "
+                        f"the step supply a default or another value in its place. If no "
+                        f"step needs it, drop the copy"
+                    ),
+                    path=None,
+                )
+            )
     return findings
 
 
@@ -270,6 +432,53 @@ def _gate_finding(
             f"the gate's key "
             f"instead means changing the gate and every reader; on a System-1 compile the "
             f"gate's keys are decided, so read the declared one.)"
+        ),
+        path=node.impl,
+    )
+
+
+def _origin(judge: Node, source: str) -> str | None:
+    """The reference a judge's input path ``source`` was bound from, when it is
+    one step's output field (``me.account_id`` bound ``me: get_identity.output``
+    is ``get_identity.output.account_id``)."""
+    head, _, rest = source.partition(".")
+    bound = (judge.inputs or {}).get(head)
+    if bound is None:
+        return None
+    ref = parse_input_ref(bound)
+    if ref.node_id is None:
+        return None
+    if ref.field is None:
+        return f"{ref.node_id}.output.{rest}" if rest and "." not in rest else None
+    return bound if not rest else None
+
+
+def _result_finding(
+    pipeline: Pipeline, node: Node, param: str, key: str, delivered: frozenset[str]
+) -> ContractFinding:
+    source = (node.inputs or {})[param]
+    listed = ", ".join(f"`{k}`" for k in sorted(delivered))
+    # Where else the key is: another step's output the node could bind.
+    elsewhere = sorted(
+        f"`{n.id}.output.{key}`"
+        for n in pipeline.nodes
+        if n.id != node.id and key in result_keys(n)
+    )
+    hint = (
+        f" {' and '.join(elsewhere)} {'holds' if len(elsewhere) == 1 else 'hold'} it: if that "
+        f"is the value meant, the step needs that binding"
+        if elsewhere
+        else ""
+    )
+    return ContractFinding(
+        node_id=node.id,
+        kind=RESULT_KEY_UNDELIVERED,
+        severity="error",
+        message=(
+            f"{node.id}'s code reads `{key}` from `{param}` (bound to `{source}`), but that "
+            f"value can hold only {listed}, so the read fails on every run.{hint}. Read a "
+            f"key the value holds, and build the tests from the producer's schema. Never "
+            f"replace the missing value with a default"
         ),
         path=node.impl,
     )

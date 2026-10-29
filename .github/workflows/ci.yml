@@ -147,6 +147,7 @@ jobs:
             tests/test_pipeline_input_parity.py \
             tests/test_conditional_gate_parity.py \
             tests/test_gate_shows_parity.py \
+            tests/test_fan_shared_field.py \
             tests/test_judge_sampling_sdk.py \
             tests/test_serve_server.py \
             tests/test_skill_e2e.py

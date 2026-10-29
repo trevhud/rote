@@ -31,7 +31,10 @@ def _pipeline(nodes: list[dict[str, Any]], input_: dict[str, Any] | None = None)
             "version": "0.1.0",
             "input": input_ or {"type": "In", "required": ["region"], "optional": []},
             "nodes": nodes,
-            "edges": [{"from": a, "to": b} for a, b in zip(ids, ids[1:], strict=False)],
+            "edges": [
+                {"from": a, "to": b, **({"fan_out": True} if fanned.get("fan_out") else {})}
+                for a, b, fanned in zip(ids, ids[1:], nodes[1:], strict=False)
+            ],
             "entry_nodes": ids[:1],
             "exit_nodes": ids[-1:],
         }
@@ -328,3 +331,163 @@ def test_verification_sends_the_boundary_errors_back_to_repair(tmp_path: Path) -
     instruction = v.repair_instruction(root) or ""
     assert "drive.read_file takes `fileId`, `sheet`" in instruction
     assert "reads `completion` from gate ask_completion's" in instruction
+
+
+# ───────── another step's result (#329) ─────────
+
+_TICKET = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "repo": {"type": "string"}},
+    "required": ["title", "repo"],
+}
+
+
+def _orphan_nodes(create_inputs: dict[str, str], passthrough: bool = True) -> list[dict[str, Any]]:
+    """#329's shape: an identity call, a judge that copies the signed-in
+    account id to the top of its output, and a creation fan-out over its items."""
+    output = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": _TICKET},
+            **({"assignee_account_id": {"type": "string"}} if passthrough else {}),
+        },
+        "required": ["items", *(["assignee_account_id"] if passthrough else [])],
+    }
+    return [
+        {
+            "id": "get_identity",
+            "kind": "external_call",
+            "description": "Read the signed-in account.",
+            "impl": "extracted/identity.py:get_identity",
+            "output": {"account_id": "str"},
+        },
+        {
+            "id": "prepare",
+            "kind": "llm_judge",
+            "description": "Prepare the tickets.",
+            "inputs": {"me": "get_identity.output"},
+            "signature_spec": {
+                "prompt": "Prepare tickets for {{ me }}",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "me": {
+                            "type": "object",
+                            "properties": {"account_id": {"type": "string"}},
+                            "required": ["account_id"],
+                        }
+                    },
+                    "required": ["me"],
+                },
+                "output_schema": output,
+                **(
+                    {"passthrough": {"assignee_account_id": "me.account_id"}} if passthrough else {}
+                ),
+            },
+        },
+        {
+            "id": "create",
+            "kind": "external_call",
+            "description": "Create one ticket per item.",
+            "impl": "extracted/create.py:create",
+            "fan_out": True,
+            "inputs": create_inputs,
+        },
+    ]
+
+
+_CREATE_READS_ITEM_ASSIGNEE = (
+    "def create(ticket):\n"
+    "    return {'key': ticket['title'], 'assignee': ticket['assignee_account_id']}\n"
+)
+
+
+def test_code_that_reads_a_key_a_judges_item_cannot_hold_is_an_error(tmp_path: Path) -> None:
+    pipeline = _pipeline(_orphan_nodes({"ticket": "prepare.output.items"}))
+    root = _write(tmp_path, pipeline, {"create.py": _CREATE_READS_ITEM_ASSIGNEE})
+    by_kind = {f.kind: f for f in boundary_findings(pipeline, root)}
+    finding = by_kind["result_key_undelivered"]
+    assert (finding.node_id, finding.severity) == ("create", "error")
+    assert "reads `assignee_account_id` from `ticket`" in finding.message
+    assert "can hold only `repo`, `title`" in finding.message
+    # Where the value is: the judge's top-level copy.
+    assert "`prepare.output.assignee_account_id` holds it" in finding.message
+
+
+def test_a_key_the_item_holds_is_not_a_finding(tmp_path: Path) -> None:
+    pipeline = _pipeline(
+        _orphan_nodes(
+            {"ticket": "prepare.output.items", "who": "prepare.output.assignee_account_id"}
+        )
+    )
+    ok = "def create(ticket, who):\n    return {'key': ticket['title'], 'assignee': who}\n"
+    root = _write(tmp_path, pipeline, {"create.py": ok})
+    assert boundary_findings(pipeline, root) == []
+
+
+def test_an_open_schema_is_never_checked(tmp_path: Path) -> None:
+    """A pure function's result may carry keys its schema does not list."""
+    producer = {
+        "id": "load",
+        "kind": "pure_function",
+        "description": "Load it.",
+        "impl": "extracted/load.py:load",
+        "output_schema": {"type": "object", "properties": {"rows": {"type": "array"}}},
+    }
+    pipeline = _pipeline([producer, _consumer({"loaded": "load.output"})])
+    reads = "def score(loaded):\n    return {'n': loaded['extra']}\n"
+    root = _write(tmp_path, pipeline, {"score.py": reads})
+    assert boundary_findings(pipeline, root) == []
+    closed = {
+        **producer,
+        "output_schema": {**producer["output_schema"], "additionalProperties": False},
+    }
+    pipeline = _pipeline([closed, _consumer({"loaded": "load.output"})])
+    [finding] = boundary_findings(pipeline, root)
+    assert finding.kind == "result_key_undelivered"
+
+
+def test_a_copied_value_no_step_reads_is_a_review_gap(tmp_path: Path) -> None:
+    """#329: the account id reaches the judge's output and never the fan-out."""
+    pipeline = _pipeline(_orphan_nodes({"ticket": "prepare.output.items"}))
+    ok_item = "def create(ticket):\n    return {'key': ticket['title']}\n"
+    root = _write(tmp_path, pipeline, {"create.py": ok_item})
+    [finding] = boundary_findings(pipeline, root)
+    assert (finding.node_id, finding.kind, finding.severity) == (
+        "prepare",
+        "passthrough_unread",
+        "warning",
+    )
+    assert "no later step reads `prepare.output.assignee_account_id`" in finding.message
+    assert "`create` read(s) prepare's other fields" in finding.message
+    assert "or `get_identity.output.account_id` where it came from" in finding.message
+    assert "Never let the step supply a default" in finding.message
+
+
+@pytest.mark.parametrize(
+    "create_inputs",
+    [
+        {"ticket": "prepare.output.items", "who": "prepare.output.assignee_account_id"},
+        # A whole-output reader whose code reads the field.
+        {"ticket": "prepare.output.items", "prepared": "prepare.output"},
+    ],
+)
+def test_a_copied_value_a_step_reads_is_fine(tmp_path: Path, create_inputs: dict[str, str]) -> None:
+    pipeline = _pipeline(_orphan_nodes(create_inputs))
+    params = ", ".join(create_inputs)
+    body = (
+        "    return {'who': prepared['assignee_account_id']}\n"
+        if "prepared" in create_inputs
+        else "    return {'who': who}\n"
+    )
+    root = _write(tmp_path, pipeline, {"create.py": f"def create({params}):\n{body}"})
+    assert boundary_findings(pipeline, root) == []
+
+
+def test_a_whole_output_reader_with_no_readable_code_counts_as_reading_it(
+    tmp_path: Path,
+) -> None:
+    """A stub or MCP call takes the whole value: rote cannot say it drops a field."""
+    pipeline = _pipeline(_orphan_nodes({"ticket": "prepare.output.items", "p": "prepare.output"}))
+    root = _write(tmp_path, pipeline, {})
+    assert boundary_findings(pipeline, root) == []

@@ -1431,6 +1431,24 @@ def binding_findings(verification: Any, writable: Iterable[str]) -> dict[str, li
     return out
 
 
+def dataflow_findings(
+    verification: Any,
+    sent: set[tuple[str, str]] = frozenset(),  # type: ignore[assignment]
+) -> dict[str, list[str]]:
+    """``{node id: messages}`` for each data-flow finding not yet sent.
+
+    A value that does not reach the step needing it is a binding: no text can
+    fix it, so the structure pass re-decides it (:func:`structure.rebind`).
+    """
+    from rote.compiler.system1.structure import DATAFLOW_FINDINGS
+
+    out: dict[str, list[str]] = {}
+    for f in verification.findings:
+        if f.kind in DATAFLOW_FINDINGS and (f.node_id, f.message) not in sent:
+            out.setdefault(f.node_id, []).append(f.message)
+    return out
+
+
 #: Pydantic's per-error tail: ``[type=value_error, input_value={...},
 #: input_type=dict]``. Its input_value may hold brackets, so it ends at
 #: ``input_type=<name>]``.
@@ -1570,9 +1588,14 @@ class TextWriter:
         run_tests: bool = False,
         trust_skill: bool = False,
         redecide: Redecide | None = None,
+        rebind: Redecide | None = None,
         sample_payload: Any = None,
     ) -> None:
         self.redecide = redecide
+        self.rebind = rebind
+        #: Data-flow findings already sent to the structure pass: each goes once,
+        #: since what it keeps is its decision.
+        self._rebound: set[tuple[str, str]] = set()
         self.skill_dir = skill_dir
         #: The compile's sample input: a field it lacks cannot be required.
         self.sample_payload = sample_payload
@@ -1910,6 +1933,20 @@ class TextWriter:
                     rounds += 1
                     verification = self.verified(verify)
                     continue
+            flows = dataflow_findings(verification, self._rebound)
+            if flows and self.rebind is not None:
+                # A value that never reaches the step needing it is a binding,
+                # which the structure pass decides; the pieces then follow it.
+                self._rebound |= {(n, m) for n, msgs in flows.items() for m in msgs}
+                changes = await asyncio.to_thread(self.rebind, flows)
+                for change in changes:
+                    self._emit("log", f"generate: {change}")
+                if any(": bound (" in c for c in changes):
+                    self.ctx.reload()
+                    self._refresh_inputs()
+                    rounds += 1
+                    verification = self.verified(verify)
+                    continue
             if not per and not entries:
                 break
             rounds += 1
@@ -1972,6 +2009,7 @@ async def write_text(
     run_tests: bool = False,
     trust_skill: bool = False,
     redecide: Redecide | None = None,
+    rebind: Redecide | None = None,
 ) -> DriverResult:
     """Write a System-1 skeleton's text in ``work_dir``; return it as a DriverResult.
 
@@ -1999,6 +2037,7 @@ async def write_text(
         run_tests=run_tests,
         trust_skill=trust_skill,
         redecide=redecide,
+        rebind=rebind,
         sample_payload=getattr(plan.sample, "payload", None),
     )
     rounds = 0
