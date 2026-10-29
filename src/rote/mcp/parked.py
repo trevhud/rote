@@ -113,6 +113,9 @@ class GateReached:
     message: str | None
     key: str
     """Identifies this arrival, so it is announced once."""
+    shows: dict[str, Any] | None = None
+    """The gate's other bound inputs by name: the data the person decides on
+    that its message does not name (#325)."""
 
 
 def gates_from_status(status: Any, run_id: str) -> list[GateReached]:
@@ -129,6 +132,7 @@ def gates_from_status(status: Any, run_id: str) -> list[GateReached]:
                     signal=str(entry.get("signal") or ""),
                     message=message if isinstance(message, str) else None,
                     key=f"{run_id}#{i}",
+                    shows=entry["shows"] if isinstance(entry.get("shows"), dict) else None,
                 )
             )
     return found
@@ -153,6 +157,7 @@ def parse_gate_park_markers(text: str) -> list[GateReached]:
                     signal=str(doc.get("signal") or ""),
                     message=message if isinstance(message, str) else None,
                     key=str(doc["wait"]),
+                    shows=doc["shows"] if isinstance(doc.get("shows"), dict) else None,
                 )
             )
     return found
@@ -629,6 +634,20 @@ def gate_announcement(gate: GateReached) -> str:
 
     head = f"rote run: waiting at gate {gate.gate!r} for signal {gate.signal!r}"
     text = escape_invisible(gate.message or "").rstrip("\n")
+    for name, value in (gate.shows or {}).items():
+        # What the gate shows below its message: a string as written (a draft
+        # keeps its lines), anything else as compact JSON.
+        shown = (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        )
+        shown = escape_invisible(shown).rstrip("\n")
+        text += ("\n" if text else "") + (
+            f"{escape_invisible(name)}:\n" + "\n".join(f"  {line}" for line in shown.split("\n"))
+            if "\n" in shown
+            else f"{escape_invisible(name)}: {shown}"
+        )
     if not text:
         return head
     body = "\n".join(f"  {line}" if line else "" for line in text.split("\n"))

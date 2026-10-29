@@ -631,7 +631,7 @@ def run_pipeline(pipeline_input: dict) -> dict:
     # Says which gate the run waits at, and the gate's message, in
     # the workflow event `rote run` watches. Display only: nothing
     # is sent to a person or a channel.
-    _rote_gates.append({"gate": "contact_review_gate", "signal": "contact_review_approved", "message": _render_gate_message("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", {**_gate_input("drug_brand", pipeline_input, "drug_brand"), **_gate_input("condition_acronym", pipeline_input, "condition_acronym")})})
+    _rote_gates.append({"gate": "contact_review_gate", "signal": "contact_review_approved", "message": _render_gate_message("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", {**_gate_input("drug_brand", pipeline_input, "drug_brand"), **_gate_input("condition_acronym", pipeline_input, "condition_acronym")}), "shows": {**_gate_input("vetted_contacts", lead_generation_loop_result, "vetted_contacts"), **_gate_input("discarded_summary", lead_generation_loop_result, "discarded_summary")}})
     DBOS.set_event("rote_gate_status", {"reached": list(_rote_gates)})
     # Durable receive: the workflow parks in the system database until
     # DBOS.send(workflow_id, payload, topic='contact_review_approved')
@@ -719,7 +719,7 @@ def run_pipeline(pipeline_input: dict) -> dict:
     # Says which gate the run waits at, and the gate's message, in
     # the workflow event `rote run` watches. Display only: nothing
     # is sent to a person or a channel.
-    _rote_gates.append({"gate": "manual_enrollment_handoff", "signal": "bdr_enrollment_complete", "message": _render_gate_message("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", {**_gate_input("campaign_name", pipeline_input, "drug_brand"), **_gate_input("report_markdown", pre_enrollment_report_result, "report_markdown")})})
+    _rote_gates.append({"gate": "manual_enrollment_handoff", "signal": "bdr_enrollment_complete", "message": _render_gate_message("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", {**_gate_input("campaign_name", pipeline_input, "drug_brand"), **_gate_input("report_markdown", pre_enrollment_report_result, "report_markdown")}), "shows": {}})
     DBOS.set_event("rote_gate_status", {"reached": list(_rote_gates)})
     # Durable receive: the workflow parks in the system database until
     # DBOS.send(workflow_id, payload, topic='bdr_enrollment_complete')

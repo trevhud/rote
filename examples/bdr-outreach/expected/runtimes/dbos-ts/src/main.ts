@@ -381,7 +381,7 @@ export const runPipeline = DBOS.registerWorkflow(
         // message, in the workflow event `rote run` watches (portable, so
         // the Python DBOSClient can read it). Display only: nothing is
         // sent to a person or a channel.
-        roteGates.push({ gate: "contact_review_gate", signal: "contact_review_approved", message: renderGateMessage("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", { "drug_brand": roteGateField(pipelineInput, "drug_brand"), "condition_acronym": roteGateField(pipelineInput, "condition_acronym") }) });
+        roteGates.push({ gate: "contact_review_gate", signal: "contact_review_approved", message: renderGateMessage("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", { "drug_brand": roteGateField(pipelineInput, "drug_brand"), "condition_acronym": roteGateField(pipelineInput, "condition_acronym") }), shows: Object.fromEntries([["vetted_contacts", roteGateField(lead_generation_loop_result, "vetted_contacts")], ["discarded_summary", roteGateField(lead_generation_loop_result, "discarded_summary")]].filter(([, value]) => value !== undefined)) });
         await DBOS.setEvent(
             "rote_gate_status",
             { reached: [...roteGates] },
@@ -478,7 +478,7 @@ export const runPipeline = DBOS.registerWorkflow(
         // message, in the workflow event `rote run` watches (portable, so
         // the Python DBOSClient can read it). Display only: nothing is
         // sent to a person or a channel.
-        roteGates.push({ gate: "manual_enrollment_handoff", signal: "bdr_enrollment_complete", message: renderGateMessage("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", { "campaign_name": roteGateField(pipelineInput, "drug_brand"), "report_markdown": roteGateField(pre_enrollment_report_result, "report_markdown") }) });
+        roteGates.push({ gate: "manual_enrollment_handoff", signal: "bdr_enrollment_complete", message: renderGateMessage("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", { "campaign_name": roteGateField(pipelineInput, "drug_brand"), "report_markdown": roteGateField(pre_enrollment_report_result, "report_markdown") }), shows: {} });
         await DBOS.setEvent(
             "rote_gate_status",
             { reached: [...roteGates] },

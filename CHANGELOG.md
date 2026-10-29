@@ -11,6 +11,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`rote run` shows a gate's data, not only its message (#325).** A gate
+  binds what the person decides on, but every workflow runtime reported
+  only the rendered message, so a message calling a draft "below" showed
+  nothing below it. Each runtime now reports the gate's other bound inputs,
+  and `rote run` prints them under the message: a string as written, keeping
+  its lines, and anything else as compact JSON. The compiled skill already
+  showed them.
+- `rote run` on Cloudflare retries `wrangler dev` on a fresh port when
+  another process took the one it picked (#324).
 - **A step that fails without an optional input is flagged (#326).**
   Verification runs the deterministic steps on the sample input, and the
   sample always carried the field, so a renderer that raised without a URL

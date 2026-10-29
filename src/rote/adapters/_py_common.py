@@ -245,11 +245,12 @@ render_gate_message = _gate_runtime_helper._render_gate_message
 
 
 def gate_message_helper(pipeline: Pipeline) -> str:
-    """:data:`GATE_MESSAGE_HELPER_PY` when a gate has a message, else ""."""
-    has_message = any(
-        n.notify and n.notify.message_template for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    """:data:`GATE_MESSAGE_HELPER_PY` when a gate has a message or shows data, else ""."""
+    needed = any(
+        (n.notify and n.notify.message_template) or n.inputs
+        for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
     )
-    return GATE_MESSAGE_HELPER_PY if has_message else ""
+    return GATE_MESSAGE_HELPER_PY if needed else ""
 
 
 _GATE_CONDITION_HELPER_PY = '''\
@@ -307,11 +308,26 @@ def conditional_gate_py(node: Node, wait_block: str, raise_stmt: str, indent: st
 def gate_report_py(node: Node) -> str:
     """The dict a Python runtime reports when its run reaches ``node``.
 
-    ``{"gate", "signal", "message"}``, the message rendered from the gate's
-    actual inputs, or None when the gate has no ``message_template``. The
-    template is an escaped literal (invariant #7).
+    ``{"gate", "signal", "message", "shows"}``: the message rendered from the
+    gate's actual inputs (None when the gate has no ``message_template``), and
+    every other bound input, by name. A gate binds what the person decides on
+    (``Node._validate_gate_shows_what_it_binds``), so a draft its message only
+    calls "below" is shown here (#325). The template is an escaped literal
+    (invariant #7).
     """
     template = node.notify.message_template if node.notify else None
+    named = set(gate_message_names(node))
+    shows = []
+    for name, ref in (node.inputs or {}).items():
+        if name in named:
+            continue
+        parsed = parse_input_ref(ref)
+        base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+        shows.append(
+            f"{json.dumps(name)}: {base}"
+            if parsed.field is None
+            else f"**_gate_input({json.dumps(name)}, {base}, {json.dumps(parsed.field)})"
+        )
     if template:
         entries = []
         for name in gate_message_names(node):
@@ -326,7 +342,8 @@ def gate_report_py(node: Node) -> str:
     else:
         message = "None"
     gate, signal = json.dumps(node.id), json.dumps(node.signal)
-    return f'{{"gate": {gate}, "signal": {signal}, "message": {message}}}'
+    shown = "{" + ", ".join(shows) + "}"
+    return f'{{"gate": {gate}, "signal": {signal}, "message": {message}, "shows": {shown}}}'
 
 
 _ASYNC_RUNNER_HELPER_PY = '''\
