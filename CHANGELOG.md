@@ -9,6 +9,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workflow step titles are no longer read as fields a person must send
+  (#319).** A section that mentioned asking the person anywhere made every
+  bold list heading in it a required gate key, so a correct compile failed
+  on keys like `resolve_the_target` and `verify`. A list now counts only
+  when what introduces it asks the person for something and ends in a
+  colon (`ask the duty manager to provide:`). Across the example skills
+  this drops 30 false keys, including a "What not to do" list, and keeps
+  ops-report's three. The check reads meaning from words, so a gate that
+  misses the skill's names is now a review gap (repaired once, then a
+  warning), never a failed compile.
+
 ## [0.19.1] - 2026-10-29
 
 ### Fixed
