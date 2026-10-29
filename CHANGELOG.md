@@ -9,6 +9,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-10-29
+
 ### Fixed
 
 - **`rote run` shows a gate's data, not only its message (#325).** A gate
@@ -2400,7 +2402,8 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.19.2...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.19.3...HEAD
+[0.19.3]: https://github.com/trevhud/rote/compare/v0.19.2...v0.19.3
 [0.19.2]: https://github.com/trevhud/rote/compare/v0.19.0...v0.19.2
 [0.19.0]: https://github.com/trevhud/rote/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/trevhud/rote/compare/v0.17.0...v0.18.0
