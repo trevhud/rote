@@ -198,6 +198,7 @@ jobs:
             tests/test_ts_agent_loop_e2e.py \
             tests/test_ts_judge_e2e.py \
             tests/test_judge_passthrough.py \
+            tests/test_item_passthrough.py \
             tests/test_constants_parity_ts_e2e.py \
             tests/test_retry_parity_ts_e2e.py \
             tests/test_gate_message.py \

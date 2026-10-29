@@ -293,6 +293,7 @@ export function passthroughValues(
 ): Record<string, unknown> {
     const values: Record<string, unknown> = {};
     for (const [target, source] of Object.entries(passthrough)) {
+        if (itemPassthrough(target, source) !== null) continue;
         let value: unknown = input;
         let found = true;
         for (const part of source.split(".")) {
@@ -324,5 +325,93 @@ export function withPassthrough(
     for (const [key, value] of Object.entries(answer)) {
         if (!Object.prototype.hasOwnProperty.call(passthrough, key)) kept[key] = value;
     }
-    return { ...kept, ...passthroughValues(input, passthrough) };
+    const merged: Record<string, unknown> = { ...kept, ...passthroughValues(input, passthrough) };
+    const byArray = new Map<string, ItemPassthrough[]>();
+    for (const [target, source] of Object.entries(passthrough)) {
+        const entry = itemPassthrough(target, source);
+        if (entry !== null) byArray.set(entry.array, [...(byArray.get(entry.array) ?? []), entry]);
+    }
+    for (const [array, entries] of byArray) {
+        const answered = merged[array];
+        if (Array.isArray(answered)) merged[array] = hydrateItems(answered, input, array, entries);
+    }
+    return merged;
+}
+
+interface ItemPassthrough {
+    array: string;
+    field: string;
+    path: string;
+    key: string;
+    recordField: string;
+}
+
+const ITEM_TARGET = /^([A-Za-z_][A-Za-z0-9_]*)\[\]\.([A-Za-z_][A-Za-z0-9_]*)$/;
+const ITEM_SOURCE =
+    /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\[([A-Za-z_][A-Za-z0-9_]*)\]\.([A-Za-z_][A-Za-z0-9_]*)$/;
+
+/** A per-item passthrough entry (`items[].body` <- `prs[number].body`), or null. */
+function itemPassthrough(target: string, source: string): ItemPassthrough | null {
+    const t = ITEM_TARGET.exec(target);
+    const s = ITEM_SOURCE.exec(source);
+    if (t === null || s === null) return null;
+    return { array: t[1], field: t[2], path: s[1], key: s[2], recordField: s[3] };
+}
+
+/**
+ * Each answered item with its copied fields filled from the input record
+ * whose key equals the item's (#320); an item whose key matches no record,
+ * or several, or another item's, throws in the same words as the Python
+ * helper's _hydrate_items.
+ */
+function hydrateItems(
+    answered: unknown[],
+    input: unknown,
+    array: string,
+    entries: ItemPassthrough[],
+): unknown[] {
+    const { path, key } = entries[0];
+    let records: unknown = input;
+    for (const part of path.split(".")) {
+        records = isJsonObject(records) ? records[part] : undefined;
+    }
+    if (!Array.isArray(records)) {
+        throw new Error(`passthrough into ${array}[]: the input's ${path} is not a list`);
+    }
+    const copied = new Set(entries.map((e) => e.field));
+    const seen: unknown[] = [];
+    return answered.map((item, i) => {
+        if (!isJsonObject(item) || !Object.prototype.hasOwnProperty.call(item, key)) {
+            throw new Error(`passthrough into ${array}[${i}]: the item names no ${key}`);
+        }
+        const wanted = item[key];
+        if (seen.some((s) => s === wanted)) {
+            throw new Error(
+                `passthrough into ${array}[${i}]: ${key} ${JSON.stringify(wanted)} names a ` +
+                    "record another item already names",
+            );
+        }
+        seen.push(wanted);
+        const matches = records.filter(
+            (r): r is Record<string, unknown> =>
+                isJsonObject(r) &&
+                Object.prototype.hasOwnProperty.call(r, key) &&
+                r[key] === wanted,
+        );
+        if (matches.length !== 1) {
+            const which = matches.length === 0 ? "no" : String(matches.length);
+            throw new Error(
+                `passthrough into ${array}[${i}]: ${key} ${JSON.stringify(wanted)} matches ` +
+                    `${which} record(s) of the input's ${path}, so its fields cannot be copied`,
+            );
+        }
+        const filled: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(item)) if (!copied.has(k)) filled[k] = v;
+        for (const e of entries) {
+            if (Object.prototype.hasOwnProperty.call(matches[0], e.recordField)) {
+                filled[e.field] = JSON.parse(JSON.stringify(matches[0][e.recordField]));
+            }
+        }
+        return filled;
+    });
 }

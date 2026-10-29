@@ -1237,6 +1237,23 @@ def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str
                 f"field there with exactly `{target}`'s schema (offered for `{target}`: "
                 f"{offered})"
             )
+    if passthrough and not problems:
+        # Candidates are offered one at a time; together they must still be a
+        # passthrough the IR accepts (one key per list, never copying over the
+        # key), or the refusal comes back only at the whole-deliverable check.
+        from rote.ir import LLMSignature
+
+        try:
+            LLMSignature.model_validate(
+                {
+                    "prompt": prompt,
+                    "input_schema": ctx.judge_input_schema(node),
+                    "output_schema": ctx.output_schema(node.id),
+                    "passthrough": dict(passthrough),
+                }
+            )
+        except ValueError as e:
+            problems.append(f"passthrough {dict(passthrough)} is refused: {e}")
     return problems
 
 

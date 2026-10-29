@@ -362,6 +362,22 @@ says nothing about copying, and renders the copied data only where the
 decision reads it. A field the judge writes or rewrites (a summary of the
 record, a normalized name) is not passthrough, whatever its shape.
 
+When the judge returns a list of fetched records (the pull requests that
+need a ticket, the contacts to enroll), copy each record's fields by key:
+
+```yaml
+passthrough:
+  items[].repo: prs[number].repo   # {<list>[].<field>: <input list>[<key>].<field>}
+  items[].body: prs[number].body
+```
+
+The model writes each item's `number` (the key) and what it decides; code
+fills `repo` and `body` from the `prs` record with that number. An item
+whose number matches no record, or two, or another item's, fails the judge
+before anything downstream runs. Use it whenever a later step writes the
+record back or acts on it: appending to a body the model retyped can change
+the real one. The key is a string or integer field both sides declare.
+
 ### Deriving the JSON Schemas
 
 The Pydantic models you wrote in step 3 (input model) and step 4

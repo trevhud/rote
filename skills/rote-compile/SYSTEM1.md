@@ -92,7 +92,9 @@ vet_contact_judge:
 A judge output field that is input data returned unchanged goes in
 `signature_spec.passthrough: {<output field>: <input path>}` (an input
 path of exactly that field's schema): code copies it and the prompt does
-not mention it (llm-judge-extraction.md, "Fields returned unchanged").
+not mention it (llm-judge-extraction.md, "Fields returned unchanged"). For
+fetched records the judge returns as a list, copy each item's fields by key
+(`items[].body: prs[number].body`), so a record written back is the one read.
 
 Declare the `properties` of every object in a judge's `output_schema`,
 nested ones included: structured outputs reject free-form objects and

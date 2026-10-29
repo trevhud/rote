@@ -13,7 +13,7 @@
     "main.py": "2a56f72d61da1c737c36a6cf25feb090d162724642a0abffafe3e0467d1f66be",
     "requirements.txt": "06eb2a61f0e6e9557df37ab360f6ec0602d09a801b5414b85ea97f5f1119af00",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "fc8a036aaa668ff61745fe5c091624ed12589dc38c2b3bc157139a4af25d04fb",
+    "signatures/_rote_inference.py": "f9ea4f14feb87a12cc4bcceced271d64e43255f6e8ab76bf3be0ee6ff7e894a3",
     "signatures/personalize_email.py": "81699d0e17c9ee05450898c6a93cb8cb05a44e507d2d61941b3fdea13d725b36",
     "signatures/vet_contact.py": "cd66435f58adc5b74403d15920096100209a878592834ce2aa16951c96a09d4c"
   }

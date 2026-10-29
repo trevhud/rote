@@ -1109,10 +1109,29 @@ def passthrough_answer_schema(
     if not passthrough:
         return dict(output_schema)
     out = copy.deepcopy(dict(output_schema))
+    items = _item_passthrough(passthrough)
     properties = out.get("properties") or {}
     out["properties"] = {k: v for k, v in properties.items() if k not in passthrough}
     if "required" in out:
         out["required"] = [k for k in out["required"] if k not in passthrough]
+    for array, entries in _by_array(items).items():
+        # The items' copied fields leave the request too. The item schema is
+        # inlined here, so a $defs entry it shares with another place stays
+        # whole there (the IR resolves these refs the same way).
+        listed = _inline_ref(out["properties"].get(array), out)
+        if not isinstance(listed, dict):
+            continue
+        item = _inline_ref(listed.get("items"), out)
+        if not isinstance(item, dict):
+            continue
+        item = copy.deepcopy(item)
+        copied = {e["field"] for e in entries}
+        item["properties"] = {
+            k: v for k, v in (item.get("properties") or {}).items() if k not in copied
+        }
+        if "required" in item:
+            item["required"] = [k for k in item["required"] if k not in copied]
+        out["properties"][array] = {**listed, "items": item}
     defs = out.get("$defs")
     if isinstance(defs, dict):
         used: set[str] = set()
@@ -1137,6 +1156,55 @@ def passthrough_answer_schema(
     return out
 
 
+#: ``<list>[].<field>`` and ``<path>[<key>].<field>``: the per-item passthrough
+#: grammar, the same as ``rote.ir.item_passthrough``'s.
+_ITEM_TARGET = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[\]\.([A-Za-z_][A-Za-z0-9_]*)")
+_ITEM_SOURCE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\[([A-Za-z_][A-Za-z0-9_]*)\]\.([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def _item_passthrough(passthrough: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    """``{target: {array, field, path, key, record_field}}`` for per-item entries."""
+    found: dict[str, dict[str, str]] = {}
+    for target, source in passthrough.items():
+        t, src = _ITEM_TARGET.fullmatch(target), _ITEM_SOURCE.fullmatch(source)
+        if t is not None and src is not None:
+            found[target] = {
+                "array": t[1],
+                "field": t[2],
+                "path": src[1],
+                "key": src[2],
+                "record_field": src[3],
+            }
+    return found
+
+
+def _by_array(items: Mapping[str, Mapping[str, str]]) -> dict[str, list[Mapping[str, str]]]:
+    grouped: dict[str, list[Mapping[str, str]]] = {}
+    for entry in items.values():
+        grouped.setdefault(entry["array"], []).append(entry)
+    return grouped
+
+
+def _inline_ref(node: Any, root: Mapping[str, Any]) -> Any:
+    seen: set[str] = set()
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        name = node["$ref"].removeprefix("#/$defs/")
+        defs = root.get("$defs")
+        if name in seen or not isinstance(defs, dict) or name not in defs:
+            return node
+        seen.add(name)
+        node = defs[name]
+    return node
+
+
+def _same_key(a: Any, b: Any) -> bool:
+    """Key equality as JavaScript's ``===`` reads JSON: ``1`` is not ``True``."""
+    return a == b and isinstance(a, bool) == isinstance(b, bool) and type(a) is not dict
+
+
 def passthrough_values(inputs: Any, passthrough: Mapping[str, str]) -> dict[str, Any]:
     """``{output field: a copy of the input value its source path names}``.
 
@@ -1146,7 +1214,10 @@ def passthrough_values(inputs: Any, passthrough: Mapping[str, str]) -> dict[str,
     output schema check that follows decides whether that is allowed.
     """
     values: dict[str, Any] = {}
+    items = _item_passthrough(passthrough)
     for target, source in passthrough.items():
+        if target in items:
+            continue
         value: Any = inputs
         for part in source.split("."):
             if not isinstance(value, dict) or part not in value:
@@ -1170,7 +1241,57 @@ def with_passthrough(answer: Any, inputs: Any, passthrough: Mapping[str, str]) -
     if not isinstance(answer, dict):
         return answer
     kept = {k: v for k, v in answer.items() if k not in passthrough}
-    return {**kept, **passthrough_values(inputs, passthrough)}
+    merged = {**kept, **passthrough_values(inputs, passthrough)}
+    for array, entries in _by_array(_item_passthrough(passthrough)).items():
+        if isinstance(merged.get(array), list):
+            merged[array] = _hydrate_items(merged[array], inputs, array, entries)
+    return merged
+
+
+def _hydrate_items(
+    answered: list[Any], inputs: Any, array: str, entries: list[Mapping[str, str]]
+) -> list[Any]:
+    """Each answered item with its copied fields filled from the input record
+    whose key equals the item's (#320).
+
+    The model names each item by its key and writes only what is new; the
+    record's fields come from the input, so a recited body cannot reach a
+    write. An item whose key no record has, a key two records share, or a key
+    two items name stops the judge before anything downstream runs, in the
+    same words as the TS twin."""
+    path, key = entries[0]["path"], entries[0]["key"]
+    records: Any = inputs
+    for part in path.split("."):
+        records = records.get(part) if isinstance(records, dict) else None
+    if not isinstance(records, list):
+        raise ValueError(f"passthrough into {array}[]: the input's {path} is not a list")
+    seen: list[Any] = []
+    out: list[Any] = []
+    for i, item in enumerate(answered):
+        if not isinstance(item, dict) or key not in item:
+            raise ValueError(f"passthrough into {array}[{i}]: the item names no {key}")
+        wanted = item[key]
+        if any(_same_key(wanted, s) for s in seen):
+            raise ValueError(
+                f"passthrough into {array}[{i}]: {key} {json.dumps(wanted)} names a record "
+                "another item already names"
+            )
+        seen.append(wanted)
+        matches = [
+            r for r in records if isinstance(r, dict) and key in r and _same_key(r[key], wanted)
+        ]
+        if len(matches) != 1:
+            which = "no" if not matches else f"{len(matches)}"
+            raise ValueError(
+                f"passthrough into {array}[{i}]: {key} {json.dumps(wanted)} matches {which} "
+                f"record(s) of the input's {path}, so its fields cannot be copied"
+            )
+        filled = {k: v for k, v in item.items() if k not in {e["field"] for e in entries}}
+        for e in entries:
+            if e["record_field"] in matches[0]:
+                filled[e["field"]] = copy.deepcopy(matches[0][e["record_field"]])
+        out.append(filled)
+    return out
 
 
 # ───────── the one entry point emitted judges call ─────────
@@ -1225,7 +1346,11 @@ def call_judge(
     for row_model, row_usage in rows:
         _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
     if passthrough:
-        payload = with_passthrough(payload, inputs or {}, passthrough)
+        try:
+            payload = with_passthrough(payload, inputs or {}, passthrough)
+        except ValueError as e:
+            # A judge has no writes, so the step's own retry asks again.
+            raise RuntimeError(f"judge {node_id}: {e}") from None
     errors = schema_errors(output_schema, payload, "output")
     if errors:
         raise RuntimeError(

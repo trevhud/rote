@@ -204,6 +204,15 @@ render them. Leave a field out when the skill has the judge write or change
 it, even when a candidate's shape matches: a summary is not its input. No
 candidates offered means `passthrough` is `[]`.
 
+A candidate like `items[].body` <- `prs[number].body` copies a field into
+every item of an output list from the input record with the same key: the
+model writes each item's `number` and its new fields, and code fills `body`
+from the fetched record. Take these whenever the judge picks or annotates
+fetched records that a later step writes back or acts on (a pull request's
+body, a ticket's id): a record the pipeline writes must be the one it read,
+never the model's retyping of it. Choose the key that identifies a record
+(an id or a number, not a title), the same key for every field of one list.
+
 ## A repair
 
 Asked to repair, you get your earlier answer and what rote found wrong

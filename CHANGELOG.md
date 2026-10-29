@@ -9,6 +9,20 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **A judge's list items get their record fields from the input, not the
+  model (#320).** `signature_spec.passthrough` now takes a per-item form,
+  `items[].body: prs[number].body`: the model writes each item's key
+  (`number`) and what it decides, and code fills `body` from the input
+  record with that key. An item whose key matches no record, several, or
+  another item's fails the judge before anything downstream runs. A real
+  compile's judge copied pull requests' original bodies into its output and
+  the next step appended to that copy and wrote it back, so a model that
+  changed a character changed the pull request. It works on every runtime
+  and in the compiled skill, and the compiler is offered these pairs and
+  told to use them for records a later step writes back.
+
 ### Fixed
 
 - **Workflow step titles are no longer read as fields a person must send
