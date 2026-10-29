@@ -2595,6 +2595,19 @@ def rebind(
             for doc in (trial_current, trial_skeleton):
                 node = next(n for n in doc["nodes"] if n["id"] == nid)
                 node["inputs"] = {**(node.get("inputs") or {}), param: ref}
+                spec = node.get("signature_spec")
+                if node.get("kind") == "llm_judge" and isinstance(spec, dict):
+                    # A judge must declare every param it is bound (the IR
+                    # refuses one its input schema lacks), as the skeleton's
+                    # own judge schemas do: untyped, since nothing decided
+                    # the producer's shape.
+                    schema = dict(spec.get("input_schema") or {"type": "object"})
+                    schema["properties"] = {
+                        **(schema.get("properties") or {}),
+                        param: {"description": f"the result of {ref}"},
+                    }
+                    schema["required"] = [*(schema.get("required") or []), param]
+                    spec["input_schema"] = schema
                 if source is not None and not _reaches(doc, source, nid):
                     doc.setdefault("edges", []).append({"from": source, "to": nid})
             try:
@@ -2611,9 +2624,10 @@ def rebind(
         applied = True
         changes.append(f"{label}: bound ({entry.get('why', '').strip() or 'no reason given'})")
     if applied:
-        skeleton_path.write_text(
-            yaml.safe_dump(skeleton, sort_keys=False, allow_unicode=True), "utf-8"
-        )
+        # pipeline.yaml too: the settle compares it with the skeleton, and a
+        # binding only the skeleton holds would read as the agent's edit.
+        for target, doc in ((skeleton_path, skeleton), (work_dir / "pipeline.yaml", current)):
+            target.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), "utf-8")
     return changes, [{"model": m, **u} for m, u in rows]
 
 
@@ -2633,6 +2647,10 @@ def _rebind_problem(
         return "no such step"
     if nid in in_loops:
         return "a loop calls this step with arguments it chooses"
+    if pipeline.node_by_id(nid).mcp is not None:
+        # Its tool arguments are decided with its binding: a new input would
+        # reach no argument, or be sent as one the tool does not declare.
+        return "an MCP call's arguments are re-decided with its tool binding, not here"
     if not isinstance(param, str) or not is_field_name(param):
         return "the parameter is not an identifier"
     if param in (pipeline.node_by_id(nid).inputs or {}):

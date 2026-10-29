@@ -1934,7 +1934,9 @@ class TextWriter:
                     verification = self.verified(verify)
                     continue
             flows = dataflow_findings(verification, self._rebound)
-            if flows and self.rebind is not None:
+            if flows and self.rebind is not None and rounds + 1 < MAX_REPAIR_ROUNDS:
+                # Only with a round left after it to rewrite the pieces a new
+                # binding changes: otherwise it ships a step its code cannot run.
                 # A value that never reaches the step needing it is a binding,
                 # which the structure pass decides; the pieces then follow it.
                 self._rebound |= {(n, m) for n, msgs in flows.items() for m in msgs}

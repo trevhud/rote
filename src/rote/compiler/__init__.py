@@ -1161,7 +1161,7 @@ class Compiler:
                 record.usage += e.usage
                 return [f"re-deciding data flow failed, the findings stand: {e}"]
             record.usage += usage
-            record.redecided += changes
+            record.redecided += [c for c in changes if ": bound (" in c]
             return changes
 
         return run
@@ -1384,6 +1384,10 @@ class Compiler:
             """Send new data-flow findings and binding proposals to the structure
             pass; return what it bound (nothing when it bound nothing)."""
             if rebind is None or verification.pipeline_error is not None:
+                return []
+            if attempts >= MAX_VALIDATION_REPAIRS:
+                # No turn follows to write the code a new binding needs: a
+                # binding now would ship a step that cannot take its payload.
                 return []
             flows = generate.dataflow_findings(verification, rebound)
             found, _ = enforce_proposals(artifact_dir)

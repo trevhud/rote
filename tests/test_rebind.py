@@ -80,7 +80,7 @@ def test_a_binding_that_resolves_is_written_to_the_skeleton(tmp_path: Path) -> N
     assert '"assignee_account_id"' in call.prompts[0]
 
 
-def test_an_edge_is_added_when_nothing_orders_the_source_first(tmp_path: Path) -> None:
+def test_no_edge_is_added_when_the_source_already_runs_first(tmp_path: Path) -> None:
     work = _work(tmp_path)
     call = _Call(
         _bindings(
@@ -238,3 +238,114 @@ async def test_the_parallel_repair_sends_data_flow_to_the_structure_pass(tmp_pat
     verification, rounds = await writer.repair(lambda _: next(verdicts))
     assert calls == [{"some_judge": ["dropped"]}]
     assert verification.ok and rounds == 1
+
+
+# ───────── review fixes ─────────
+
+
+def test_a_settle_after_a_rebind_keeps_the_binding_and_blames_no_one(tmp_path: Path) -> None:
+    """The binding lands in pipeline.yaml as well as the skeleton, so the settle
+    neither drops it nor reports it as the agent's edit of a decision."""
+    from rote.compiler.system1.enforce import enforce
+
+    work = _work(tmp_path)
+    call = _Call(_bindings(("create", "who", "prepare.output.assignee_account_id")))
+    structure.rebind(work, {"prepare": ["p"]}, "S", Lane("claude-cli"), call=call)
+    changes = enforce(work)
+    assert not any("create" in c for c in changes), changes
+    shipped = Pipeline.model_validate(yaml.safe_load((work / "pipeline.yaml").read_text()))
+    assert shipped.node_by_id("create").inputs["who"] == "prepare.output.assignee_account_id"
+
+
+def test_a_judge_consumer_gets_the_param_declared(tmp_path: Path) -> None:
+    """The IR refuses a judge bound a param its input schema lacks."""
+    work = _work(tmp_path)
+    call = _Call(_bindings(("prepare", "region", "pipeline.input.region")))
+    [change], _ = structure.rebind(work, {"prepare": ["p"]}, "S", Lane("claude-cli"), call=call)
+    assert ": bound (" in change, change
+    spec = _skeleton(work)["prepare"]["signature_spec"]["input_schema"]
+    assert spec["properties"]["region"] == {"description": "the result of pipeline.input.region"}
+    assert "region" in spec["required"]
+
+
+def test_an_mcp_bound_consumer_is_refused(tmp_path: Path) -> None:
+    nodes = _orphan_nodes({"ticket": "prepare.output.items"})
+    nodes[2] = {**nodes[2], "mcp": {"server": "jira", "tool": "create_issue"}}
+    nodes[2].pop("impl")
+    pipeline = _pipeline(nodes)
+    work = _write(tmp_path, pipeline, {})
+    (work / "system1").mkdir()
+    (work / "system1" / "skeleton.yaml").write_text((work / "pipeline.yaml").read_text())
+    call = _Call(_bindings(("create", "who", "prepare.output.assignee_account_id")))
+    [change], _ = structure.rebind(work, {"prepare": ["p"]}, "S", Lane("claude-cli"), call=call)
+    assert "an MCP call's arguments are re-decided with its tool binding" in change
+
+
+def test_the_unread_copy_reaches_the_review_and_the_repair(tmp_path: Path) -> None:
+    """A review gap: listed when the structure pass binds nothing, never silent."""
+    from rote.compiler.verify import verify_deliverable
+
+    pipeline = _pipeline(_orphan_nodes({"ticket": "prepare.output.items"}))
+    work = _write(tmp_path, pipeline, {"create.py": "def create(ticket):\n    return ticket\n"})
+    v = verify_deliverable(work, run_tests=False)
+    assert [f.kind for f in v.review_gaps] == ["passthrough_unread"]
+    instruction = v.repair_instruction(work)
+    assert instruction is not None and "prepare.output.assignee_account_id" in instruction
+
+
+def test_an_ambiguous_fan_is_not_a_verification_crash(tmp_path: Path) -> None:
+    """Two params on the fan source and no declared list: emission refuses it
+    as a finding; the boundary check must not raise first."""
+    from rote.compiler.boundaries import boundary_findings
+
+    nodes = _orphan_nodes(
+        {"ticket": "prepare.output.items", "who": "prepare.output.assignee_account_id"}
+    )
+    nodes[1]["signature_spec"]["output_schema"]["properties"]["items"] = {}
+    pipeline = _pipeline(nodes)
+    root = _write(tmp_path, pipeline, {"create.py": "def create(ticket, who):\n    return who\n"})
+    assert boundary_findings(pipeline, root) == []
+
+
+def test_the_single_session_path_never_rebinds_without_a_turn_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.compiler as compiler_module
+    from rote.compiler import Compiler
+
+    monkeypatch.setattr(compiler_module, "MAX_VALIDATION_REPAIRS", 0)
+    pipeline = _pipeline(_orphan_nodes({"ticket": "prepare.output.items"}))
+    work = _write(tmp_path, pipeline, {"create.py": "def create(ticket):\n    return ticket\n"})
+    asked: list[Any] = []
+    repair = Compiler(run_generated_tests=False)._deliverable_repairer(
+        None, tmp_path, rebind=lambda f: asked.append(f) or []
+    )
+    repair(work / "pipeline.yaml")
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_the_parallel_path_never_rebinds_without_a_round_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.compiler.system1 import generate
+    from rote.compiler.verify import Verification
+    from rote.contracts import ContractFinding
+    from tests.test_system1_generate import _context
+
+    monkeypatch.setattr(generate, "MAX_REPAIR_ROUNDS", 1)
+    ctx, _ = _context(tmp_path, "ops-report")
+    unread = ContractFinding(
+        node_id="some_judge", kind="passthrough_unread", severity="warning", message="dropped"
+    )
+    asked: list[Any] = []
+    writer = generate.TextWriter(
+        None,
+        ctx,
+        "",
+        generate.Settings(),
+        None,
+        rebind=lambda f: asked.append(f) or [],  # type: ignore[arg-type]
+    )
+    await writer.repair(lambda _: Verification(pipeline=None, findings=[unread]))
+    assert asked == []

@@ -46,7 +46,7 @@ from rote.ir import (
     Node,
     NodeKind,
     Pipeline,
-    fan_out_element_param,
+    _fan_element_or_none,
     item_passthrough,
     parse_input_ref,
 )
@@ -119,7 +119,7 @@ def delivered_keys(pipeline: Pipeline, node: Node, param: str) -> frozenset[str]
         schema = {"type": "array", "items": root}
     if ref.field is not None:
         schema = _properties(root, root).get(ref.field)
-    if schema is not None and node.fan_out and param == fan_out_element_param(node, pipeline):
+    if schema is not None and node.fan_out and param == _fan_element_or_none(node, pipeline):
         schema = _resolve(schema, root).get("items")
     if schema is None:
         return None
@@ -476,7 +476,8 @@ def _result_finding(
         severity="error",
         message=(
             f"{node.id}'s code reads `{key}` from `{param}` (bound to `{source}`), but that "
-            f"value can hold only {listed}, so the read fails on every run.{hint}. Read a "
+            f"value can hold only {listed}, so on every run the read fails, or a `.get` "
+            f"silently gets its default.{hint}. Read a "
             f"key the value holds, and build the tests from the producer's schema. Never "
             f"replace the missing value with a default"
         ),

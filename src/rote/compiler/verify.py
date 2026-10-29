@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Literal
 
 from rote.compiler.api_docs import WebResearch, api_view, docs_findings
-from rote.compiler.boundaries import boundary_findings
+from rote.compiler.boundaries import PASSTHROUGH_UNREAD, boundary_findings
 from rote.compiler.env_reads import env_findings
 from rote.compiler.grounding import (
     GATE_PAYLOAD_NOT_SKILL_NOUNS,
@@ -641,6 +641,7 @@ REVIEW_GAP_KINDS = frozenset(
         UNAPPLIED_PROPOSAL,
         GATE_PAYLOAD_NOT_SKILL_NOUNS,
         OPTIONAL_INPUT_REQUIRED,
+        PASSTHROUGH_UNREAD,
     }
 )
 

@@ -1816,15 +1816,14 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
     edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
     fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
 
-    # The tiers are tried narrowest-first, but the ORDER is provably
-    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
-    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
-    # singles out exactly one param. If the broader tier singles one out,
-    # it is necessarily the same one. (Mutation testing flags swapping
-    # these as a surviving mutant — it is equivalent, not a test gap.)
-    # The tiers still earn their place: they express which signal the
-    # author gave, and tier 2 is what handles a marker pointing at a node
-    # no input references.
+    # The tiers are tried narrowest-first: fan_edge_sources ⊆ edge_sources
+    # by construction, so matching(fan) ⊆ matching(edge). A tier is
+    # accepted when it singles out one param, directly or, when several
+    # params read the same source, by the producer declaring one of them a
+    # list. That narrowing can resolve tier 1 where tier 2 alone would not
+    # (a shared field of the list's producer beside an unrelated edge), so
+    # the order matters now. Tier 2 handles a marker pointing at a node no
+    # input references.
     for sources in (fan_edge_sources, edge_sources):
         matching = sorted(p for p, src in node_bound.items() if src in sources)
         if len(matching) > 1:
