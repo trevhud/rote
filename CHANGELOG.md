@@ -11,13 +11,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
-- **A step that fails without an optional input is a compile error (#326).**
+- **A step that fails without an optional input is flagged (#326).**
   Verification runs the deterministic steps on the sample input, and the
   sample always carried the field, so a renderer that raised without a URL
   the contract made optional passed. Each optional field the sample has and
   a step reads is now left out in turn, and a step that ran with it and
-  raises without it goes back to the agent: handle the absence, or make the
-  field required.
+  raises an error naming it goes back to the agent: handle the absence, or
+  make the field required. It is a review gap, not a failure, because the IR
+  cannot say "required when X". A probe that times out is reported and ends
+  the probing, and fields past the cap of six are an open question.
 
 ## [0.19.2] - 2026-10-29
 

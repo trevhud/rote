@@ -30,11 +30,11 @@ error finding with the exact message and the file and line it came from.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from rote.compiler.grounding import Sample
+from rote.compiler.grounding import ContractQuestion, Sample
 from rote.contracts import ContractFinding, NodeImplementation
 from rote.ir import NodeKind, Pipeline, parse_input_ref
 from rote.plan import build_plan
@@ -399,21 +399,41 @@ def omission_findings(
     observations: tuple[Any, ...] = (),
     trust_skill: bool = False,
     tools: dict[tuple[str, str], Any] | None = None,
-) -> list[ContractFinding]:
-    """Each step that runs on the sample but fails once an optional field is left out.
+) -> tuple[list[ContractFinding], list[ContractQuestion]]:
+    """Steps that ran on the sample but fail once an optional field is left out.
 
-    The input contract says a caller may omit the field, so the code must run
-    without it. A real compile declared a renderer's URL optional and the
-    renderer raised when it was missing, after the run's reads and a person's
-    answer (#326); the sample always carried the URL, so the prefix passed.
-    So each optional field the sample has and a step reads is left out in
-    turn, and a step that was ``ok`` and now raises is reported. Evidence
-    only: it runs the code on the input the contract allows."""
+    The input contract says a caller may omit the field, so the code should
+    run without it. A real compile declared a renderer's URL optional and the
+    renderer raised without it, after the run's reads and a person's answer
+    (#326). The sample always carried the URL, so the prefix passed. So each
+    optional field the sample has and a step that ran reads is left out in
+    turn, and a step that was ``ok`` and now raises an error naming the field
+    is reported.
+
+    Two limits keep it from a false error, which is worse than a miss here
+    (the agent rewrites correct code to satisfy it):
+
+    - A failure counts only when its error names the field. The sample's gate
+      answers are replayed on a run whose earlier results changed, so a step
+      after a gate can fail on an approved id the trimmed run never produced.
+    - It is a review gap, never an error. The IR cannot say "required when X"
+      (a recipient only for email), so a step that refuses the absence on
+      purpose is sometimes right.
+
+    Runs only after a clean base run: an earlier finding is fixed first.
+    """
     if base.status != "ran" or not isinstance(sample.payload, dict):
-        return []
+        return [], []
+    ran = {
+        node_id
+        for node_id, step in base.steps.items()
+        if step.get("status") == "ok" and not step.get("given")
+    }
     read: set[str] = set()
     whole = False
     for node in pipeline.nodes:
+        if node.id not in ran:
+            continue
         for ref in (node.inputs or {}).values():
             parsed = parse_input_ref(ref)
             if parsed.node_id is None:
@@ -423,9 +443,24 @@ def omission_findings(
                     read.add(parsed.field)
     fields = sorted(
         f for f in pipeline.optional_input_fields if f in sample.payload and (whole or f in read)
-    )[:MAX_OMISSION_PROBES]
+    )
+    probed, unprobed = fields[:MAX_OMISSION_PROBES], fields[MAX_OMISSION_PROBES:]
     findings: list[ContractFinding] = []
-    for name in fields:
+    questions = (
+        [
+            ContractQuestion(
+                node_id="pipeline.input",
+                text=(
+                    f"rote left out at most {MAX_OMISSION_PROBES} optional input fields to "
+                    f"check the steps run without them; not checked: "
+                    + ", ".join(f"`{f}`" for f in unprobed)
+                ),
+            )
+        ]
+        if unprobed
+        else []
+    )
+    for name in probed:
         trial = Sample(
             payload={k: v for k, v in sample.payload.items() if k != name},
             source=f"{sample.source} without {name}",
@@ -440,24 +475,42 @@ def omission_findings(
             trust_skill=trust_skill,
             tools=tools,
         )
+        if run.status == "failed" and not run.steps:
+            # Timed out or crashed: say so, naming the field, and stop, since
+            # another probe could cost the same timeout.
+            findings += [
+                replace(
+                    f,
+                    kind=OPTIONAL_INPUT_REQUIRED,
+                    severity="warning",
+                    message=f"with `{name}` left out of the input: {f.message}",
+                )
+                for f in run.findings
+            ]
+            break
         for node_id, step in run.steps.items():
-            if step.get("status") != "error" or base.steps.get(node_id, {}).get("status") != "ok":
+            if step.get("status") != "error" or node_id not in ran:
+                continue
+            said = f"{step.get('type')}: {step.get('message')}"
+            if name not in said:
                 continue
             at = step.get("at") or {}
             findings.append(
                 ContractFinding(
                     node_id=node_id,
                     kind=OPTIONAL_INPUT_REQUIRED,
-                    severity="error",
+                    severity="warning",
                     message=(
-                        f"{node_id} raised {step.get('type')}: {step.get('message')}{_where(at)} "
-                        f"when the run's input leaves out `{name}`, which the input contract "
-                        f"makes optional; with the sample's `{name}` it ran. Handle its "
-                        f"absence the way the skill says (a default, or skip what needs it), or, "
-                        f"if the caller must supply it, make it required (on a System-1 "
-                        f"compile, an entry in system1/input_fields.yaml with required: true)"
+                        f"{node_id} raised {said}{_where(at)} when the run's input leaves "
+                        f"out `{name}`, which the input contract makes optional; with the "
+                        f"sample's `{name}` it ran. If the skill lets a caller leave it out, "
+                        f"handle its absence the way the skill says (never an invented "
+                        f"value). If every run must supply it, make it required (on a "
+                        f"System-1 compile, an entry in system1/input_fields.yaml with "
+                        f"required: true). If the skill requires it only in some cases, "
+                        f"leave the code as it is"
                     ),
                     path=at.get("path"),
                 )
             )
-    return findings
+    return findings, questions
