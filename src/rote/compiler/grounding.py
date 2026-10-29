@@ -347,24 +347,38 @@ def named_human_items(skill_dir: Path) -> dict[str, list[tuple[str, str]]]:
         lead: str | None = heading
         asking = False
         in_list = False
+        # A list nested under an item ("2. Ask the operator to provide:" and
+        # its sub-bullets) is introduced by that item: (its indent, asking).
+        parent: tuple[int, bool] | None = None
+        previous_item = ""
         for line in text.splitlines():
             if not line.strip():
                 continue
             if line.lstrip().startswith("#"):
-                lead, in_list = heading, False  # the section's own heading line
+                lead, in_list, parent = heading, False, None  # the section's own heading line
                 continue
             item = _NAMED_ITEM_RE.match(line)
             listed = item is not None or _LIST_ITEM_RE.match(line) is not None
+            indent = len(line) - len(line.lstrip())
             if listed and not in_list:
                 asking = lead is not None and _asks_for_what_follows(lead)
+                parent = (indent, False)
+            elif listed and parent is not None and indent > parent[0]:
+                if not parent[1] and _asks_for_what_follows(previous_item):
+                    parent = (parent[0], True)
+            elif listed and parent is not None:
+                parent = (indent, False)
             in_list = listed
             if not listed:
                 if not line.startswith((" ", "\t")):
                     lead = line
                 continue
-            if item is not None and asking:
+            nested = parent is not None and indent > parent[0]
+            if item is not None and (asking or (nested and parent is not None and parent[1])):
                 term = item.group("term")
                 items.append((term.strip().rstrip(":"), snake(term)))
+            if not nested:
+                previous_item = _LIST_ITEM_RE.sub("", line).replace("**", "")
         items = [(t, k) for t, k in items if k and k not in CHOICE_WORDS]
         if items:
             found[heading] = items

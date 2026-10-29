@@ -18,9 +18,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   when what introduces it asks the person for something and ends in a
   colon (`ask the duty manager to provide:`). Across the example skills
   this drops 30 false keys, including a "What not to do" list, and keeps
-  ops-report's three. The check reads meaning from words, so a gate that
-  misses the skill's names is now a review gap (repaired once, then a
-  warning), never a failed compile.
+  ops-report's three. A procedural list whose own lead-in asks ("Confirm
+  with the user before each step:") can still match, so a gate that misses
+  the skill's names is now a review gap (repaired once, then a warning),
+  never a failed compile.
 
 ## [0.19.1] - 2026-10-29
 

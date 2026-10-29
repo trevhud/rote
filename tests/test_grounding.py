@@ -1697,3 +1697,24 @@ def test_an_ask_that_does_not_introduce_the_list_does_not_name_its_items(tmp_pat
         },
     )
     assert named_human_items(skill) == {}
+
+
+def test_a_list_nested_under_a_step_that_asks_counts(tmp_path: Path) -> None:
+    """ "2. Ask the operator to provide:" with sub-bullets: the step item is
+    the lead-in (PR #321 review). The step titles still do not count."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Collect\n"
+                "1. **Step one.** Do it.\n"
+                "2. **Ask the user.** Ask the operator to provide:\n"
+                "   - **Site Code**\n"
+                "   - **Week**\n"
+                "3. **Step three.** Finish.\n"
+                "   - **Not asked**\n"
+            )
+        },
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["site_code", "week"]
