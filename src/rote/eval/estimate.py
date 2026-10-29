@@ -453,7 +453,8 @@ def _passthrough_tokens(node: Node, inputs: tuple[InputSize, ...], priors: Prior
     by_param = {size.param: size.tokens for size in inputs}
     total = ZERO
     for path in node.signature_spec.passthrough.values():
-        key, _, rest = path.partition(".")
+        # A per-item source (``prs[number].body``) is read from its input list.
+        key, _, rest = path.split("[", 1)[0].partition(".")
         source = by_param.get(key, Range.exact(one))
         total = total + (_between_one_and(source, one) if rest else source)
     return total

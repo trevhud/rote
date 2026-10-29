@@ -386,7 +386,12 @@ class LLMSignature(BaseModel):
             "request's output schema leaves them out, and code copies each one "
             "from the validated input after the answer arrives, so the judge's "
             "declared output is unchanged and the copy cannot drift. Each source "
-            "must have exactly the target's schema."
+            "must have exactly the target's schema. A field of every item of an "
+            "output list is copied the same way, matched by a key the model "
+            'writes: `{"items[].body": "prs[number].body"}` fills each '
+            "item's `body` from the `prs` record whose `number` equals the "
+            "item's; an item whose key matches no record, or several, fails the "
+            "judge."
         ),
     )
 
@@ -404,11 +409,23 @@ class LLMSignature(BaseModel):
         if v is None:
             return None
         for target, source in v.items():
+            if not isinstance(source, str):
+                raise ValueError(f"passthrough source for {target!r} must be a string")
+            item_target = _ITEM_TARGET_RE.fullmatch(target)
+            if item_target is not None:
+                if _ITEM_SOURCE_RE.fullmatch(source) is None:
+                    raise ValueError(
+                        f"passthrough {target!r} copies into list items, so its source "
+                        f"{source!r} must name the input list, its key and the field: "
+                        "<path>[<key>].<field>, e.g. prs[number].body"
+                    )
+                continue
             if not _IDENTIFIER_RE.fullmatch(target):
-                raise ValueError(f"passthrough target {target!r} must be an identifier")
-            if not isinstance(source, str) or not all(
-                _IDENTIFIER_RE.fullmatch(part) for part in source.split(".")
-            ):
+                raise ValueError(
+                    f"passthrough target {target!r} must be an identifier, or "
+                    "<list>[].<field> for a field of every item of an output list"
+                )
+            if not all(_IDENTIFIER_RE.fullmatch(part) for part in source.split(".")):
                 raise ValueError(
                     f"passthrough source {source!r} (for {target!r}) must be a dotted path "
                     "of identifiers into the judge's input, e.g. thread.account_name"
@@ -438,18 +455,20 @@ class LLMSignature(BaseModel):
                 "(no root $ref)"
             )
         problems: list[str] = []
-        unknown = sorted(t for t in self.passthrough if t not in out_props)
+        top = {t: src for t, src in self.passthrough.items() if t not in _item_entries(self)}
+        unknown = sorted(t for t in top if t not in out_props)
         if unknown:
             problems.append(
                 f"passthrough targets {unknown} are not output_schema properties "
                 f"(properties: {sorted(out_props)})"
             )
-        if not unknown and set(self.passthrough) == set(out_props):
+        if not unknown and set(top) == set(out_props):
             problems.append(
                 "passthrough covers every output property, so the model decides nothing: "
                 "this is not a judge"
             )
-        for target, source in sorted(self.passthrough.items()):
+        problems += _item_passthrough_problems(self, out_props)
+        for target, source in sorted(top.items()):
             if target not in out_props:
                 continue
             found = _schema_at_path(self.input_schema, source)
@@ -1881,6 +1900,133 @@ def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:
     return root
 
 
+#: ``<list>[].<field>``: a passthrough target inside every item of an output list.
+_ITEM_TARGET_RE = re.compile(
+    r"(?P<array>[A-Za-z_][A-Za-z0-9_]*)\[\]\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)"
+)
+#: ``<path>[<key>].<field>``: its source, a field of the input record matched by key.
+_ITEM_SOURCE_RE = re.compile(
+    r"(?P<path>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\[(?P<key>[A-Za-z_][A-Za-z0-9_]*)\]\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+@dataclass(frozen=True)
+class ItemPassthrough:
+    """One per-item passthrough entry, parsed: copy ``record_field`` of the
+    record in input list ``path`` whose ``key`` equals the item's into the
+    item's ``field``, for every item of output list ``array``."""
+
+    array: str
+    field: str
+    path: str
+    key: str
+    record_field: str
+
+
+def item_passthrough(target: str, source: str) -> ItemPassthrough | None:
+    """The per-item entry ``target: source`` names, or None for a top-level one.
+    The runtime helpers parse the same grammar (``rote.inference._runtime_helper``)."""
+    t = _ITEM_TARGET_RE.fullmatch(target)
+    src = _ITEM_SOURCE_RE.fullmatch(source)
+    if t is None or src is None:
+        return None
+    return ItemPassthrough(t["array"], t["field"], src["path"], src["key"], src["field"])
+
+
+def _item_entries(spec: LLMSignature) -> dict[str, ItemPassthrough]:
+    return {
+        target: entry
+        for target, source in (spec.passthrough or {}).items()
+        if (entry := item_passthrough(target, source)) is not None
+    }
+
+
+#: Key types a per-item match compares the same way in Python and JavaScript.
+_ITEM_KEY_TYPES = frozenset({"string", "integer"})
+
+
+def _item_passthrough_problems(spec: LLMSignature, out_props: dict[str, Any]) -> list[str]:
+    """Why the per-item entries cannot work, if they cannot.
+
+    The output list holds objects that declare the field and the key; the
+    input path is a list of objects that declare the key and the source
+    field; the two fields and the two keys have the same schema; the key is
+    a string or an integer (compared the same way in both languages) and
+    stays the model's; and every entry for one list matches by one key
+    against one input list, so each item is matched once."""
+    problems: list[str] = []
+    by_array: dict[str, list[ItemPassthrough]] = {}
+    for target, entry in sorted(_item_entries(spec).items()):
+        by_array.setdefault(entry.array, []).append(entry)
+        where = f"passthrough {target}"
+        if entry.array not in out_props:
+            problems.append(f"{where}: {entry.array!r} is not an output_schema property")
+            continue
+        item = _list_items(out_props[entry.array], spec.output_schema)
+        if isinstance(item, str):
+            problems.append(f"{where}: output {entry.array!r} {item}")
+            continue
+        record = _list_items(_schema_at_path(spec.input_schema, entry.path), spec.input_schema)
+        if isinstance(record, str):
+            problems.append(f"{where}: input {entry.path!r} {record}")
+            continue
+        item_props, record_props = item["properties"], record["properties"]
+        missing = [
+            f"{where}: {side} declare no property {name!r}"
+            for name, props, side in (
+                (entry.field, item_props, f"output {entry.array!r} items"),
+                (entry.key, item_props, f"output {entry.array!r} items"),
+                (entry.key, record_props, f"input {entry.path!r} records"),
+                (entry.record_field, record_props, f"input {entry.path!r} records"),
+            )
+            if name not in props
+        ]
+        if missing:
+            problems += missing
+            continue
+        if entry.field == entry.key:
+            problems.append(f"{where}: the key {entry.key!r} is what the model writes to match")
+            continue
+        if _comparable_schema(item_props[entry.field], spec.output_schema) != _comparable_schema(
+            record_props[entry.record_field], spec.input_schema
+        ):
+            problems.append(
+                f"{where}: the records' {entry.record_field!r} has a different schema from the "
+                f"items' {entry.field!r}; a field copied unchanged declares the same schema"
+            )
+        item_key = _comparable_schema(item_props[entry.key], spec.output_schema)
+        if item_key != _comparable_schema(record_props[entry.key], spec.input_schema):
+            problems.append(f"{where}: the key {entry.key!r} has different schemas on each side")
+        elif not (isinstance(item_key, dict) and item_key.get("type") in _ITEM_KEY_TYPES):
+            problems.append(f"{where}: the key {entry.key!r} must be a string or an integer")
+    for array, entries in by_array.items():
+        if len({(e.path, e.key) for e in entries}) > 1:
+            problems.append(
+                f"passthrough into {array!r} items matches by more than one input list or key; "
+                "every entry for one list uses the same <path>[<key>]"
+            )
+        if any(e.key == other.field for e in entries for other in entries):
+            problems.append(f"passthrough into {array!r} items copies over its own key")
+    return problems
+
+
+def _list_items(node: Any, root: dict[str, Any]) -> dict[str, Any] | str:
+    """The object schema of a list's items, or why ``node`` is not such a list."""
+    if isinstance(node, str):
+        return node
+    try:
+        node = _resolve_ref(node, root)
+        items = _resolve_ref(node.get("items"), root) if isinstance(node, dict) else None
+    except ValueError as e:
+        return str(e)
+    if not isinstance(node, dict) or node.get("type") != "array" or not isinstance(items, dict):
+        return "is not a list (type array with items)"
+    if not isinstance(items.get("properties"), dict):
+        return "is not a list of objects that declare their properties"
+    return items
+
+
 def _schema_at_path(schema: dict[str, Any], path: str) -> dict[str, Any] | str:
     """The schema at a dotted ``path`` into ``schema``'s object, or why the
     path does not resolve.
@@ -1952,6 +2098,53 @@ def passthrough_candidates(
         matches = [path for path, candidate in paths if candidate == wanted]
         if matches and _IDENTIFIER_RE.fullmatch(target):
             found[target] = matches
+    found.update(_item_candidates(input_schema, output_schema, out_props, paths))
+    return found
+
+
+def _item_candidates(
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+    out_props: dict[str, Any],
+    paths: list[tuple[str, Any]],
+) -> dict[str, list[str]]:
+    """Per-item pairs (``items[].body`` <- ``prs[number].body``) by shape: an
+    output list of objects and an input list of objects that share a string or
+    integer key, and a field of the same name and schema on both sides (#320).
+    Which key identifies a record is the compiler's reading, checked by the IR
+    once it is chosen."""
+    found: dict[str, list[str]] = {}
+    lists = [(path, schema) for path, schema in paths if isinstance(schema, dict)]
+    for array, schema in out_props.items():
+        item = _list_items(schema, output_schema)
+        if isinstance(item, str) or not _IDENTIFIER_RE.fullmatch(array):
+            continue
+        try:
+            item_fields = {
+                name: _comparable_schema(sub, output_schema)
+                for name, sub in item["properties"].items()
+                if _IDENTIFIER_RE.fullmatch(name)
+            }
+        except ValueError:
+            continue
+        for path, compared in lists:
+            records = compared.get("items") if compared.get("type") == "array" else None
+            record_fields = records.get("properties") if isinstance(records, dict) else None
+            if not isinstance(record_fields, dict):
+                continue
+            keys = [
+                k
+                for k, sub in item_fields.items()
+                if record_fields.get(k) == sub
+                and isinstance(sub, dict)
+                and sub.get("type") in _ITEM_KEY_TYPES
+            ]
+            for key in keys:
+                # A field returned unchanged keeps its name: the record's
+                # `body` fills the item's `body`, never its `summary`.
+                for field, sub in item_fields.items():
+                    if field != key and record_fields.get(field) == sub:
+                        found.setdefault(f"{array}[].{field}", []).append(f"{path}[{key}].{field}")
     return found
 
 
@@ -2035,7 +2228,7 @@ def _passthrough_binding_error(node: Node) -> str | None:
     unbound = sorted(
         f"{target} <- {source}"
         for target, source in (node.signature_spec.passthrough or {}).items()
-        if source.split(".", 1)[0] not in (node.inputs or {})
+        if source.split(".", 1)[0].split("[", 1)[0] not in (node.inputs or {})
     )
     if not unbound:
         return None

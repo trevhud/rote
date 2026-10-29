@@ -934,10 +934,14 @@ class Driver:
         passthrough = (step.get("passthrough") or {}) if step["kind"] == "judge" else {}
         attempts = state["attempts"][step["id"]]
         if step.get("fan_param") is None:
-            if passthrough:
+            if passthrough and not errors:
                 # The copies are the input's, merged in before the whole
-                # output schema checks the answer, as every runtime does.
-                value = schema.with_passthrough(value, pending.get("copied"), passthrough)
+                # output schema checks the answer, as every runtime does. An
+                # item that names no input record (#320) is asked again.
+                try:
+                    value = schema.with_passthrough(value, pending.get("copied"), passthrough)
+                except ValueError as exc:
+                    errors = [str(exc)]
             if not errors:
                 errors = schema.schema_errors(output, value)
             if errors:
@@ -965,9 +969,13 @@ class Driver:
                     errors.append(f"answer: {item_id!r} is not an item of this batch")
                     continue
                 if passthrough:
-                    item = schema.with_passthrough(
-                        item, pending["copied"][int(item_id)], passthrough
-                    )
+                    try:
+                        item = schema.with_passthrough(
+                            item, pending["copied"][int(item_id)], passthrough
+                        )
+                    except ValueError as exc:
+                        errors.append(f"answer.{item_id}: {exc}")
+                        continue
                 found = schema.schema_errors(output, item, f"answer.{item_id}")
                 if found:
                     errors.extend(found)
@@ -1413,7 +1421,8 @@ class Driver:
         refs = [r.split(".") for r in step["references"]]
         # The input each answer's passthrough fields are copied from, cut to
         # their source paths: kept in the journal, never shown to the agent.
-        sources = [p.split(".") for p in (step.get("passthrough") or {}).values()]
+        # A per-item source (``prs[number].body``) keeps its whole input list.
+        sources = [p.split("[", 1)[0].split(".") for p in (step.get("passthrough") or {}).values()]
         if fan is None:
             errors = schema.schema_errors(spec_in, payload, "input")
             if errors:
