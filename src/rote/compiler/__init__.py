@@ -60,6 +60,7 @@ from rote.compiler.grounding import (
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
+from rote.compiler.system1.enforce import proposals as enforce_proposals
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
 from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
 from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
@@ -824,6 +825,11 @@ class Compiler:
                         portable_judges=s1_plan is not None,
                         web_research=research,
                         spec_store=specs,
+                        rebind=(
+                            None
+                            if s1_plan is None
+                            else self._rebind(driver, skill_dir, work_dir, s1_plan)
+                        ),
                     )
 
             try:
@@ -1084,6 +1090,7 @@ class Compiler:
             run_tests=self.run_generated_tests,
             trust_skill=self.trust_skill,
             redecide=self._redecide(driver, skill_dir, work_dir, s1_plan, grounding),
+            rebind=self._rebind(driver, skill_dir, work_dir, s1_plan),
         )
 
     def _redecide(
@@ -1126,6 +1133,35 @@ class Compiler:
                 return [f"re-deciding MCP bindings failed, the findings stand: {e}"]
             record.usage += usage
             record.redecided += changes
+            return changes
+
+        return run
+
+    def _rebind(
+        self, driver: Any, skill_dir: Path, work_dir: Path, s1_plan: system1.Plan
+    ) -> generate.Redecide | None:
+        """The structure pass's re-decide for data flow, when it decided the skeleton.
+
+        A value that never reaches the step needing it (#329) is a binding: the
+        structure pass decided every one, so it decides this one too, and the
+        text follows. Its calls bill to the structure pass's record.
+        """
+        record = s1_plan.structure
+        if record is None:
+            return None
+        from rote.compiler.system1 import structure
+
+        lane = structure.lane_for(driver, self.system1_structure)
+        skill_md = structure.skill_text(skill_dir)
+
+        def run(findings: dict[str, list[str]]) -> list[str]:
+            try:
+                changes, usage = structure.rebind(work_dir, findings, skill_md, lane)
+            except structure.StructureUnavailable as e:
+                record.usage += e.usage
+                return [f"re-deciding data flow failed, the findings stand: {e}"]
+            record.usage += usage
+            record.redecided += [c for c in changes if ": bound (" in c]
             return changes
 
         return run
@@ -1290,6 +1326,7 @@ class Compiler:
         portable_judges: bool = False,
         web_research: api_docs.WebResearch | None = None,
         spec_store: SpecStore | None = None,
+        rebind: generate.Redecide | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -1319,16 +1356,17 @@ class Compiler:
         # code cannot meet the skill without the change), and asking again
         # buys a resumed turn whose only right answer is to change nothing.
         sent_proposals: set[tuple[str, str]] = set()
+        # Each data-flow finding (and binding proposal) goes to the structure
+        # pass once: what it keeps is its decision.
+        rebound: set[tuple[str, str]] = set()
 
-        def _repair(pipeline_yaml_path: Path) -> str | None:
-            nonlocal attempts, invalid_attempts
-            artifact_dir = pipeline_yaml_path.parent
+        def _verify(artifact_dir: Path) -> Verification:
             if before_verify is not None:
                 try:
                     before_verify(artifact_dir)
                 except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
                     self._emit("warning", f"preparing the deliverable for verification failed: {e}")
-            verification = verify_deliverable(
+            return verify_deliverable(
                 artifact_dir,
                 base_dir=base_dir,
                 run_tests=self.run_generated_tests,
@@ -1341,6 +1379,41 @@ class Compiler:
                 web_research=web_research,
                 spec_store=spec_store,
             )
+
+        def _rebind(artifact_dir: Path, verification: Verification) -> list[str]:
+            """Send new data-flow findings and binding proposals to the structure
+            pass; return what it bound (nothing when it bound nothing)."""
+            if rebind is None or verification.pipeline_error is not None:
+                return []
+            if attempts >= MAX_VALIDATION_REPAIRS:
+                # No turn follows to write the code a new binding needs: a
+                # binding now would ship a step that cannot take its payload.
+                return []
+            flows = generate.dataflow_findings(verification, rebound)
+            found, _ = enforce_proposals(artifact_dir)
+            for p in found:
+                if p.field != "inputs":
+                    continue
+                line = f"the agent proposes reads {p.value!r} (because: {p.reason or 'none given'})"
+                if (str(p.node), line) not in rebound:
+                    flows.setdefault(str(p.node), []).append(line)
+            if not flows:
+                return []
+            rebound.update((n, m) for n, msgs in flows.items() for m in msgs)
+            changes = rebind(flows)
+            for change in changes:
+                self._emit("log", f"structure: {change}")
+            return [c for c in changes if ": bound (" in c]
+
+        def _repair(pipeline_yaml_path: Path) -> str | None:
+            nonlocal attempts, invalid_attempts
+            artifact_dir = pipeline_yaml_path.parent
+            verification = _verify(artifact_dir)
+            bound = _rebind(artifact_dir, verification)
+            if bound:
+                # The settle lays the new bindings into pipeline.yaml; verify
+                # what will ship, so the agent repairs against it.
+                verification = _verify(artifact_dir)
             fresh = [
                 f
                 for f in verification.findings
@@ -1350,6 +1423,15 @@ class Compiler:
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None:
                 return None
+            if bound:
+                instruction += (
+                    "\n\nrote's structure pass, which decides what each step reads, added "
+                    "these bindings for the data-flow problems: "
+                    + "; ".join(bound)
+                    + ". Each step named takes the new parameter now: update its module, "
+                    "contract and tests to use it, and delete any proposal in "
+                    "system1/proposals.yaml it answers."
+                )
             sent_proposals.update(
                 (f.node_id, f.message) for f in fresh if f.kind == UNAPPLIED_PROPOSAL
             )

@@ -117,6 +117,23 @@ comes from keeping them clean.
   every gate bound `request` plus whole upstream results, so the compiled
   skill's HUMAN block showed expense-audit's whole input (3.9 KB) and an
   eval's agent spent 5-9 turns finding the review queue in it.
+- **A value that never reaches the step needing it goes back to the
+  structure pass** (#329, `structure.rebind`). Two static checks find it
+  (`compiler/boundaries.py`): a step's code reads a key the value bound to it
+  cannot hold (`result_key_undelivered`, an error, checked only against a
+  closed schema: a judge's output, or `additionalProperties: false`), and a
+  judge's top-level passthrough no later step reads (`passthrough_unread`, a
+  review gap). Both, plus a single-session agent's `field: inputs` proposals,
+  go to one schema-locked call on the compile's lane, once each, on both the
+  parallel and the single-session repair loop. Code applies a proposed
+  binding only as an addition that resolves (a new param, a field the
+  producer declares, the ordering edge it needs) and validates, writing it to
+  the skeleton the settle restores. The text then follows on the next round.
+  A proposal is still never applied as written: the pass that read the whole
+  skill decides. Fanning over one field of a result while sharing another
+  field of the same result is legal now: `fan_out_element_param` picks the
+  param the producer's own schema declares as a list (it was an ambiguity
+  error, so the binding #329 needed could not be written).
 - **The decider double-checks the structure pass, never overrides it**
   (`system1/checker.py`). Its confident disagreements go back to the pass as
   one more repair round; what the pass keeps is an Open question. Keep it a

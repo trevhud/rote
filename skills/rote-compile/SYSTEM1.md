@@ -27,7 +27,12 @@ the compile report itself. Your job is the implementations, and only those.
 
 If you think a decision is wrong, add an entry to `system1/proposals.yaml`
 (a YAML list of `{node, field, value, reason}`). rote lists it for a person
-and never applies it.
+and never applies it. One kind goes further: when a step needs a value an
+earlier step returns and does not read it (an account, a workspace id), propose
+`field: inputs` with the new reads as `{param: "<step>.output.<field>"}`.
+rote hands it to the structure pass, which decides every binding. If the pass
+adds it, the step takes the new parameter on your next turn. Never supply
+the missing value yourself (a default, a guess, a constant).
 
 The one decision you can extend is the pipeline input. When a module needs
 a value the skill says the caller supplies and the input schema lacks it,

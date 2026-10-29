@@ -9,6 +9,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A value that never reaches the step needing it is caught and re-decided
+  (#329).** A judge copied the signed-in account id into its output and the
+  ticket-creation fan-out read only the items, so every ticket lost its
+  assignee while verification passed. Verification now flags a step whose
+  code reads a key its bound value cannot hold, and a copied value no later
+  step reads. Both, and the agent's own binding proposals, go back to the
+  structure pass, which adds the binding when it resolves; the text follows.
+  A fan over one field of a result can now read another field of the same
+  result as shared (that binding used to be an ambiguity error).
+
 ## [0.19.3] - 2026-10-29
 
 ### Fixed
