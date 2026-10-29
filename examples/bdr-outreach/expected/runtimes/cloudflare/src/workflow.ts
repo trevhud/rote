@@ -319,7 +319,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // de-duplicates it). Display only: nothing is sent anywhere.
         console.error(
             "rote-gate-park " +
-                JSON.stringify({ gate: "contact_review_gate", signal: "contact_review_approved", message: renderGateMessage("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", { "drug_brand": roteGateField(pipelineInput, "drug_brand"), "condition_acronym": roteGateField(pipelineInput, "condition_acronym") }), wait: "contact_review_gate" }),
+                JSON.stringify({ gate: "contact_review_gate", signal: "contact_review_approved", message: renderGateMessage("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", { "drug_brand": roteGateField(pipelineInput, "drug_brand"), "condition_acronym": roteGateField(pipelineInput, "condition_acronym") }), shows: Object.fromEntries([["vetted_contacts", roteGateField(lead_generation_loop_result, "vetted_contacts")], ["discarded_summary", roteGateField(lead_generation_loop_result, "discarded_summary")]].filter(([, value]) => value !== undefined)), wait: "contact_review_gate" }),
         );
         const contact_review_gate_event = await step.waitForEvent<any>(
             "contact_review_gate",
@@ -427,7 +427,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // de-duplicates it). Display only: nothing is sent anywhere.
         console.error(
             "rote-gate-park " +
-                JSON.stringify({ gate: "manual_enrollment_handoff", signal: "bdr_enrollment_complete", message: renderGateMessage("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", { "campaign_name": roteGateField(pipelineInput, "drug_brand"), "report_markdown": roteGateField(pre_enrollment_report_result, "report_markdown") }), wait: "manual_enrollment_handoff" }),
+                JSON.stringify({ gate: "manual_enrollment_handoff", signal: "bdr_enrollment_complete", message: renderGateMessage("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", { "campaign_name": roteGateField(pipelineInput, "drug_brand"), "report_markdown": roteGateField(pre_enrollment_report_result, "report_markdown") }), shows: {}, wait: "manual_enrollment_handoff" }),
         );
         const manual_enrollment_handoff_event = await step.waitForEvent<any>(
             "manual_enrollment_handoff",

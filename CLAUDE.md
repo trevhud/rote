@@ -1244,7 +1244,12 @@ waits on. Traps, all found by running it:
   as is, anything else as `JSON.stringify` writes it (Python reproduces
   JS number layout and key order), a value the run lacks kept as `{name}`,
   invisible characters escaped. Display only: `notify.channel`/`target`
-  are never sent to (`tests/test_gate_message*.py`).
+  are never sent to (`tests/test_gate_message*.py`). The report also carries
+  `shows`: every bound input the message does not name, which the watcher
+  prints under the message (a string as written, else compact JSON), the
+  compiled skill's THEY SEE rule. A gate binds what the person decides on,
+  so a draft the message only calls "below" must reach them (#325,
+  `tests/test_gate_shows_parity*.py`).
 
 ### An agent loop returns its declared output, through a submit tool
 

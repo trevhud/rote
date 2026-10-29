@@ -1023,9 +1023,10 @@ function renderGateMessage(template: string, values: Record<string, unknown>): s
 def gate_report_ts(node: Node, wait: str | None = None) -> str:
     """The object a TS runtime reports when its run reaches ``node``.
 
-    The twin of ``_py_common.gate_report_py``: ``{gate, signal, message}``,
-    the message rendered from the gate's actual inputs, or null when the
-    gate has no ``message_template``, plus the wait's step id when ``wait``
+    The twin of ``_py_common.gate_report_py``: ``{gate, signal, message,
+    shows}``, the message rendered from the gate's actual inputs (null when the
+    gate has no ``message_template``) and every other bound input by name (#325),
+    plus the wait's step id when ``wait``
     is given (the log marker's de-duplication key). Every IR string is a
     JSON literal (invariant #7).
     """
@@ -1048,21 +1049,43 @@ def gate_report_ts(node: Node, wait: str | None = None) -> str:
         message = f"renderGateMessage({json.dumps(template)}, {{ {values} }})"
     else:
         message = "null"
+    named = set(gate_message_names(node))
+    pairs = []
+    for name, ref in (node.inputs or {}).items():
+        if name in named:
+            continue
+        parsed = parse_input_ref(ref)
+        base = "pipelineInput" if parsed.node_id is None else f"{parsed.node_id}_result"
+        value = (
+            ref_to_ts_expr(ref)
+            if parsed.field is None
+            else f"roteGateField({base}, {json.dumps(parsed.field)})"
+        )
+        pairs.append(f"[{json.dumps(name)}, {value}]")
+    # A value the run does not have is left out, as a message keeps its
+    # placeholder (the Python twin spreads _gate_input).
+    shows = (
+        "Object.fromEntries([" + ", ".join(pairs) + "].filter(([, value]) => value !== undefined))"
+        if pairs
+        else "{}"
+    )
     entries = [
         f"gate: {json.dumps(node.id)}",
         f"signal: {json.dumps(node.signal)}",
         f"message: {message}",
+        f"shows: {shows}",
         *([f"wait: {json.dumps(wait)}"] if wait is not None else []),
     ]
     return "{ " + ", ".join(entries) + " }"
 
 
 def gate_message_helper_ts(pipeline: Pipeline) -> str:
-    """:data:`GATE_MESSAGE_HELPER_TS` when a gate has a message, else ""."""
-    has_message = any(
-        n.notify and n.notify.message_template for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    """:data:`GATE_MESSAGE_HELPER_TS` when a gate has a message or shows data, else ""."""
+    needed = any(
+        (n.notify and n.notify.message_template) or n.inputs
+        for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
     )
-    return GATE_MESSAGE_HELPER_TS if has_message else ""
+    return GATE_MESSAGE_HELPER_TS if needed else ""
 
 
 def required_inputs_ts_guard(pipeline: Pipeline, error_class: str, indent: str) -> list[str]:

@@ -302,7 +302,7 @@ class BdrCampaignWorkflow:
         # arrives. Survives worker restarts; resumes immediately
         # when the signal fires. First it says which gate it waits at,
         # and the gate's message, for the rote_gate_status query.
-        self._rote_gates.append({"gate": "contact_review_gate", "signal": "contact_review_approved", "message": _render_gate_message("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", {**_gate_input("drug_brand", pipeline_input, "drug_brand"), **_gate_input("condition_acronym", pipeline_input, "condition_acronym")})})
+        self._rote_gates.append({"gate": "contact_review_gate", "signal": "contact_review_approved", "message": _render_gate_message("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", {**_gate_input("drug_brand", pipeline_input, "drug_brand"), **_gate_input("condition_acronym", pipeline_input, "condition_acronym")}), "shows": {**_gate_input("vetted_contacts", lead_generation_loop_result, "vetted_contacts"), **_gate_input("discarded_summary", lead_generation_loop_result, "discarded_summary")}})
         await workflow.wait_condition(
             lambda: self._contact_review_approved_payload is not None
         )
@@ -410,7 +410,7 @@ class BdrCampaignWorkflow:
         # arrives. Survives worker restarts; resumes immediately
         # when the signal fires. First it says which gate it waits at,
         # and the gate's message, for the rote_gate_status query.
-        self._rote_gates.append({"gate": "manual_enrollment_handoff", "signal": "bdr_enrollment_complete", "message": _render_gate_message("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", {**_gate_input("campaign_name", pipeline_input, "drug_brand"), **_gate_input("report_markdown", pre_enrollment_report_result, "report_markdown")})})
+        self._rote_gates.append({"gate": "manual_enrollment_handoff", "signal": "bdr_enrollment_complete", "message": _render_gate_message("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", {**_gate_input("campaign_name", pipeline_input, "drug_brand"), **_gate_input("report_markdown", pre_enrollment_report_result, "report_markdown")}), "shows": {}})
         await workflow.wait_condition(
             lambda: self._bdr_enrollment_complete_payload is not None
         )

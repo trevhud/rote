@@ -146,6 +146,7 @@ jobs:
             tests/test_agent_loop_output_parity.py \
             tests/test_pipeline_input_parity.py \
             tests/test_conditional_gate_parity.py \
+            tests/test_gate_shows_parity.py \
             tests/test_judge_sampling_sdk.py \
             tests/test_serve_server.py \
             tests/test_skill_e2e.py
@@ -206,6 +207,7 @@ jobs:
             tests/test_agent_loop_output_parity_ts_e2e.py \
             tests/test_gate_message_parity_ts_e2e.py \
             tests/test_conditional_gate_parity_ts_e2e.py \
+            tests/test_gate_shows_parity_ts_e2e.py \
             tests/test_judge_schema_parity_e2e.py \
             tests/test_schema_validator_parity.py \
             tests/test_ts_typed_impls_e2e.py \
@@ -267,4 +269,5 @@ jobs:
             tests/test_agent_loop_output_parity_dbos_ts_e2e.py \
             tests/test_mcp_args_literal_parity_dbos_ts_e2e.py \
             tests/test_gate_message_parity_dbos_ts_e2e.py \
-            tests/test_conditional_gate_parity_dbos_ts_e2e.py
+            tests/test_conditional_gate_parity_dbos_ts_e2e.py \
+            tests/test_gate_shows_parity_dbos_ts_e2e.py
