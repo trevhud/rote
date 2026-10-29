@@ -9,6 +9,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-10-29
+
 ### Added
 
 - **A judge's list items get their record fields from the input, not the
@@ -36,10 +38,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   with the user before each step:") can still match, so a gate that misses
   the skill's names is now a review gap (repaired once, then a warning),
   never a failed compile.
-
-## [0.19.1] - 2026-10-29
-
-### Fixed
 
 - **A login requests the OAuth scopes you configured, not the server's wider
   list (#316).** On a 401 the MCP SDK replaces the requested scopes with the
@@ -2381,8 +2379,8 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.19.1...HEAD
-[0.19.1]: https://github.com/trevhud/rote/compare/v0.19.0...v0.19.1
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.19.2...HEAD
+[0.19.2]: https://github.com/trevhud/rote/compare/v0.19.0...v0.19.2
 [0.19.0]: https://github.com/trevhud/rote/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/trevhud/rote/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/trevhud/rote/compare/v0.16.0...v0.17.0
