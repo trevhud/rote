@@ -71,6 +71,9 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         prm_path=True,
         prm_origin_resource=None,
         prm_issuer=None,
+        prm_scopes=None,
+        as_scopes=None,
+        challenge_scope=None,
     )
     for port in CALLBACK_PORTS[:2]:
         assert _port_free(port), f"callback port {port} was in use when the test started"
@@ -430,3 +433,25 @@ def _alive_or_zombie(pid: int) -> bool:
 
     state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
     return state.returncode == 0 and not state.stdout.strip().startswith("Z")
+
+
+@pytest.mark.parametrize(
+    ("configured", "requested"),
+    [(["read_data"], ["read_data"]), (None, ["read_data", "write_data"])],
+)
+def test_the_start_reports_the_scopes_the_url_requests(
+    fx: OAuthFixture,
+    capsys: pytest.CaptureFixture[str],
+    configured: list[str] | None,
+    requested: list[str],
+) -> None:
+    """The registry alone cannot show what a login asks for: #316's registry
+    read six scopes while the URL asked for 26. The output reads them from
+    the URL itself, next to the configured ones."""
+    fx.configure(prm_scopes=["read_data", "write_data"])
+    save_registry(
+        McpRegistry(servers={"vendor": McpServerConfig(url=fx.mcp_url, scopes=configured)})
+    )
+    started = _start(capsys)
+    assert started["scopes"] == {"configured": configured, "requested": requested}
+    assert _state(started["authorization_url"]) not in json.dumps(started["scopes"])

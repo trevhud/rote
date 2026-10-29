@@ -35,7 +35,9 @@ Test control, plain JSON over HTTP:
   (``"served"``, ``"missing"``, ``"tampered"``, ``"dribble"``), the
   protected-resource metadata knobs ``prm_path`` (serve the path-specific
   document), ``prm_origin_resource`` and ``prm_issuer`` (override what the
-  documents say), and ``reset`` (clears
+  documents say), the scope knobs ``prm_scopes`` and ``as_scopes``
+  (``scopes_supported`` lists) and ``challenge_scope`` (the 401's ``scope=``),
+  and ``reset`` (clears
   issued tokens, registrations, and the event log).
 - ``GET /_events`` returns every authorization-server hit since the last
   reset, so a test can assert what did *not* happen (no token request after
@@ -86,6 +88,11 @@ STATE: dict[str, Any] = {
     "prm_path": True,
     "prm_origin_resource": None,
     "prm_issuer": None,
+    # Scopes: what the protected-resource and AS metadata advertise
+    # (`scopes_supported`), and what the 401 challenge demands (`scope=`).
+    "prm_scopes": None,
+    "as_scopes": None,
+    "challenge_scope": None,
 }
 REGISTERED: dict[str, dict[str, Any]] = {}  # "<as>:<client_id>" -> registration
 CODES: dict[str, dict[str, Any]] = {}
@@ -126,6 +133,8 @@ def as_metadata(name: str) -> dict[str, Any]:
         doc["client_id_metadata_document_supported"] = True
     if STATE["advertise_iss"]:
         doc["authorization_response_iss_parameter_supported"] = True
+    if STATE["as_scopes"] is not None:
+        doc["scopes_supported"] = STATE["as_scopes"]
     return doc
 
 
@@ -158,7 +167,13 @@ async def authorize(name: str, request: Request) -> Response:
     params = dict(request.query_params)
     client_id = params.get("client_id", "")
     redirect_uri = params.get("redirect_uri", "")
-    log("authorize", issuer=issuer(name), client_id=client_id, redirect_uri=redirect_uri)
+    log(
+        "authorize",
+        issuer=issuer(name),
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=params.get("scope"),
+    )
     client = await resolve_client(name, client_id)
     if client is None:
         return bad_request("invalid_client", f"unknown client {client_id!r}")
@@ -252,14 +267,10 @@ mcp_app = mcp.http_app(path="/mcp")
 
 
 def unauthorized() -> Response:
-    return Response(
-        status_code=401,
-        headers={
-            "WWW-Authenticate": (
-                f'Bearer resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp"'
-            )
-        },
-    )
+    challenge = f'Bearer resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp"'
+    if STATE["challenge_scope"]:
+        challenge += f', scope="{STATE["challenge_scope"]}"'
+    return Response(status_code=401, headers={"WWW-Authenticate": challenge})
 
 
 def bearer_is_valid(request: Request) -> bool:
@@ -296,12 +307,13 @@ async def http_app(scope: Scope, receive: Receive, send: Send) -> None:
     elif path == "/_events":
         response = JSONResponse(EVENTS)
     elif path == "/.well-known/oauth-protected-resource/mcp" and STATE["prm_path"]:
-        response = JSONResponse(
-            {
-                "resource": RESOURCE,
-                "authorization_servers": [STATE["prm_issuer"] or issuer(STATE["active"])],
-            }
-        )
+        prm: dict[str, Any] = {
+            "resource": RESOURCE,
+            "authorization_servers": [STATE["prm_issuer"] or issuer(STATE["active"])],
+        }
+        if STATE["prm_scopes"] is not None:
+            prm["scopes_supported"] = STATE["prm_scopes"]
+        response = JSONResponse(prm)
     elif path == "/.well-known/oauth-protected-resource":
         # The origin-level document. On a shared host it may describe a
         # different resource than /mcp (`prm_origin_resource`).

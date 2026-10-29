@@ -88,7 +88,11 @@ class McpServerConfig(BaseModel):
     )
     scopes: list[str] | None = Field(
         default=None,
-        description="OAuth scopes to request at login. Omit to let the server decide.",
+        description=(
+            "OAuth scopes to request at login, exactly: never widened to what the "
+            "server advertises, and a server that requires more stops the login. "
+            "Omit to let the server decide."
+        ),
     )
     read_only: bool | None = Field(
         default=None,

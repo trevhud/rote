@@ -9,6 +9,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A login requests the OAuth scopes you configured, not the server's wider
+  list (#316).** On a 401 the MCP SDK replaces the requested scopes with the
+  challenge's, or with every scope the server's metadata lists as
+  supported, and never consults the configured ones. A login configured
+  with six read-only Google scopes asked for 26, Gmail send among them,
+  while the registry still showed six. `rote mcp login` now requests
+  exactly the scopes set with `rote mcp add --scope`, plus `offline_access`
+  when the server supports refresh tokens. If the server's challenge
+  requires more, the login stops naming the extra scopes before any consent
+  page opens. With no scopes configured, the server still decides.
+  `--no-wait` output reports the configured and the requested scopes, read
+  from the authorization URL itself.
+
 ## [0.19.0] - 2026-10-28
 
 ### Added
