@@ -417,7 +417,11 @@ def _oauth_class() -> type[Any]:
             self._rote_dropped_client_id: str | None = None
             # The scopes the user set (`rote mcp add --scope`), if any, and
             # the scopes the server's last 401 challenge demanded.
-            self._rote_configured_scopes: list[str] = list(kwargs.get("scopes") or [])
+            # `--scope "a b"` is one entry; fastmcp joins entries with spaces,
+            # so the scopes requested are each word.
+            self._rote_configured_scopes: list[str] = [
+                word for entry in kwargs.get("scopes") or [] for word in str(entry).split()
+            ]
             self._rote_challenged_scopes: list[str] = []
             super().__init__(**kwargs)
 
@@ -603,6 +607,20 @@ def _oauth_class() -> type[Any]:
             self._hold_configured_scopes()
             return await super()._perform_authorization()
 
+        def _registration_with_configured_scopes(self, outgoing: Any) -> Any:
+            """``outgoing`` (a DCR request) declaring the configured scopes."""
+            if not self._rote_configured_scopes:
+                return outgoing
+            self._hold_configured_scopes()
+            body = json.loads(outgoing.content or b"{}")
+            body["scope"] = self.context.client_metadata.scope
+            return type(outgoing)(
+                outgoing.method,
+                outgoing.url,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+
         def _hold_configured_scopes(self) -> None:
             """Request the scopes the user set, never the server's wider list.
 
@@ -620,7 +638,11 @@ def _oauth_class() -> type[Any]:
             configured = self._rote_configured_scopes
             if not configured:
                 return
-            extra = [s for s in self._rote_challenged_scopes if s not in configured]
+            extra = [
+                s
+                for s in self._rote_challenged_scopes
+                if s not in configured and s != "offline_access"
+            ]
             if extra:
                 raise McpAuthError(
                     f"{self._rote_server!r} requires scope(s) {' '.join(extra)} beyond the "
@@ -693,8 +715,16 @@ def _oauth_class() -> type[Any]:
                 outgoing = await flow.__anext__()
                 while True:
                     self._refuse_registration(outgoing, request)
+                    if is_registration_request(self, outgoing, request):
+                        # The SDK builds the registration body from the scopes
+                        # it chose on the 401, before the authorization step,
+                        # so a DCR client would declare the server's whole list.
+                        outgoing = self._registration_with_configured_scopes(outgoing)
                     response = yield outgoing
-                    if response is not None and response.status_code in (401, 403):
+                    # Only the MCP request's own answer says what the resource
+                    # requires: a discovery fetch can 401 or 403 too (a gateway
+                    # on an unknown well-known path), and must not overwrite it.
+                    if outgoing is request and response.status_code in (401, 403):
                         from mcp.client.auth.utils import extract_scope_from_www_auth
 
                         demanded = extract_scope_from_www_auth(response)

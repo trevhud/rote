@@ -92,3 +92,43 @@ def test_a_login_with_a_stored_client_keeps_the_configured_scopes(fx: OAuthFixtu
     asyncio.run(login("vendor", config))
     assert len(fx.events("authorize")) > before  # it really authorized again
     assert _requested(fx) == {"read_data"}
+
+
+def test_a_dynamic_registration_declares_only_the_configured_scopes(fx: OAuthFixture) -> None:
+    """The SDK builds the DCR body from the scopes it chose on the 401, before
+    the authorization step: the client would declare the server's whole list
+    (PR #317 review)."""
+    fx.configure(cimd=False, prm_scopes=WIDE, as_scopes=WIDE)
+    asyncio.run(login("vendor", _config(fx, scopes=["read_data"])))
+    assert [e["scope"] for e in fx.events("register")] == ["read_data"]
+    assert _requested(fx) == {"read_data"}
+
+
+def test_a_refused_login_registers_no_client(fx: OAuthFixture) -> None:
+    fx.configure(cimd=False, prm_scopes=WIDE, challenge_scope="read_data write_data")
+    with pytest.raises(McpAuthError, match="requires scope"):
+        asyncio.run(login("vendor", _config(fx, scopes=["read_data"])))
+    assert fx.events("register") == []
+
+
+def test_a_challenge_naming_offline_access_is_not_a_refusal(fx: OAuthFixture) -> None:
+    fx.configure(prm_scopes=WIDE, challenge_scope="read_data offline_access")
+    asyncio.run(login("vendor", _config(fx, scopes=["read_data"])))
+    assert _requested(fx) == {"read_data offline_access"}
+
+
+def test_a_scope_entry_holding_several_words_counts_each(fx: OAuthFixture) -> None:
+    """`--scope "read_data write_data"` is one entry; a challenge for one of
+    its words is within what the user configured (PR #317 review)."""
+    fx.configure(prm_scopes=WIDE, challenge_scope="write_data")
+    asyncio.run(login("vendor", _config(fx, scopes=["read_data write_data"])))
+    assert _requested(fx) == {"read_data write_data"}
+
+
+def test_a_discovery_fetch_answering_401_does_not_set_the_requirement(fx: OAuthFixture) -> None:
+    """Only the MCP request's own 401 says what the resource requires. A
+    gateway that 401s a well-known path it lacks, with its own scope=, must
+    neither clear that requirement nor invent one (PR #317 review)."""
+    fx.configure(prm_path=False, prm_scopes=WIDE, well_known_401_scope="admin")
+    asyncio.run(login("vendor", _config(fx, scopes=["read_data"])))
+    assert _requested(fx) == {"read_data"}

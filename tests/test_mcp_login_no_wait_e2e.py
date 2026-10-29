@@ -74,6 +74,7 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         prm_scopes=None,
         as_scopes=None,
         challenge_scope=None,
+        well_known_401_scope=None,
     )
     for port in CALLBACK_PORTS[:2]:
         assert _port_free(port), f"callback port {port} was in use when the test started"

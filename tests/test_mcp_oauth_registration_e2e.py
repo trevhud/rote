@@ -85,6 +85,7 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         prm_scopes=None,
         as_scopes=None,
         challenge_scope=None,
+        well_known_401_scope=None,
     )
     # The pre-registered client and the port-release tests need the first
     # callback port. Something outside these tests holding it (found in

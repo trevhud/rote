@@ -93,6 +93,9 @@ STATE: dict[str, Any] = {
     "prm_scopes": None,
     "as_scopes": None,
     "challenge_scope": None,
+    # A gateway that answers a well-known path it does not have with 401 and
+    # its own scope=, instead of 404.
+    "well_known_401_scope": None,
 }
 REGISTERED: dict[str, dict[str, Any]] = {}  # "<as>:<client_id>" -> registration
 CODES: dict[str, dict[str, Any]] = {}
@@ -246,7 +249,12 @@ async def token(name: str, request: Request) -> Response:
 
 async def register(name: str, request: Request) -> Response:
     body = await request.json()
-    log("register", issuer=issuer(name), redirect_uris=body.get("redirect_uris"))
+    log(
+        "register",
+        issuer=issuer(name),
+        redirect_uris=body.get("redirect_uris"),
+        scope=body.get("scope"),
+    )
     if not STATE["dcr"]:
         return JSONResponse({"error": "registration disabled"}, status_code=404)
     client_id = f"dcr-{secrets.token_hex(6)}"
@@ -339,6 +347,11 @@ async def http_app(scope: Scope, receive: Receive, send: Send) -> None:
         else:
             await mcp_app(scope, receive, send)
             return
+    if response is None and path.startswith("/.well-known/") and STATE["well_known_401_scope"]:
+        response = Response(
+            status_code=401,
+            headers={"WWW-Authenticate": f'Bearer scope="{STATE["well_known_401_scope"]}"'},
+        )
     if response is None:
         # Logged so a test can prove a guessed endpoint (the SDK's
         # `<resource-origin>/register` fallback) was never requested.
