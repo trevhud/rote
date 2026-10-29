@@ -62,7 +62,7 @@ from rote.compiler.grounding import (
     contract_questions,
     grounding_findings,
 )
-from rote.compiler.prefix import PrefixRun, run_prefix
+from rote.compiler.prefix import PrefixRun, omission_findings, run_prefix
 from rote.compiler.provenance import (
     PROVENANCE_NODE,
     REPORT_FILENAME,
@@ -1298,6 +1298,16 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
+            findings += omission_findings(
+                called,
+                root,
+                grounding.sample,
+                implementations,
+                prefix,
+                observations=grounding.observations,
+                trust_skill=trust_skill,
+                tools=grounding.tools,
+            )
     findings += boundary_findings(pipeline, root)
     env_errors, env_questions = env_findings(pipeline, root)
     findings += env_errors

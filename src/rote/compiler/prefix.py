@@ -36,7 +36,7 @@ from typing import Any, Literal
 
 from rote.compiler.grounding import Sample
 from rote.contracts import ContractFinding, NodeImplementation
-from rote.ir import NodeKind, Pipeline
+from rote.ir import NodeKind, Pipeline, parse_input_ref
 from rote.plan import build_plan
 
 #: Wall-clock cap on one prefix run. The prefix is pure functions over one
@@ -380,3 +380,84 @@ def run_prefix(
         steps=report,
         findings=findings,
     )
+
+
+#: A step that fails when an input field the contract makes optional is left out.
+OPTIONAL_INPUT_REQUIRED = "optional_input_required"
+#: The most optional fields one verification leaves out, each one more sandboxed
+#: prefix run (about a second each).
+MAX_OMISSION_PROBES = 6
+
+
+def omission_findings(
+    pipeline: Pipeline,
+    root: Path,
+    sample: Sample,
+    implementations: list[NodeImplementation],
+    base: PrefixRun,
+    *,
+    observations: tuple[Any, ...] = (),
+    trust_skill: bool = False,
+    tools: dict[tuple[str, str], Any] | None = None,
+) -> list[ContractFinding]:
+    """Each step that runs on the sample but fails once an optional field is left out.
+
+    The input contract says a caller may omit the field, so the code must run
+    without it. A real compile declared a renderer's URL optional and the
+    renderer raised when it was missing, after the run's reads and a person's
+    answer (#326); the sample always carried the URL, so the prefix passed.
+    So each optional field the sample has and a step reads is left out in
+    turn, and a step that was ``ok`` and now raises is reported. Evidence
+    only: it runs the code on the input the contract allows."""
+    if base.status != "ran" or not isinstance(sample.payload, dict):
+        return []
+    read: set[str] = set()
+    whole = False
+    for node in pipeline.nodes:
+        for ref in (node.inputs or {}).values():
+            parsed = parse_input_ref(ref)
+            if parsed.node_id is None:
+                if parsed.field is None:
+                    whole = True
+                else:
+                    read.add(parsed.field)
+    fields = sorted(
+        f for f in pipeline.optional_input_fields if f in sample.payload and (whole or f in read)
+    )[:MAX_OMISSION_PROBES]
+    findings: list[ContractFinding] = []
+    for name in fields:
+        trial = Sample(
+            payload={k: v for k, v in sample.payload.items() if k != name},
+            source=f"{sample.source} without {name}",
+            gates=sample.gates,
+        )
+        run = run_prefix(
+            pipeline,
+            root,
+            trial,
+            implementations,
+            observations=observations,
+            trust_skill=trust_skill,
+            tools=tools,
+        )
+        for node_id, step in run.steps.items():
+            if step.get("status") != "error" or base.steps.get(node_id, {}).get("status") != "ok":
+                continue
+            at = step.get("at") or {}
+            findings.append(
+                ContractFinding(
+                    node_id=node_id,
+                    kind=OPTIONAL_INPUT_REQUIRED,
+                    severity="error",
+                    message=(
+                        f"{node_id} raised {step.get('type')}: {step.get('message')}{_where(at)} "
+                        f"when the run's input leaves out `{name}`, which the input contract "
+                        f"makes optional; with the sample's `{name}` it ran. Handle its "
+                        f"absence the way the skill says (a default, or skip what needs it), or, "
+                        f"if the caller must supply it, make it required (on a System-1 "
+                        f"compile, an entry in system1/input_fields.yaml with required: true)"
+                    ),
+                    path=at.get("path"),
+                )
+            )
+    return findings

@@ -1718,3 +1718,102 @@ def test_a_list_nested_under_a_step_that_asks_counts(tmp_path: Path) -> None:
     )
     [(_, items)] = named_human_items(skill).items()
     assert [k for _, k in items] == ["site_code", "week"]
+
+
+#: A test naming the function, so the prefix counts it as implemented.
+_RENDER_TEST = (
+    "from extracted.render import render_report\n\ndef test_it():\n    assert render_report\n"
+)
+
+_OMIT_IR = """\
+name: omit
+version: "0.1.0"
+input:
+  type: In
+  input_schema:
+    type: object
+    additionalProperties: false
+    properties:
+      title: {type: string}
+      dashboard_url: {type: string}
+    required: [title]
+nodes:
+  - id: render_report
+    kind: pure_function
+    description: Render the report.
+    impl: extracted/render.py:render_report
+    inputs: {request: pipeline.input}
+edges: []
+entry_nodes: [render_report]
+exit_nodes: [render_report]
+"""
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        # #326's shape: the field is declared optional, the code requires it.
+        (
+            "    url = request.get('dashboard_url')\n"
+            "    if not isinstance(url, str) or not url:\n"
+            "        raise ValueError('dashboard_url is required')\n"
+            "    return {'report': url}\n",
+            True,
+        ),
+        ("    return {'report': request['dashboard_url']}\n", True),
+        # Genuinely optional: absence handled.
+        ("    return {'report': request.get('dashboard_url') or 'no dashboard'}\n", False),
+    ],
+)
+def test_a_step_that_fails_without_an_optional_input_is_an_error(
+    tmp_path: Path, body: str, flagged: bool
+) -> None:
+    """The sample carries the field, so the prefix passes; leaving it out, as
+    the contract allows, makes the step raise (#326)."""
+    from rote.compiler.prefix import OPTIONAL_INPUT_REQUIRED, omission_findings
+
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": _OMIT_IR,
+            "extracted/render.py": "def render_report(request):\n" + body,
+            "tests/test_render.py": _RENDER_TEST,
+        },
+    )
+    pipeline = _pipeline(root)
+    sample = _sample({"title": "t", "dashboard_url": "https://d"})
+    implementations = implementation_status(pipeline, root)
+    base = run_prefix(pipeline, root, sample, implementations, trust_skill=True)
+    assert base.findings == [] and base.steps["render_report"]["status"] == "ok"
+    found = omission_findings(pipeline, root, sample, implementations, base, trust_skill=True)
+    if not flagged:
+        assert found == []
+        return
+    [finding] = found
+    assert (finding.kind, finding.node_id, finding.severity) == (
+        OPTIONAL_INPUT_REQUIRED,
+        "render_report",
+        "error",
+    )
+    assert "when the run's input leaves out `dashboard_url`" in finding.message
+    assert "system1/input_fields.yaml with required: true" in finding.message
+
+
+def test_a_required_field_is_never_left_out(tmp_path: Path) -> None:
+    from rote.compiler.prefix import omission_findings
+
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": _OMIT_IR,
+            "extracted/render.py": (
+                "def render_report(request):\n    return {'r': request['title']}\n"
+            ),
+            "tests/test_render.py": _RENDER_TEST,
+        },
+    )
+    pipeline = _pipeline(root)
+    sample = _sample({"title": "t", "dashboard_url": "https://d"})
+    implementations = implementation_status(pipeline, root)
+    base = run_prefix(pipeline, root, sample, implementations, trust_skill=True)
+    assert omission_findings(pipeline, root, sample, implementations, base, trust_skill=True) == []
