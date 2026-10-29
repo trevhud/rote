@@ -1118,7 +1118,7 @@ def passthrough_answer_schema(
         # The items' copied fields leave the request too. The item schema is
         # inlined here, so a $defs entry it shares with another place stays
         # whole there (the IR resolves these refs the same way).
-        listed = out["properties"].get(array)
+        listed = _inline_ref(out["properties"].get(array), out)
         if not isinstance(listed, dict):
             continue
         item = _inline_ref(listed.get("items"), out)

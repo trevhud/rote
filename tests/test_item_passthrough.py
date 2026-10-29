@@ -221,6 +221,13 @@ CASES: list[tuple[Any, Any, dict[str, str]]] = [
     ({"items": [{"number": 7}]}, {"prs": [*PRS, PRS[0]]}, PASSTHROUGH),
     ({"items": [{"number": 7}]}, {"prs": "nope"}, PASSTHROUGH),
     ({"items": "not a list"}, {"prs": PRS}, PASSTHROUGH),
+    # String keys, including non-ASCII, match the same way in both languages.
+    (
+        {"items": [{"repo": "acme/wéb", "summary": "s"}]},
+        {"prs": [{"repo": "acme/wéb", "body": "b"}]},
+        {"items[].body": "prs[repo].body"},
+    ),
+    ({"items": [{"number": 7.0}]}, {"prs": PRS}, PASSTHROUGH),
 ]
 
 
@@ -242,8 +249,9 @@ def test_python_and_ts_copy_and_refuse_the_same_way(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     ours = [_python(*case) for case in json.loads(json.dumps(CASES))]
     assert json.loads(done.stdout) == ours
-    # Not degenerate: one copies, five refuse with a message, one passes through.
+    # Not degenerate: copies by integer and string key, refusals with messages.
     assert ours[0]["ok"]["items"][0]["body"] == "second"
+    assert ours[7]["ok"]["items"][0]["body"] == "b"
     assert sum("error" in r for r in ours) == 5
 
 
@@ -288,3 +296,60 @@ def test_the_compiled_skill_fills_the_records_and_reasks_a_bad_key(tmp_path: Pat
     assert result_of(done)["prepare"] == {
         "items": [{"number": 7, "summary": "a", "repo": "acme/api", "body": "ORIGINAL\r\ntext\n"}]
     }
+
+
+def test_a_list_declared_through_a_ref_is_not_asked_for_the_copies() -> None:
+    """The IR resolves the list's $ref, so the request schema must too, or the
+    model recites the body again (PR #322 review)."""
+    output = {
+        "type": "object",
+        "properties": {"items": {"$ref": "#/$defs/L"}},
+        "required": ["items"],
+        "$defs": {"L": {"type": "array", "items": ITEM}},
+    }
+    LLMSignature.model_validate(_spec(output_schema=output))
+    asked = helper.passthrough_answer_schema(output, PASSTHROUGH)
+    assert set(asked["properties"]["items"]["items"]["properties"]) == {"number", "summary"}
+
+
+def test_an_optional_key_is_refused() -> None:
+    """A key the model may leave out fails every answer that does (PR #322 review)."""
+    item = {**ITEM, "required": ["repo", "body", "summary"]}
+    spec = _spec(
+        output_schema={"type": "object", "properties": {"items": {"type": "array", "items": item}}}
+    )
+    with pytest.raises(ValueError, match="must list the key 'number' in required"):
+        LLMSignature.model_validate(spec)
+
+
+def test_candidates_pair_same_named_fields_by_a_shared_key() -> None:
+    from rote.ir import passthrough_candidates
+
+    found = passthrough_candidates(_spec()["input_schema"], _spec()["output_schema"])
+    assert "prs[number].body" in found["items[].body"]
+    assert "prs[number].repo" in found["items[].repo"]
+    # A field the judge writes has no same-named source: never offered.
+    assert "items[].summary" not in found
+
+
+def test_offered_candidates_that_cannot_go_together_are_reasked_at_once() -> None:
+    """Each pair is a candidate; matching one list by two keys is not a
+    passthrough the IR accepts, so the piece is asked again (PR #322 review)."""
+    from types import SimpleNamespace
+
+    from rote.compiler.system1.generate import judge_problems
+
+    spec = _spec()
+    ctx = SimpleNamespace(
+        judge_input_schema=lambda _node: spec["input_schema"],
+        output_schema=lambda _id: spec["output_schema"],
+    )
+    node = SimpleNamespace(id="prepare", inputs={"prs": "pipeline.input.prs"})
+    good = {"prompt": "Pick: {{ prs }}", "passthrough": dict(PASSTHROUGH)}
+    assert judge_problems(ctx, node, good) == []
+    clash = {
+        "prompt": "Pick: {{ prs }}",
+        "passthrough": {"items[].body": "prs[number].body", "items[].repo": "prs[body].repo"},
+    }
+    [problem] = judge_problems(ctx, node, clash)
+    assert "more than one input list or key" in problem

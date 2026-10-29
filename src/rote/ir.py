@@ -1988,6 +1988,15 @@ def _item_passthrough_problems(spec: LLMSignature, out_props: dict[str, Any]) ->
         if entry.field == entry.key:
             problems.append(f"{where}: the key {entry.key!r} is what the model writes to match")
             continue
+        # The model must write the key, and every record must have one: an
+        # optional key lets a schema-locked answer leave it out, and that
+        # item then fails on every run.
+        for side, schema_node, name in (
+            (f"output {entry.array!r} items", item, entry.key),
+            (f"input {entry.path!r} records", record, entry.key),
+        ):
+            if name not in (schema_node.get("required") or []):
+                problems.append(f"{where}: {side} must list the key {name!r} in required")
         if _comparable_schema(item_props[entry.field], spec.output_schema) != _comparable_schema(
             record_props[entry.record_field], spec.input_schema
         ):
