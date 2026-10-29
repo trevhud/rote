@@ -1613,3 +1613,108 @@ def test_a_gate_condition_that_is_not_a_boolean_fails_the_prefix(tmp_path: Path)
     [finding] = run.findings
     assert finding.node_id == "ask_owner" and finding.kind == "prefix_binding_failed"
     assert "is str, not true or false" in finding.message
+
+
+_WORKFLOW = (
+    "# s\n\n## Workflow\n"
+    "1. **Resolve the target.** Look up the destination.\n"
+    "2. **Classify records.** For conflicts, ask the user whether to move or skip.\n"
+    "3. **Apply changes.** Apply only approved moves.\n"
+    "4. **Verify.** Read back affected records.\n"
+)
+
+
+def test_procedural_step_titles_are_not_what_a_person_provides(tmp_path: Path) -> None:
+    """#319: one step saying to ask the user made the section qualify whole,
+    and the four step titles became required gate keys."""
+    skill = _write(tmp_path / "skill", {"SKILL.md": _WORKFLOW})
+    assert named_human_items(skill) == {}
+    ir = _GATE_IR.format(output="{decisions: list}").replace(
+        "section: Manual data to request from user", "section: Workflow"
+    )
+    root = _write(tmp_path, {"pipeline.yaml": ir})
+    assert gate_findings(_pipeline(root), skill, None) == []
+
+
+def test_a_list_the_lead_in_asks_for_counts_beside_procedural_steps(tmp_path: Path) -> None:
+    """A section holding both: only the list its own lead-in asks for names
+    what the person provides."""
+    text = _WORKFLOW + (
+        "\nWhen the target is ambiguous, ask the operator to provide:\n"
+        "- **Destination Folder**: where the records go\n"
+        "- **Owner Email**: who approves\n"
+    )
+    skill = _write(tmp_path / "skill", {"SKILL.md": text})
+    [(heading, items)] = named_human_items(skill).items()
+    assert heading == "Workflow"
+    assert [k for _, k in items] == ["destination_folder", "owner_email"]
+
+
+def test_a_heading_that_asks_introduces_the_list_under_it(tmp_path: Path) -> None:
+    skill = _write(
+        tmp_path / "skill",
+        {"SKILL.md": "# s\n\n## Data to request from the user:\n\n1. **Site Code**\n2. **Week**\n"},
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["site_code", "week"]
+
+
+def test_a_heading_naming_a_topic_does_not_introduce_its_list(tmp_path: Path) -> None:
+    """ "Approval gates" names a topic: its list is rules, not what a person sends."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Approval gates\n\n- **Never send without approval.**\n"
+                "- **One approval covers one batch.**\n"
+            )
+        },
+    )
+    assert named_human_items(skill) == {}
+
+
+def test_a_gate_that_skips_the_skills_nouns_is_a_review_gap(tmp_path: Path) -> None:
+    """A guess from words never fails a compile (#319): it is repaired once and
+    listed. A consumer reading a key the gate lacks is the boundary error."""
+    from rote.compiler.verify import REVIEW_GAP_KINDS
+
+    output = "{dock_appointments: dict, sorter_metrics: list, current_dwell: list}"
+    root = _write(tmp_path, {"pipeline.yaml": _GATE_IR.format(output=output)})
+    [finding] = gate_findings(_pipeline(root), OPS / "skill", None)
+    assert finding.severity == "warning" and finding.kind in REVIEW_GAP_KINDS
+
+
+def test_an_ask_that_does_not_introduce_the_list_does_not_name_its_items(tmp_path: Path) -> None:
+    """A sentence that asks, then a list it does not lead into (no colon):
+    the list is the workflow's steps, not what the person provides."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Move records\n\nAsk the user to confirm before applying.\n\n"
+                "1. **Resolve the target.** Look it up.\n2. **Apply changes.** Move them.\n"
+            )
+        },
+    )
+    assert named_human_items(skill) == {}
+
+
+def test_a_list_nested_under_a_step_that_asks_counts(tmp_path: Path) -> None:
+    """ "2. Ask the operator to provide:" with sub-bullets: the step item is
+    the lead-in (PR #321 review). The step titles still do not count."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Collect\n"
+                "1. **Step one.** Do it.\n"
+                "2. **Ask the user.** Ask the operator to provide:\n"
+                "   - **Site Code**\n"
+                "   - **Week**\n"
+                "3. **Step three.** Finish.\n"
+                "   - **Not asked**\n"
+            )
+        },
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["site_code", "week"]

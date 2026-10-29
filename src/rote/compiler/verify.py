@@ -56,6 +56,7 @@ from rote.compiler.api_docs import WebResearch, api_view, docs_findings
 from rote.compiler.boundaries import boundary_findings
 from rote.compiler.env_reads import env_findings
 from rote.compiler.grounding import (
+    GATE_PAYLOAD_NOT_SKILL_NOUNS,
     ContractQuestion,
     Grounding,
     contract_questions,
@@ -633,6 +634,7 @@ REVIEW_GAP_KINDS = frozenset(
         MCP_ARGS_UNGROUNDED,
         LOOP_TOOL_UNSERVED,
         UNAPPLIED_PROPOSAL,
+        GATE_PAYLOAD_NOT_SKILL_NOUNS,
     }
 )
 
