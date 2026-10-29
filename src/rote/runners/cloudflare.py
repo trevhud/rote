@@ -124,57 +124,40 @@ def run_cloudflare(
     active no gate payload is spent on it.
     """
     ensure_npm_install(app_dir)
-    port = find_free_port()
     log_path = app_dir / "wrangler-dev.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.Popen(
-            [
-                "npx",
-                "wrangler",
-                "dev",
-                "--port",
-                str(port),
-                "--local",
-                *(f for k, v in (worker_vars or {}).items() if v for f in ("--var", f"{k}:{v}")),
-            ],
-            cwd=app_dir,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
-        try:
-            _wait_for_ready(proc, port, log_path)
+    proc, port = _start_wrangler(app_dir, log_path, worker_vars)
+    try:
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+        create = http_post_json(f"http://127.0.0.1:{port}/start", input_payload)
+        instance_id = str(create["id"])
+        pending = [(g, signals[g]) for g in gate_order if g in signals]
 
-            started = time.monotonic()
-            deadline = started + timeout_seconds
-            create = http_post_json(f"http://127.0.0.1:{port}/start", input_payload)
-            instance_id = str(create["id"])
-            pending = [(g, signals[g]) for g in gate_order if g in signals]
+        watcher = None
+        if park_watch is not None and watches_park(app_dir):
 
-            watcher = None
-            if park_watch is not None and watches_park(app_dir):
-
-                def remote_fix(server: str) -> str:
-                    return (
-                        "a Worker reads its own secrets, not the local token store: "
-                        f"rote mcp login {server}, then rote mcp export {server} >> "
-                        f"{app_dir / '.dev.vars'} and re-run (Ctrl-C this one)"
-                    )
-
-                watcher = park_watch(
-                    LogMarkerChannel(log_path, None, run_id=instance_id, remote_fix=remote_fix)
+            def remote_fix(server: str) -> str:
+                return (
+                    "a Worker reads its own secrets, not the local token store: "
+                    f"rote mcp login {server}, then rote mcp export {server} >> "
+                    f"{app_dir / '.dev.vars'} and re-run (Ctrl-C this one)"
                 )
 
-            return _drive_instance(
-                port,
-                instance_id,
-                pending,
-                started=started,
-                deadline=deadline,
-                log_path=log_path,
-                watcher=watcher,
+            watcher = park_watch(
+                LogMarkerChannel(log_path, None, run_id=instance_id, remote_fix=remote_fix)
             )
-        finally:
-            terminate(proc)
+
+        return _drive_instance(
+            port,
+            instance_id,
+            pending,
+            started=started,
+            deadline=deadline,
+            log_path=log_path,
+            watcher=watcher,
+        )
+    finally:
+        terminate(proc)
 
 
 def _drive_instance(
@@ -332,6 +315,55 @@ def _failure_message(status: str, state: dict[str, Any], log_path: Path) -> str:
     if errors and errors[-1] not in summary:
         summary += "\nstep error: " + errors[-1]
     return f"workflow {status}: {summary}"
+
+
+#: How many free ports a start tries. The port is free when chosen and taken
+#: a moment later by wrangler, so another process can take it in between:
+#: parallel CI test workers did, and the run failed with "Address already in
+#: use". A new port is a retry of the same start, never a different setup.
+PORT_ATTEMPTS = 3
+
+
+def _start_wrangler(
+    app_dir: Path, log_path: Path, worker_vars: dict[str, str] | None
+) -> tuple[subprocess.Popen[Any], int]:
+    """``wrangler dev`` up and answering on a free port: ``(process, port)``."""
+    for attempt in range(1, PORT_ATTEMPTS + 1):
+        port = find_free_port()
+        with log_path.open("w", encoding="utf-8") as log:
+            proc = subprocess.Popen(
+                [
+                    "npx",
+                    "wrangler",
+                    "dev",
+                    "--port",
+                    str(port),
+                    "--local",
+                    *(
+                        f
+                        for k, v in (worker_vars or {}).items()
+                        if v
+                        for f in ("--var", f"{k}:{v}")
+                    ),
+                ],
+                cwd=app_dir,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        try:
+            _wait_for_ready(proc, port, log_path)
+            return proc, port
+        except EmpiricalError:
+            terminate(proc)
+            lost_port = "Address already in use" in log_path.read_text(
+                encoding="utf-8", errors="replace"
+            )
+            if not lost_port or attempt == PORT_ATTEMPTS:
+                raise
+        except BaseException:
+            terminate(proc)
+            raise
+    raise AssertionError("unreachable")  # the loop returns or raises
 
 
 def _wait_for_ready(proc: subprocess.Popen[Any], port: int, log_path: Path) -> None:
