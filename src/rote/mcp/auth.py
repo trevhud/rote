@@ -415,6 +415,14 @@ def _oauth_class() -> type[Any]:
             self._rote_drop_unbound_client = drop_unbound_client
             self._rote_callback_sockets = callback_sockets
             self._rote_dropped_client_id: str | None = None
+            # The scopes the user set (`rote mcp add --scope`), if any, and
+            # the scopes the server's last 401 challenge demanded.
+            # `--scope "a b"` is one entry; fastmcp joins entries with spaces,
+            # so the scopes requested are each word.
+            self._rote_configured_scopes: list[str] = [
+                word for entry in kwargs.get("scopes") or [] for word in str(entry).split()
+            ]
+            self._rote_challenged_scopes: list[str] = []
             super().__init__(**kwargs)
 
         async def _refresh_token(self) -> Any:
@@ -596,7 +604,57 @@ def _oauth_class() -> type[Any]:
             current = self.context.client_info
             if static is not None and (current is None or current.client_id != static.client_id):
                 raise self._pre_registered_client_moved()
+            self._hold_configured_scopes()
             return await super()._perform_authorization()
+
+        def _registration_with_configured_scopes(self, outgoing: Any) -> Any:
+            """``outgoing`` (a DCR request) declaring the configured scopes."""
+            if not self._rote_configured_scopes:
+                return outgoing
+            self._hold_configured_scopes()
+            body = json.loads(outgoing.content or b"{}")
+            body["scope"] = self.context.client_metadata.scope
+            return type(outgoing)(
+                outgoing.method,
+                outgoing.url,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+        def _hold_configured_scopes(self) -> None:
+            """Request the scopes the user set, never the server's wider list.
+
+            On a 401 the SDK replaces the requested scopes with the
+            challenge's, else everything the metadata lists as supported, and
+            never consults the configured ones (mcp 2.3.0, oauth2.py). A real
+            login configured with six read-only scopes asked for 26, Gmail
+            send among them (#316). A list the server only *advertises* is not
+            a requirement, so the configured scopes win. A challenge that
+            *requires* more stops the login naming the extra scopes: widening
+            the user's choice is theirs to make. ``offline_access``, which the
+            SDK adds when the server supports it, stays: it asks for a refresh
+            token and grants no access, and unattended runs need one.
+            """
+            configured = self._rote_configured_scopes
+            if not configured:
+                return
+            extra = [
+                s
+                for s in self._rote_challenged_scopes
+                if s not in configured and s != "offline_access"
+            ]
+            if extra:
+                raise McpAuthError(
+                    f"{self._rote_server!r} requires scope(s) {' '.join(extra)} beyond the "
+                    f"ones configured for it ({' '.join(configured)}), so rote did not open "
+                    "the consent page. To grant them, add them to the server's scopes "
+                    f"(rote mcp add {self._rote_server} <url> --scope ...); to request "
+                    "whatever the server asks, remove its scopes"
+                )
+            selected = (self.context.client_metadata.scope or "").split()
+            kept = ["offline_access"] if "offline_access" in selected else []
+            requested = list(dict.fromkeys([*configured, *kept]))
+            self.context.client_metadata.scope = " ".join(requested)
 
         def _refuse_registration(self, outgoing: Any, original: Any) -> None:
             if not is_registration_request(self, outgoing, original):
@@ -657,7 +715,20 @@ def _oauth_class() -> type[Any]:
                 outgoing = await flow.__anext__()
                 while True:
                     self._refuse_registration(outgoing, request)
+                    if is_registration_request(self, outgoing, request):
+                        # The SDK builds the registration body from the scopes
+                        # it chose on the 401, before the authorization step,
+                        # so a DCR client would declare the server's whole list.
+                        outgoing = self._registration_with_configured_scopes(outgoing)
                     response = yield outgoing
+                    # Only the MCP request's own answer says what the resource
+                    # requires: a discovery fetch can 401 or 403 too (a gateway
+                    # on an unknown well-known path), and must not overwrite it.
+                    if outgoing is request and response.status_code in (401, 403):
+                        from mcp.client.auth.utils import extract_scope_from_www_auth
+
+                        demanded = extract_scope_from_www_auth(response)
+                        self._rote_challenged_scopes = (demanded or "").split()
                     if outgoing is not request:
                         await self._check_offered_document(response)
                     outgoing = await flow.asend(response)

@@ -2823,10 +2823,14 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
     pending = begun.pending
     url = begun.authorization_url or ""
     opened = any(o.action_id.startswith("open-browser") and o.result is True for o in outcomes)
+    scopes = _requested_scopes(url, config)
     out.say(f"Authorize {server!r} in a browser on this machine:")
     out.say("")
     out.say(f"  {url}")
     out.say("")
+    out.say(
+        "It asks for scope(s): " + (" ".join(scopes["requested"]) or "none (the server's default)")
+    )
     if opened:
         out.say("(opened in your browser)")
     out.say(f"Then run: rote mcp login --complete {pending.id}")
@@ -2845,12 +2849,24 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
                 expires_at=pending.expires_at,
             ),
             "browser_opened": opened,
+            "scopes": scopes,
             "applied": True,
             "plan": plan.to_dict(),
             "outcomes": [o.to_dict() for o in outcomes],
         }
     )
     return 0
+
+
+def _requested_scopes(authorization_url: str, config: Any) -> dict[str, Any]:
+    """The scopes the user configured and the ones the authorization URL
+    asks for, read from the URL itself (#316): the registry alone cannot show
+    what a login really requests. Only the scope parameter is read; the
+    URL's state and PKCE challenge are not repeated."""
+    from urllib.parse import parse_qs, urlparse
+
+    requested = parse_qs(urlparse(authorization_url).query).get("scope", [""])[0].split()
+    return {"configured": list(config.scopes) if config.scopes else None, "requested": requested}
 
 
 def _mcp_login_complete(args: argparse.Namespace, out: Any) -> int:
@@ -6500,7 +6516,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scope",
         action="append",
         default=None,
-        help="OAuth scope to request (repeatable)",
+        help=(
+            "OAuth scope to request (repeatable). The login asks for exactly these "
+            "(plus offline_access when the server supports refresh tokens), never the "
+            "server's wider list, and stops if the server requires more. Omit to let "
+            "the server decide"
+        ),
     )
     mcp_add.add_argument(
         "--header",
