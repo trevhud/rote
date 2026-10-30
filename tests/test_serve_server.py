@@ -1089,3 +1089,52 @@ async def test_serve_over_real_stdio_transport(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_the_handshake_reports_rotes_version_not_fastmcps(tmp_path: Path) -> None:
+    """#338: without ``version=``, fastmcp reports its own version (the modern era here)."""
+    import rote
+
+    server = build_server(tmp_path / "registry.json")
+    async with Client(server) as client:
+        info = client.server_info
+    assert info is not None and (info.name, info.version) == ("rote", rote.__version__)
+
+
+def test_a_legacy_initialize_over_stdio_reports_rotes_version(tmp_path: Path) -> None:
+    """The launch command clients run, and the handshake older clients send
+    (Cline, Claude Code), byte for byte as #338 found it."""
+    import json
+    import subprocess
+    import sys
+
+    import rote
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"},
+        },
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "rote", "serve", "--registry", str(tmp_path / "registry.json")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(json.dumps(request) + "\n")
+        proc.stdin.flush()
+        reply = json.loads(proc.stdout.readline())
+    finally:
+        proc.kill()
+        proc.wait()
+    assert reply["result"]["serverInfo"]["name"] == "rote"
+    assert reply["result"]["serverInfo"]["version"] == rote.__version__
