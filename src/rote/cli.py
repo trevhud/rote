@@ -4892,7 +4892,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
 
     from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval import skill_ab
-    from rote.eval.codex_lane import codex_binary
+    from rote.eval.codex_lane import codex_binary, login_file
     from rote.eval.empirical import EmpiricalError
 
     if args.trials < 1:
@@ -4917,6 +4917,13 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
         )
         return 2
     agent = getattr(args, "agent", "claude")
+    if args.budget is not None and agent == "codex":
+        print(
+            "error: --budget caps dollars, and a Codex run is on your plan with no dollar "
+            "figure to cap: drop --budget for --agent codex",
+            file=sys.stderr,
+        )
+        return 2
     if args.budget is None and agent == "claude":
         print(
             "error: --run --runtime skill needs --budget USD: every trial is a paid "
@@ -4946,11 +4953,13 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
     log = lambda line: print(line, file=sys.stderr)  # noqa: E731
     target = Path(args.target)
     try:
-        executable = (
-            skill_ab.require_executable("claude")
-            if agent == "claude"
-            else str(codex_binary())  # raises with the install hint when missing
-        )
+        if agent == "codex":
+            # Before the compile spends anything: a missing binary, or a login
+            # that would bill an API key, stops here.
+            executable = str(codex_binary())
+            login_file()
+        else:
+            executable = skill_ab.require_executable("claude")
         task = json.loads(Path(args.input).read_text(encoding="utf-8")) if args.input else None
         provenance: dict[str, object] | None = None
         if (target / "SKILL.md").is_file():
@@ -5019,7 +5028,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
                 "model": model,
                 # A Codex run is on the plan: no dollars, and no cap unless one was set.
                 "spent_usd": None if agent == "codex" else ledger.spent,
-                "budget_usd": args.budget if agent == "codex" else ledger.cap_usd,
+                "budget_usd": None if agent == "codex" else ledger.cap_usd,
                 "work_dir": str(work),
                 **report.to_dict(),
             },

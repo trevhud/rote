@@ -70,6 +70,7 @@ from typing import Any
 
 from rote.eval import skill_run_server
 from rote.eval.empirical import EmpiricalError
+from rote.isolation import STATE_PATHS
 
 #: What the Codex lane is called in flags, reports and the corpus.
 AGENT = "codex"
@@ -123,6 +124,21 @@ def login_file(environ: Mapping[str, str] | None = None) -> Path:
             f"no Codex login at {path}: run `codex login`. rote runs skills on your "
             "Codex login and needs it in auth.json (a login kept only in the OS "
             "credential store cannot be linked into the run's isolated home)"
+        )
+    try:
+        login = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise EmpiricalError(f"cannot read the Codex login at {path}: {e}") from e
+    # A key stored by `codex login --with-api-key` bills that key, with no cap:
+    # only a ChatGPT login runs on the user's plan.
+    if (
+        not isinstance(login, dict)
+        or login.get("auth_mode") != "chatgpt"
+        or login.get("OPENAI_API_KEY")
+    ):
+        raise EmpiricalError(
+            f"the Codex login at {path} is not a ChatGPT login, so a run would bill an API "
+            "key: rote runs skills on Codex only on your plan. Run `codex login` (ChatGPT)"
         )
     return path
 
@@ -223,8 +239,16 @@ def server_config(name: str, entry: Mapping[str, Any], real_home: str) -> list[s
     if kind == "stdio":
         args += ["-c", f"{prefix}.command={_toml(entry['command'])}"]
         args += ["-c", f"{prefix}.args={_toml(list(entry.get('args') or []))}"]
-        if entry.get("env"):
-            args += ["-c", f"{prefix}.env={_inline_table(entry['env'])}"]
+        env = dict(entry.get("env") or {})
+        secret = sorted(set(env) - _PATH_ENV)
+        if secret:
+            # argv is readable by every local user (ps): only paths go there.
+            raise EmpiricalError(
+                f"the Codex lane cannot pass {', '.join(secret)} to MCP server {name!r}: "
+                "a stdio server's env would land on the command line"
+            )
+        if env:
+            args += ["-c", f"{prefix}.env={_inline_table(env)}"]
         return args
     if kind != "http":
         raise EmpiricalError(
@@ -233,12 +257,34 @@ def server_config(name: str, entry: Mapping[str, Any], real_home: str) -> list[s
         )
     args += ["-c", f"{prefix}.url={_toml(entry['url'])}"]
     if entry.get("headers"):
-        args += ["-c", f"{prefix}.http_headers={_inline_table(entry['headers'])}"]
+        # By name: the values ride in Codex's own env (:func:`header_env`),
+        # never argv, and the agent's shell inherits only core variables.
+        names = {h: header_var(name, i) for i, h in enumerate(sorted(entry["headers"]))}
+        args += ["-c", f"{prefix}.env_http_headers={_inline_table(names)}"]
     if entry.get("headersHelper"):
         # The run's HOME is a throwaway; rote's helper reads the user's state.
         helper = f"/usr/bin/env HOME={shlex.quote(real_home)} {entry['headersHelper']}"
         args += ["-c", f"{prefix}.http_headers_helper={_toml(helper)}"]
     return args
+
+
+#: The variables a stdio server may be given on the command line: rote's state
+#: paths, PATH and HOME. Paths only, never a credential.
+_PATH_ENV = frozenset({"PATH", "HOME"}) | frozenset(STATE_PATHS)
+
+
+def header_var(server: str, index: int) -> str:
+    """The Codex-process variable holding one static header of ``server``."""
+    return f"ROTE_CODEX_HEADER_{re.sub(r'[^A-Za-z0-9]', '_', server).upper()}_{index}"
+
+
+def header_env(mcp_servers: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    """``{variable: value}`` for every static header, for Codex's env only."""
+    out: dict[str, str] = {}
+    for name, entry in mcp_servers.items():
+        for i, header in enumerate(sorted(entry.get("headers") or {})):
+            out[header_var(name, i)] = str(entry["headers"][header])
+    return out
 
 
 def _inline_table(values: Mapping[str, Any]) -> str:
@@ -275,10 +321,9 @@ def _driver_server(
         "type": "stdio",
         "command": sys.executable,
         "args": ["-I", "-m", "rote.eval.skill_run_server", name, rote],
-        # The driver's own state paths, as the run sees them: no credential.
-        "env": {
-            k: v for k, v in source_env.items() if k.startswith("ROTE_") or k in ("PATH", "HOME")
-        },
+        # The driver's own state paths, as the run sees them, and nothing else:
+        # these are paths, never a credential, so the command line may hold them.
+        "env": {k: v for k, v in source_env.items() if k in _PATH_ENV},
     }
     note = (
         f"In this environment the shell cannot run `rote skill run {name} ...`. Run it "
@@ -327,6 +372,10 @@ def prepared(
         tools[server] = (skill_run_server.TOOL,)
         notes.append(note)
     filesystem = {":minimal": "read", str(binary.parent): "read"}
+    if binary.suffix == ".js":
+        # An npm install's launcher: the native binary is in the package's
+        # vendor dir, and the sandboxed helper re-executes that one.
+        filesystem[str(binary.parent.parent)] = "read"
     filesystem |= {root: "deny" for root in _deny_roots()}
     filesystem |= {os.path.realpath(p): "read" for p in gate.readable}
     filesystem[":workspace_roots"] = "write"
@@ -342,6 +391,10 @@ def prepared(
         'approval_policy="never"',
         "-c",
         'web_search="disabled"',
+        # The agent's shell sees core variables only (PATH, HOME, USER...):
+        # an allowlist, as on the Claude lane, never the caller's env.
+        "-c",
+        'shell_environment_policy.inherit="core"',
         *[arg for feature in FEATURES_OFF for arg in ("--disable", feature)],
         "-c",
         f"default_permissions={_toml(_PROFILE)}",
@@ -357,11 +410,20 @@ def prepared(
         allowed_tools = tools[name]
         if allowed_tools is not None:
             argv += ["-c", f"{prefix}.enabled_tools={_toml(list(allowed_tools))}"]
+        if name == skill_run_server.SERVER:
+            # Codex's own per-call limit must outlast the driver's, or Codex
+            # reports a failed call while the block keeps running, and the
+            # model runs it again, writes included.
+            argv += [
+                "-c",
+                f"{prefix}.tool_timeout_sec={int(skill_run_server.TIMEOUT_SECONDS) + 60}",
+            ]
     if model:
         argv += ["--model", model]
     argv.append("-")
     env = {k: v for k, v in source_env.items() if k not in _CREDENTIAL_ENV}
     env |= {"CODEX_HOME": str(codex_home), "HOME": str(user_home)}
+    env |= header_env({n: e for n, e in servers.items() if n in tools})
     try:
         yield Prepared(argv=argv, env=env, note="\n\n".join(notes))
     finally:
@@ -383,12 +445,30 @@ def _write_back_login(link: Path, real: Path) -> None:
         current = json.loads(real.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
-    if str(fresh.get("last_refresh") or "") <= str(current.get("last_refresh") or ""):
+    if not _newer(fresh.get("last_refresh"), current.get("last_refresh")):
         return
     staged = real.with_name(f".{real.name}.rote-{os.getpid()}")
     staged.write_text(json.dumps(fresh, indent=2), encoding="utf-8")
     staged.chmod(0o600)
     os.replace(staged, real)
+
+
+def _newer(fresh: Any, current: Any) -> bool:
+    """Whether the ``fresh`` login's ``last_refresh`` is later than ``current``'s.
+
+    Parsed, not compared as text: two writers can format fractional seconds
+    differently. A fresh one that does not parse is never newer.
+    """
+    from datetime import datetime
+
+    def parse(value: Any) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+
+    later, earlier = parse(fresh), parse(current)
+    return later is not None and (earlier is None or later > earlier)
 
 
 @dataclass(frozen=True)
@@ -405,6 +485,9 @@ class Outcome:
     error: str | None
     #: Shell commands the agent ran, in order.
     commands: tuple[str, ...]
+    #: The turn failed (``turn.failed``), as opposed to an ``error`` event Codex
+    #: may recover from.
+    failed: bool = False
 
 
 def parse_events(lines: Sequence[str]) -> Outcome:
@@ -421,6 +504,7 @@ def parse_events(lines: Sequence[str]) -> Outcome:
     commands: list[str] = []
     message: str | None = None
     error: str | None = None
+    failed = False
     for line in lines:
         try:
             event = json.loads(line)
@@ -430,10 +514,12 @@ def parse_events(lines: Sequence[str]) -> Outcome:
             continue
         kind = event.get("type")
         if kind == "turn.completed" and isinstance(event.get("usage"), dict):
-            usage = split_usage(event["usage"])
+            # A report missing a field is not a figure: keep the last complete one.
+            usage = split_usage(event["usage"]) or usage
         elif kind == "turn.failed":
             failure = event.get("error")
             error = str(failure.get("message") if isinstance(failure, dict) else failure)
+            failed = True
         elif kind == "error":
             error = str(event.get("message"))
         elif kind == "item.completed" and isinstance(event.get("item"), dict):
@@ -458,4 +544,5 @@ def parse_events(lines: Sequence[str]) -> Outcome:
         message=message,
         error=error,
         commands=tuple(commands),
+        failed=failed,
     )

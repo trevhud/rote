@@ -16,6 +16,14 @@ import pytest
 from rote.eval import codex_lane
 from rote.eval.empirical import EmpiricalError, skill_run_file_rules
 
+#: A ChatGPT login as Codex writes it (values made up).
+CHATGPT_LOGIN = {
+    "auth_mode": "chatgpt",
+    "OPENAI_API_KEY": None,
+    "tokens": {"access_token": "a", "refresh_token": "r", "id_token": "i", "account_id": "x"},
+    "last_refresh": "2026-10-01T00:00:00.000000Z",
+}
+
 
 @pytest.fixture
 def fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -26,7 +34,7 @@ def fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     real.chmod(0o755)
     home = tmp_path / "codex-home"
     home.mkdir()
-    (home / "auth.json").write_text(json.dumps({"last_refresh": "2026-10-01T00:00:00Z"}))
+    (home / "auth.json").write_text(json.dumps(CHATGPT_LOGIN))
     monkeypatch.setenv("CODEX_HOME", str(home))
     return real
 
@@ -106,6 +114,8 @@ def test_the_run_is_isolated_and_gated(fake_codex: Path, tmp_path: Path) -> None
         "OPENAI_API_KEY": "o",
         "CODEX_HOME": os.environ["CODEX_HOME"],
         "ROTE_SKILL_RUN_DIR": "/state/runs",
+        "ROTE_CLEF_API_TOKEN": "decision-model-secret",
+        "DATABASE_URL": "postgres://u:p@h/db",
     }
     root = tmp_path / "root"
     with codex_lane.prepared(
@@ -139,7 +149,11 @@ def test_the_run_is_isolated_and_gated(fake_codex: Path, tmp_path: Path) -> None
         args = json.loads(next(a for a in argv if a.startswith(f"{server}.args=")).split("=", 1)[1])
         assert args == ["-I", "-m", "rote.eval.skill_run_server", "demo", str(shim / "rote")]
         env_arg = next(a for a in argv if a.startswith(f"{server}.env="))
-        assert '"ROTE_SKILL_RUN_DIR"="/state/runs"' in env_arg and "CODEX_API_KEY" not in env_arg
+        # rote's state paths only: a ROTE_* credential is not a state path.
+        assert '"ROTE_SKILL_RUN_DIR"="/state/runs"' in env_arg
+        assert "ROTE_CLEF_API_TOKEN" not in env_arg
+        timeout = next(a for a in argv if a.startswith(f"{server}.tool_timeout_sec="))
+        assert int(timeout.split("=")[1]) > skill_run_server_timeout()
         assert "`run` tool of the `rote_skill` MCP server" in run.note
         joined = "\n".join(argv)
         # Reads: the system, the binary's dir and the skill; temp roots denied; workspace writes.
@@ -148,11 +162,18 @@ def test_the_run_is_isolated_and_gated(fake_codex: Path, tmp_path: Path) -> None
         assert f'"{fake_codex.parent}"="read"' in table
         assert f'"{skill.resolve()}"="read"' in table
         assert '":minimal"="read"' in table and '":workspace_roots"="write"' in table
-        assert '"deny"' in table
+        for root in codex_lane._deny_roots():
+            assert f'"{root}"="deny"' in table
         # MCP: gated tools enabled by name, a wildcard unrestricted, approval on.
         assert 'mcp_servers.jira.enabled_tools=["get_issue"]' in argv
         assert "mcp_servers.static.enabled_tools" not in joined
-        assert 'mcp_servers.static.http_headers={"X-Key"="k"}' in argv
+        # A header value rides in Codex's env, by name: argv (ps) never holds it.
+        var = codex_lane.header_var("static", 0)
+        assert f'mcp_servers.static.env_http_headers={{"X-Key"="{var}"}}' in argv
+        assert run.env[var] == "k" and "k" not in [a.split("=", 1)[-1] for a in argv]
+        # The agent's shell gets core variables only, not the caller's env.
+        assert 'shell_environment_policy.inherit="core"' in argv
+        assert "decision-model-secret" not in joined and "postgres://" not in joined
         assert 'mcp_servers.rote-gate.command="/usr/bin/python3"' in argv
         assert 'mcp_servers.jira.default_tools_approval_mode="approve"' in argv
         helper = next(a for a in argv if a.startswith("mcp_servers.jira.http_headers_helper="))
@@ -168,9 +189,48 @@ def test_an_sse_server_is_refused() -> None:
         codex_lane.server_config("s", {"type": "sse", "url": "https://x"}, "/h")
 
 
+def skill_run_server_timeout() -> float:
+    from rote.eval import skill_run_server
+
+    return skill_run_server.TIMEOUT_SECONDS
+
+
 def test_no_login_file_is_a_clear_error(tmp_path: Path) -> None:
     with pytest.raises(EmpiricalError, match="codex login"):
         codex_lane.login_file({"CODEX_HOME": str(tmp_path)})
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        {"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"},
+        {**CHATGPT_LOGIN, "OPENAI_API_KEY": "sk-x"},
+        {"tokens": {}},
+        ["not", "an", "object"],
+    ],
+)
+def test_a_login_that_would_bill_a_key_is_refused(tmp_path: Path, login: object) -> None:
+    (tmp_path / "auth.json").write_text(json.dumps(login))
+    with pytest.raises(EmpiricalError, match="not a ChatGPT login"):
+        codex_lane.login_file({"CODEX_HOME": str(tmp_path)})
+
+
+def test_a_stdio_server_env_beyond_paths_is_refused() -> None:
+    with pytest.raises(EmpiricalError, match="cannot pass SECRET to MCP server"):
+        codex_lane.server_config(
+            "s", {"type": "stdio", "command": "x", "env": {"SECRET": "v", "PATH": "/b"}}, "/h"
+        )
+
+
+def test_an_npm_launcher_reads_its_package(fake_codex: Path, tmp_path: Path) -> None:
+    js = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    js.parent.mkdir(parents=True)
+    js.write_text("")
+    with codex_lane.prepared(
+        tmp_path / "root", workdir=tmp_path, mcp_servers={}, allowed=[], model=None, binary=js
+    ) as run:
+        fs = next(a for a in run.argv if a.startswith("permissions.rote_skill_run.filesystem="))
+    assert f'"{js.parent.parent}"="read"' in fs
 
 
 def test_a_refreshed_login_is_written_back_and_a_stale_one_is_not(tmp_path: Path) -> None:
@@ -188,6 +248,11 @@ def test_a_refreshed_login_is_written_back_and_a_stale_one_is_not(tmp_path: Path
     link.write_text(json.dumps({"last_refresh": "2026-09-01T00:00:00Z", "t": "older"}))
     codex_lane._write_back_login(link, real)
     assert json.loads(real.read_text())["t"] == "new"
+    # Times are compared parsed: more fractional digits is not "later" as text.
+    real.write_text(json.dumps({"last_refresh": "2026-10-29T00:00:00.9Z", "t": "kept"}))
+    link.write_text(json.dumps({"last_refresh": "2026-10-29T00:00:00.100000Z", "t": "x"}))
+    codex_lane._write_back_login(link, real)
+    assert json.loads(real.read_text())["t"] == "kept"
 
 
 def test_the_link_left_in_place_writes_nothing(tmp_path: Path) -> None:
@@ -261,7 +326,20 @@ def test_a_run_with_no_usage_has_no_figure_and_a_failure_is_kept() -> None:
     failed = codex_lane.parse_events(
         [json.dumps({"type": "turn.failed", "error": {"message": "usage limit reached"}})]
     )
-    assert failed.usage is None and failed.error == "usage limit reached"
+    assert failed.usage is None and failed.error == "usage limit reached" and failed.failed
+    recovered = codex_lane.parse_events([json.dumps({"type": "error", "message": "retrying"})])
+    assert recovered.error == "retrying" and not recovered.failed
+
+
+def test_an_incomplete_usage_report_does_not_erase_a_complete_one() -> None:
+    complete = {"input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2}
+    out = codex_lane.parse_events(
+        [
+            json.dumps({"type": "turn.completed", "usage": complete}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5}}),
+        ]
+    )
+    assert out.usage is not None and out.usage["output_tokens"] == 2
 
 
 _STUB = """#!{python}

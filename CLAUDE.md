@@ -2496,10 +2496,28 @@ here was a real failure on codex-cli 0.165.0:
   `"x"` that never loads (the first live A/B ran its original side with no
   tools and reported ok). A name outside `[A-Za-z0-9_-]` is refused.
 - **stdin is the prompt or closed.** `codex exec` waits on an open stdin.
+- **Only a ChatGPT login runs.** `login_file` refuses an `auth.json` whose
+  `auth_mode` is not `chatgpt` or that stores a key: `codex login
+  --with-api-key` writes the key there, and env scrubbing cannot reach it.
+  `--budget` is refused with `--agent codex`, since nothing dollar-priced
+  runs, and the A/B checks the login before its compile spends anything.
+- **No credential on the command line or in the shell.** argv is readable
+  by every local user. Static headers go by name (`env_http_headers`) with
+  their values in Codex's own env, a stdio server's `env` may hold only
+  rote's state paths, PATH and HOME, and the agent's shell inherits core
+  variables only (`shell_environment_policy.inherit="core"`; an allowlist).
+  Measured inside the profile: the Keychain calls fail, DNS fails, and
+  `/Users` cannot be listed.
+- **The driver tool's timeout outlasts the driver's.** Codex's own
+  `tool_timeout_sec` is set above `skill_run_server.TIMEOUT_SECONDS`, or
+  Codex would report a failed call while the block runs on, and the model
+  would run it again, writes included.
 - **What Codex does not report is None**: request count, per-request input,
   turns, warm or cold start, and dollars on a plan. No ledger dollars are
-  recorded for a Codex run, and K is n/a. Codex's own resource listing
-  arrives as server `codex` and is not observed traffic.
+  recorded for a Codex run, K is n/a, and the A/B runs no control runs
+  (they exist only to measure B). A run with no usage report fails its
+  trial rather than entering the medians as zero. Codex's own resource
+  listing arrives as server `codex` and is not observed traffic.
 
 ### A failed `claude -p` compile is still a paid one, and the output cap resumes
 

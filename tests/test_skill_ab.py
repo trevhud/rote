@@ -579,9 +579,11 @@ def _codex_harness(tmp_path: Path, runs: list[dict[str, Any]]) -> skill_ab.Harne
 def test_a_codex_trial_runs_in_the_translated_gate_and_spends_no_dollars(
     tmp_path: Path, expense: skill_ab.Subject, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tests.test_codex_lane import CHATGPT_LOGIN
+
     login = tmp_path / "codex-login"
     login.mkdir()
-    (login / "auth.json").write_text("{}")
+    (login / "auth.json").write_text(json.dumps(CHATGPT_LOGIN))
     monkeypatch.setenv("CODEX_HOME", str(login))
     (tmp_path / "work").mkdir()
     runs: list[dict[str, Any]] = []
@@ -621,6 +623,57 @@ def test_the_codex_usage_report_is_a_total_with_unknowns_left_unknown() -> None:
     )
     assert envelope == {"is_error": True, "result": "usage limit"}
     assert usage.output is None and usage.requests is None and usage.cost_usd is None
+    # No usage at all fails the trial instead of entering the medians as zero.
+    _, silent = skill_ab.codex_usage([json.dumps({"type": "thread.started"})])
+    assert silent == {"is_error": True, "result": "codex reported no usage"}
+    # A recoverable error event with a usage report is not a failed trial.
+    report = {"input_tokens": 9, "cached_input_tokens": 0, "output_tokens": 1}
+    _, fine = skill_ab.codex_usage(
+        [
+            json.dumps({"type": "error", "message": "transient"}),
+            json.dumps({"type": "turn.completed", "usage": report}),
+        ]
+    )
+    assert fine == {}
+
+
+def test_a_codex_eval_runs_no_control_runs(
+    tmp_path: Path, expense: skill_ab.Subject, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control measures B from a request count Codex does not report."""
+    from tests.test_codex_lane import CHATGPT_LOGIN
+
+    login = tmp_path / "codex-login"
+    login.mkdir()
+    (login / "auth.json").write_text(json.dumps(CHATGPT_LOGIN))
+    monkeypatch.setenv("CODEX_HOME", str(login))
+    (tmp_path / "work").mkdir()
+    runs: list[dict[str, Any]] = []
+    report = skill_ab.run_subject(_codex_harness(tmp_path, runs), expense, trials=1)
+    assert len(runs) == 2  # one original trial, one compiled trial, no controls
+    assert all(summary.base_per_request is None for summary in report.sides.values())
+
+
+def test_budget_is_refused_with_the_codex_agent(capsys: pytest.CaptureFixture[str]) -> None:
+    from rote.cli import main
+
+    status = main(
+        [
+            "eval",
+            "x",
+            "--run",
+            "--runtime",
+            "skill",
+            "--agent",
+            "codex",
+            "--budget",
+            "5",
+            "--input",
+            "i.json",
+        ]
+    )
+    assert status == 2
+    assert "a Codex run is on your plan" in capsys.readouterr().err
 
 
 def test_a_codex_compile_is_pinned_to_codex() -> None:

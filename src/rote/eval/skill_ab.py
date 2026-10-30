@@ -1140,7 +1140,7 @@ def run_trial(
         usage, envelope = codex_usage(proc.lines)
     else:
         usage, envelope = parse_stream(proc.lines)
-        # A Codex run is on the user's plan: no dollars to record or cap.
+        # Only a claude run has dollars to record: a Codex run is on the plan.
         harness.ledger.record(kind, label, usage.cost_usd, default)
 
     output: Any = None
@@ -1243,8 +1243,12 @@ def codex_usage(lines: Sequence[str]) -> tuple[Usage, dict[str, Any]]:
     tools = [*(f"mcp__{c['server']}__{c['tool']}" for c in outcome.calls)]
     tools += ["shell"] * len(outcome.commands)
     envelope: dict[str, Any] = {}
-    if outcome.error is not None:
+    if outcome.failed:
         envelope = {"is_error": True, "result": outcome.error}
+    elif outcome.usage is None:
+        # A run with no usage report has no figure: it fails the trial rather
+        # than entering the medians as zero tokens.
+        envelope = {"is_error": True, "result": outcome.error or "codex reported no usage"}
     return (
         Usage(
             input=buckets.get("input_tokens", 0),
@@ -1367,7 +1371,10 @@ def run_subject(harness: Harness, subject: Subject, trials: int) -> SubjectRepor
     base: dict[Side, int | None] = {"original": None, "compiled": None}
     stopped: str | None = None
     try:
-        for side in SIDES:
+        # A control measures B, one request's input. Codex reports no requests,
+        # so B (and K) cannot be computed: its controls would spend plan usage
+        # for nothing.
+        for side in SIDES if harness.agent != "codex" else ():
             control = run_trial(harness, subject, side, 0, compiled_dir=compiled_dir, control=True)
             if control.usage.requests == 1 and control.usage.per_request_input:
                 base[side] = control.usage.per_request_input[0]
@@ -1557,6 +1564,10 @@ def compile_for_eval(
     for setting in proof.pinned_settings():
         log(f"  {setting.flag[2:]}: {setting.value}, pinned by {caller} ({setting.why})")
     env = isolated_env(work / "compile-state")
+    if agent == "codex":
+        # The measurement runs on the plan: a key here would bill it, uncapped.
+        for key in ("CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"):
+            env.pop(key, None)
     started = time.monotonic()
     try:
         proc = subprocess.run(
