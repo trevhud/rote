@@ -198,5 +198,13 @@ def load_bundled_tools(skill_dir: Any) -> dict[str, dict[str, dict[str, Any]]]:
             found[str(server)][tool["name"]] = {
                 "description": str(tool.get("description") or ""),
                 "inputSchema": tool["inputSchema"],
+                # Kept when the server declared one: a fixture standing in for
+                # the server must declare it too, or a client that unwraps a
+                # fastmcp `{"result": ...}` by its flag reads the wrapper.
+                **(
+                    {"outputSchema": tool["outputSchema"]}
+                    if isinstance(tool.get("outputSchema"), dict)
+                    else {}
+                ),
             }
     return found

@@ -3903,6 +3903,44 @@ def _resolve_baseline_input(
     return derived
 
 
+def _cmd_replay_prepare(args: argparse.Namespace) -> int:
+    """``rote replay prepare``: a replay case from a recorded run (:mod:`rote.replay`)."""
+    import json
+
+    from rote.replay import ReplayError, prepare
+
+    compiled = Path(args.compiled)
+    pipeline_yaml = compiled / "pipeline.yaml" if compiled.is_dir() else compiled
+    gates: list[object] = []
+    if args.gates:
+        loaded = json.loads(Path(args.gates).read_text(encoding="utf-8"))
+        if not isinstance(loaded, list):
+            print("error: --gates must be a JSON list, one answer per gate", file=sys.stderr)
+            return 2
+        gates = loaded
+    try:
+        done = prepare(
+            Path(args.skill_path), Path(args.baseline), pipeline_yaml, Path(args.out), gates=gates
+        )
+    except (ReplayError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    cases = done.out_dir / "fidelity" / "cases.yaml"
+    print(f"rote replay: wrote {cases} ({done.reads} recorded reads)")
+    if done.writes:
+        print(
+            "  writes (no recorded response; a replay logs what each side proposes and "
+            "answers it with an error): " + ", ".join(done.writes)
+        )
+    for note in done.notes:
+        print(f"  note: {note}")
+    print(
+        f"  next: review it, then rote eval {pipeline_yaml} --run --runtime skill --skill "
+        f"{args.skill_path} --replay {done.out_dir} --trust-generated-code"
+    )
+    return 0
+
+
 def _cmd_baseline(args: argparse.Namespace) -> int:
     """Run the raw skill as an agent, measured and observed (pre-compilation).
 
@@ -4913,13 +4951,27 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if (args.input is None) == (args.case is None):
+    if sum(x is not None for x in (args.input, args.case, args.replay)) != 1:
         print(
-            "error: pass exactly one of --input <task.json> or --case <id> (a bench "
-            "case from the example's fidelity/cases.yaml)",
+            "error: pass exactly one of --input <task.json>, --case <id> (a bench "
+            "case from the example's fidelity/cases.yaml) or --replay <dir>",
             file=sys.stderr,
         )
         return 2
+    cases_dir: Path | None = None
+    if args.replay is not None:
+        from rote.replay import CASE_ID
+
+        if not args.trust_generated_code:
+            print(
+                "error: --replay runs the compiled skill's generated code on this machine, "
+                "unsandboxed, and a replayed skill may be third-party: pass "
+                "--trust-generated-code once you have reviewed it",
+                file=sys.stderr,
+            )
+            return 2
+        cases_dir = Path(args.replay)
+        args.case = CASE_ID
     model = args.model or DEFAULT_MODEL
     work = (
         Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="rote-skill-ab-"))
@@ -4938,7 +4990,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
         if (target / "SKILL.md").is_file():
             skill_dir = target
             sample: object = (
-                skill_ab.bench_case(skill_dir, args.case)[1].input
+                skill_ab.bench_case(skill_dir, args.case, cases_dir)[1].input
                 if args.case is not None
                 else task["input"]
                 if isinstance(task, dict) and "signals" in task
@@ -4970,6 +5022,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             skill_dir=skill_dir,
             task=task,
             case_id=args.case,
+            cases_dir=cases_dir,
             provenance=provenance,
         )
         harness = skill_ab.Harness(
@@ -5035,6 +5088,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         flag
         for flag, value in (
             ("--case", args.case),
+            ("--replay", args.replay),
             ("--budget", args.budget),
             ("--ledger", args.ledger),
             ("--work-dir", args.work_dir),
@@ -7105,6 +7159,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "servers and gate answers) instead of --input",
     )
     skill_ab.add_argument(
+        "--replay",
+        default=None,
+        metavar="DIR",
+        help="run the replay case `rote replay prepare` wrote in DIR: both sides against "
+        "the recorded tool responses, every proposed write captured and never sent. "
+        "Needs --trust-generated-code",
+    )
+    skill_ab.add_argument(
+        "--trust-generated-code",
+        action="store_true",
+        help="--replay only: run the compiled skill's generated modules on this machine, "
+        "unsandboxed. A replayed skill may be third-party, so this is never assumed",
+    )
+    skill_ab.add_argument(
         "--budget",
         type=float,
         default=None,
@@ -7132,6 +7200,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the compiler's model, when TARGET is a source skill (default: the compiler's)",
     )
     eval_cmd.set_defaults(func=_cmd_eval)
+
+    # rote replay
+    replay = subparsers.add_parser(
+        "replay",
+        help="Replay a recorded run of a skill against its compiled skill",
+        description=(
+            "Turn a recorded run (`rote baseline`) into a replay case, for `rote eval "
+            "--run --runtime skill --replay`: both sides then run against the recorded "
+            "tool responses, and every write either side proposes is captured, never sent."
+        ),
+    )
+    replay_sub = replay.add_subparsers(dest="replay_command", required=True)
+    prepare = replay_sub.add_parser(
+        "prepare",
+        help="Write a reviewable replay case from a recorded run",
+        description=(
+            "Write <out>/fidelity/cases.yaml and <out>/mcp-tools.json from a `rote "
+            "baseline` recording: the recorded input, each recorded read as a fixture "
+            "answering that exact call, each tool's schema and whether it writes, and the "
+            "fields to compare (the compiled pipeline's exit outputs). No response is "
+            "invented: a write has none, so a replay that needed one ends incomplete."
+        ),
+    )
+    prepare.add_argument("skill_path", help="the source skill directory")
+    prepare.add_argument("--baseline", required=True, help="a `rote baseline --out` dir")
+    prepare.add_argument(
+        "--compiled", required=True, help="the compiled output: a pipeline.yaml or its dir"
+    )
+    prepare.add_argument("--out", required=True, help="where to write the replay case")
+    prepare.add_argument(
+        "--gates",
+        default=None,
+        metavar="FILE",
+        help="a JSON list of the person's answers, one per gate in the order asked",
+    )
+    prepare.set_defaults(func=_cmd_replay_prepare)
 
     # rote baseline
     baseline = subparsers.add_parser(

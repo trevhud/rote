@@ -107,7 +107,24 @@ class FixtureTool(Tool):
             raise ValueError(f"no fixture response for {self.name} with arguments {arguments}")
         result = chosen.get("result")
         text = result if isinstance(result, str) else json.dumps(result)
-        return ToolResult(content=[TextContent(type="text", text=text)])
+        content = [TextContent(type="text", text=text)]
+        if not self.output_schema:
+            return ToolResult(content=content)
+        # The real tool declared an output schema, so its client validates a
+        # structured result against it and, under fastmcp's wrap flag, unwraps
+        # `{"result": ...}`: answer the way it did.
+        value: Any = result
+        if isinstance(result, str):
+            try:
+                value = json.loads(result)
+            except json.JSONDecodeError:
+                value = result
+        wraps = bool(self.output_schema.get("x-fastmcp-wrap-result"))
+        if wraps and not (isinstance(value, dict) and set(value) == {"result"}):
+            value = {"result": value}
+        if not isinstance(value, dict):
+            return ToolResult(content=content)  # structured content is an object
+        return ToolResult(content=content, structured_content=value)
 
 
 def build_server(spec: dict[str, Any], log_path: Path) -> FastMCP:
@@ -118,6 +135,7 @@ def build_server(spec: dict[str, Any], log_path: Path) -> FastMCP:
                 name=name,
                 description=tool.get("description", ""),
                 parameters=tool.get("parameters") or {"type": "object", "properties": {}},
+                output_schema=tool.get("output_schema"),
                 responses=list(tool.get("responses") or []),
                 log_path=str(log_path),
                 server_name=spec["server"],

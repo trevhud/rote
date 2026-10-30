@@ -335,6 +335,9 @@ class Subject:
     #: A bench case: fixture servers and a recorded reference to score against.
     casefile: CaseFile | None = None
     case: Case | None = None
+    #: The case is a replay of a recorded run (:mod:`rote.replay`): writes are
+    #: captured, and a call with no recorded response makes a trial incomplete.
+    replay: bool = False
     #: The bundled demo's reference (docs-digest), scored against the same way.
     reference: demo.Reference | None = None
     #: Live servers both sides call: ``{name: url}``, registered read-only,
@@ -484,6 +487,7 @@ def subject_for(
     task: Any = None,
     case_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    cases_dir: Path | None = None,
 ) -> Subject:
     """What both sides run on: a bench case (``case_id``), or ``task`` (an
     input payload, or the ``{"input", "signals"}`` envelope ``rote eval --run``
@@ -501,7 +505,7 @@ def subject_for(
     gated: dict[str, GatedServer] = {}
     original_only: str | None = None
     if case_id is not None:
-        casefile, case = bench_case(skill_dir, case_id)
+        casefile, case = bench_case(skill_dir, case_id, cases_dir)
         _mapped, unknown = map_servers(pipeline, casefile)
         if unknown:
             raise SkillAbError(
@@ -558,6 +562,7 @@ def subject_for(
         live_servers=live,
         gated=gated,
         provenance=dict(provenance or given_provenance(pipeline_yaml)),
+        replay=cases_dir is not None,
     )
 
 
@@ -594,11 +599,18 @@ def given_provenance(pipeline_yaml: Path) -> dict[str, Any]:
     return record
 
 
-def bench_case(skill_dir: Path, case_id: str) -> tuple[CaseFile, Case]:
-    """A bench case from the example the skill sits in (``<example>/skill``)."""
+def bench_case(
+    skill_dir: Path, case_id: str, cases_dir: Path | None = None
+) -> tuple[CaseFile, Case]:
+    """A bench case from the example the skill sits in (``<example>/skill``),
+    or from a replay dir (``cases_dir``, :mod:`rote.replay`).
+
+    An example's case is read-only. A replay may hold write tools: its
+    fixture servers log the write each side proposes and answer it with an
+    error, never forwarding it (:mod:`rote.bench.fixture_mcp`)."""
     from rote.bench.fidelity import load_cases
 
-    example_dir = skill_dir.resolve().parent
+    example_dir = cases_dir.resolve() if cases_dir is not None else skill_dir.resolve().parent
     try:
         casefile = load_cases(example_dir)
     except FileNotFoundError:
@@ -607,13 +619,14 @@ def bench_case(skill_dir: Path, case_id: str) -> tuple[CaseFile, Case]:
     if case is None:
         ids = ", ".join(c.id for c in casefile.cases)
         raise SkillAbError(f"--case {case_id}: no such case in {example_dir} (it has: {ids})")
-    for server in casefile.servers.values():
-        writes = [t for t, spec in server["tools"].items() if spec.get("side_effect")]
-        if writes:
-            raise SkillAbError(
-                f"--case {case_id}: fixture tools {', '.join(writes)} write, and the eval is "
-                "read-only"
-            )
+    if cases_dir is None:
+        for server in casefile.servers.values():
+            writes = [t for t, spec in server["tools"].items() if spec.get("side_effect")]
+            if writes:
+                raise SkillAbError(
+                    f"--case {case_id}: fixture tools {', '.join(writes)} write, and the eval "
+                    "is read-only"
+                )
     return casefile, case
 
 
@@ -806,12 +819,19 @@ class Trial:
     portable_calls: tuple[dict[str, Any], ...]
     driver: DriverEvidence | None
     work_dir: Path
+    #: Writes the trial proposed, in order: ``{server, tool, arguments,
+    #: answered}``. A fixture server never forwards one.
+    writes: tuple[dict[str, Any], ...] = ()
+    #: Replay only: what the recording could not answer, so the trial did
+    #: not run as recorded from that call on.
+    incomplete: tuple[str, ...] = ()
 
     @property
     def problems(self) -> tuple[str, ...]:
         found = list(self.driver.problems) if self.driver is not None else []
         if self.error:
             found.insert(0, self.error)
+        found += [f"incomplete: {why}" for why in self.incomplete]
         return tuple(found)
 
     @property
@@ -828,6 +848,8 @@ class Trial:
             "error": self.error,
             "denied_tools": list(self.denied_tools),
             "calls": list(self.calls),
+            "writes": list(self.writes),
+            "incomplete": list(self.incomplete),
             "driver": None if self.driver is None else self.driver.to_dict(),
             "problems": list(self.problems),
             "output": self.output,
@@ -1127,6 +1149,31 @@ def run_trial(
         )
     from rote.bench.fidelity import _portable_call
 
+    writes = tuple(
+        {
+            "server": c.get("server"),
+            "tool": c.get("tool"),
+            "arguments": c.get("arguments"),
+            "answered": bool(c.get("matched")),
+        }
+        for c in calls
+        if c.get("side_effect")
+    )
+    incomplete: tuple[str, ...] = ()
+    if subject.replay:
+        incomplete = tuple(
+            dict.fromkeys(
+                (
+                    f"{c.get('server')}.{c.get('tool')} proposed a write the recording has no "
+                    "response for"
+                    if c.get("side_effect")
+                    else f"{c.get('server')}.{c.get('tool')} was called with arguments the "
+                    "recording never saw"
+                )
+                for c in calls
+                if not c.get("matched")
+            )
+        )
     trial = Trial(
         side=side,
         index=index,
@@ -1140,6 +1187,8 @@ def run_trial(
         portable_calls=tuple(_portable_call(c) for c in calls),
         driver=driver,
         work_dir=work,
+        writes=writes,
+        incomplete=incomplete,
     )
     cost = "n/a" if usage.cost_usd is None else f"${usage.cost_usd:.3f}"
     status = "ok" if trial.ok else "; ".join(trial.problems)[:160]
@@ -1155,8 +1204,15 @@ def run_trial(
 
 def bench_score(subject: Subject, trial: Trial) -> float | None:
     """The trial's ``rote bench --fidelity`` score against the case's
-    committed reference, the number the earlier round reported."""
-    if subject.casefile is None or subject.case is None or not isinstance(trial.output, dict):
+    committed reference, the number the earlier round reported. A replay has
+    no committed reference: the recording it replays is its reference, and
+    the pairs compare both sides directly."""
+    if (
+        subject.replay
+        or subject.casefile is None
+        or subject.case is None
+        or not isinstance(trial.output, dict)
+    ):
         return None
     from rote.bench.fidelity import load_reference
     from rote.bench.fidelity_score import score_case, stable_reference
@@ -1380,12 +1436,61 @@ def render_markdown(reports: Sequence[SubjectReport], *, model: str, spent: floa
                     )
         if report.stopped:
             lines.append(f"- {report.subject.label}: stopped early: {report.stopped}")
+        if report.subject.replay:
+            lines += _replay_lines(report)
     if clean:
         lines.append(
             "- every compiled trial ran through the driver, and every gate was answered "
             "by the person"
         )
     return "\n".join(lines) + "\n"
+
+
+def _write_key(write: Mapping[str, Any]) -> str:
+    return json.dumps([write["server"], write["tool"], write["arguments"]], sort_keys=True)
+
+
+def _replay_lines(report: SubjectReport) -> list[str]:
+    """A replay's proposed writes, side by side per pair, and its timing caveat."""
+    lines = [
+        f"- {report.subject.label}: replayed against recorded responses; wall times are "
+        "against local fixture servers, not live service latency"
+    ]
+    originals = report.sides["original"].trials
+    compiled = report.sides["compiled"].trials
+    for i, (o, c) in enumerate(zip(originals, compiled, strict=False), 1):
+        if not o.writes and not c.writes:
+            lines.append(f"- {report.subject.label} pair {i}: neither side proposed a write")
+            continue
+        # What each side asked to write, and how often: a compiled step that
+        # retries a failed write proposes the same call again, which is a
+        # difference in how often, not in what.
+        same_calls = set(map(_write_key, o.writes)) == set(map(_write_key, c.writes))
+        same_counts = sorted(map(_write_key, o.writes)) == sorted(map(_write_key, c.writes))
+        verdict = (
+            "agree"
+            if same_counts
+            else "agree on what to write, not how often"
+            if same_calls
+            else "differ"
+        )
+        lines.append(
+            f"- {report.subject.label} pair {i}: proposed writes {verdict} "
+            f"(original {len(o.writes)}, compiled {len(c.writes)}; none sent)"
+        )
+        if same_counts:
+            continue
+        for side, trial in (("original", o), ("compiled", c)):
+            counts: dict[str, int] = {}
+            for w in trial.writes:
+                counts[_write_key(w)] = counts.get(_write_key(w), 0) + 1
+            for key, n in counts.items():
+                server, tool, arguments = json.loads(key)
+                times = f" x{n}" if n > 1 else ""
+                lines.append(
+                    f"  - {side}: {server}.{tool} {json.dumps(arguments, sort_keys=True)}{times}"
+                )
+    return lines
 
 
 def corpus_record(report: SubjectReport, *, model: str, generated_at: str) -> dict[str, Any]:
