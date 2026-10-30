@@ -189,16 +189,18 @@ class Usage:
     #: None when no final usage arrived (stream placeholders are not output).
     output: int | None
     #: Model requests (distinct assistant message ids): ``T`` in §6's formula.
-    requests: int
+    #: None when the CLI does not report them (Codex).
+    requests: int | None
     #: Each request's input, all buckets, in order.
     per_request_input: tuple[int, ...]
     #: The CLI's ``num_turns``.
     num_turns: int | None
     #: ``total_cost_usd``: Claude Code's client-side estimate.
     cost_usd: float | None
-    source: Literal["modelUsage", "usage", "stream"]
-    #: The first request read the prompt cache: the run started warm.
-    warm_start: bool
+    source: Literal["modelUsage", "usage", "stream", "codex"]
+    #: The first request read the prompt cache: the run started warm. None
+    #: when the CLI reports only totals (Codex).
+    warm_start: bool | None
     #: Every tool the agent called, in order (``mcp__server__tool``, ``Bash``...).
     tools_used: tuple[str, ...] = ()
 
@@ -218,7 +220,11 @@ class Usage:
             "num_turns": self.num_turns,
             "cost_usd": self.cost_usd,
             "usage_source": self.source,
-            "cache": "warm" if self.warm_start else "cold",
+            "cache": "unknown"
+            if self.warm_start is None
+            else "warm"
+            if self.warm_start
+            else "cold",
             "tools_used": list(self.tools_used),
         }
 
@@ -769,16 +775,28 @@ class ProcessResult:
 
 
 #: Runs ``claude``: ``(argv, cwd, env, timeout) -> ProcessResult``. Injected by tests.
-ClaudeRunner = Callable[[list[str], Path, dict[str, str], float], ProcessResult]
+ClaudeRunner = Callable[..., ProcessResult]
+"""``(argv, cwd, env, timeout[, stdin])`` -> the trial's process result."""
 
 
-def run_claude(argv: list[str], cwd: Path, env: dict[str, str], timeout: float) -> ProcessResult:
+def run_claude(
+    argv: list[str], cwd: Path, env: dict[str, str], timeout: float, stdin: str | None = None
+) -> ProcessResult:
+    """Run one trial's CLI. ``stdin`` is its prompt when the CLI reads one
+    there (``codex exec -``); otherwise stdin is closed, since ``codex exec``
+    waits on an open stdin for more input."""
     started = time.monotonic()
     proc = subprocess.Popen(
-        argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=stdin, timeout=timeout)
         timed_out = False
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -962,9 +980,14 @@ class Harness:
     """Where trials run and how: shared by every trial of one eval."""
 
     work: Path
-    model: str
+    #: None runs the CLI's own default model (Codex's, when ``agent`` is codex).
+    model: str | None
     ledger: Ledger
     executable: str = "claude"
+    #: Which CLI runs both sides: ``claude`` or ``codex`` (:mod:`rote.eval.codex_lane`).
+    agent: str = "claude"
+    #: The ``codex`` binary for the codex agent; None finds it on PATH.
+    codex_binary: Path | None = None
     max_turns: int = DEFAULT_MAX_TURNS
     timeout_seconds: float = TRIAL_TIMEOUT_SECONDS
     runner: ClaudeRunner = run_claude
@@ -1017,7 +1040,8 @@ def run_trial(
     """One side, once (or its control run). The ledger is checked first."""
     kind = f"{subject.name}:{side}:{'control' if control else 'trial'}"
     default = harness.control_estimate_usd if control else harness.trial_estimate_usd
-    harness.ledger.check(kind, default)
+    if harness.agent != "codex":
+        harness.ledger.check(kind, default)
     label = f"{subject.label} {side} {'control' if control else f'#{index}'}"
     work = Path(tempfile.mkdtemp(prefix=f"{subject.name}-{side}-", dir=harness.work))
     cwd = work / "cwd"
@@ -1067,33 +1091,57 @@ def run_trial(
                 if part
             )
             prompt = _skill_prompt(skill_dir, subject.input, list(subject.contract), extra or None)
-        argv = [
-            harness.executable,
-            "-p",
-            prompt,
-            "--model",
-            harness.model,
-            "--add-dir",
-            str(skill_dir),
-            *skill_run_isolation_args(
-                work, skill_dir, mcp, allowed, denied_mcp_tools=denied, extra_tools=("Bash",)
-            ),
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--max-turns",
-            str(1 if control else harness.max_turns),
-        ]
-        (work / "argv.json").write_text(json.dumps(argv[3:], indent=1), encoding="utf-8")
         harness.log(
             f"{harness.caller}: {label}: running (spent ${harness.ledger.spent:.3f} so far)"
         )
-        proc = harness.runner(argv, cwd, env, harness.timeout_seconds)
-        calls = _read_calls(log)
+        if harness.agent == "codex":
+            from rote.eval import codex_lane
+
+            # The same gate, translated: the skill dir and the run folder read,
+            # the read-only MCP allowlist, and ``rote skill run <name>`` the one
+            # thing that leaves the sandbox (as a tool; see codex_lane). Codex
+            # has no turn cap.
+            with codex_lane.prepared(
+                work / "codex",
+                workdir=cwd,
+                mcp_servers=mcp,
+                allowed=[*skill_run_file_rules(skill_dir), *allowed],
+                model=harness.model,
+                base_env=env,
+                binary=harness.codex_binary,
+            ) as run:
+                (work / "argv.json").write_text(json.dumps(run.argv[1:], indent=1), "utf-8")
+                stdin = f"{prompt}\n\n{run.note}" if run.note else prompt
+                proc = harness.runner(run.argv, cwd, run.env, harness.timeout_seconds, stdin)
+            calls = _read_calls(log)
+        else:
+            argv = [
+                harness.executable,
+                "-p",
+                prompt,
+                *(["--model", harness.model] if harness.model else []),
+                "--add-dir",
+                str(skill_dir),
+                *skill_run_isolation_args(
+                    work, skill_dir, mcp, allowed, denied_mcp_tools=denied, extra_tools=("Bash",)
+                ),
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--max-turns",
+                str(1 if control else harness.max_turns),
+            ]
+            (work / "argv.json").write_text(json.dumps(argv[3:], indent=1), encoding="utf-8")
+            proc = harness.runner(argv, cwd, env, harness.timeout_seconds)
+            calls = _read_calls(log)
     (work / "stream.jsonl").write_text("\n".join(proc.lines) + "\n", encoding="utf-8")
     (work / "stderr.txt").write_text(proc.stderr, encoding="utf-8")
-    usage, envelope = parse_stream(proc.lines)
-    harness.ledger.record(kind, label, usage.cost_usd, default)
+    if harness.agent == "codex":
+        usage, envelope = codex_usage(proc.lines)
+    else:
+        usage, envelope = parse_stream(proc.lines)
+        # Only a claude run has dollars to record: a Codex run is on the plan.
+        harness.ledger.record(kind, label, usage.cost_usd, default)
 
     output: Any = None
     error: str | None = None
@@ -1106,12 +1154,12 @@ def run_trial(
     if proc.timed_out:
         error = f"timed out after {harness.timeout_seconds:g}s"
     elif envelope.get("is_error"):
-        error = f"claude reported an error: {str(envelope.get('result'))[:200]}"
+        error = f"{harness.agent} reported an error: {str(envelope.get('result'))[:200]}"
     elif not control and output is None and error is None:
         error = (
             f"the agent wrote no {RESULT_FILENAME}"
             if proc.returncode == 0
-            else f"claude exited {proc.returncode}: {failure_excerpt(proc.stderr)}"
+            else f"{harness.agent} exited {proc.returncode}: {failure_excerpt(proc.stderr)}"
         )
     driver = None
     if side == "compiled" and not control:
@@ -1145,7 +1193,8 @@ def run_trial(
     status = "ok" if trial.ok else "; ".join(trial.problems)[:160]
     harness.log(
         f"{harness.caller}: {label}: {status}, {proc.wall_seconds:.1f} s, "
-        f"{usage.requests} request(s), {cost} (spent ${harness.ledger.spent:.3f})"
+        f"{'?' if usage.requests is None else usage.requests} request(s), {cost} "
+        f"(spent ${harness.ledger.spent:.3f})"
     )
     return trial
 
@@ -1182,6 +1231,42 @@ def vs_reference(subject: Subject, trial: Trial) -> proof.Comparison | None:
     )
 
 
+def codex_usage(lines: Sequence[str]) -> tuple[Usage, dict[str, Any]]:
+    """``(usage, envelope)`` from a ``codex exec --json`` run, in the shape
+    :func:`parse_stream` returns. Codex reports one cumulative total: what it
+    does not report (requests, per-request input, turns, a warm or cold start,
+    a dollar cost on a plan) is None or empty, never zero or a guess."""
+    from rote.eval import codex_lane
+
+    outcome = codex_lane.parse_events(lines)
+    buckets = outcome.usage or {}
+    tools = [*(f"mcp__{c['server']}__{c['tool']}" for c in outcome.calls)]
+    tools += ["shell"] * len(outcome.commands)
+    envelope: dict[str, Any] = {}
+    if outcome.failed:
+        envelope = {"is_error": True, "result": outcome.error}
+    elif outcome.usage is None:
+        # A run with no usage report has no figure: it fails the trial rather
+        # than entering the medians as zero tokens.
+        envelope = {"is_error": True, "result": outcome.error or "codex reported no usage"}
+    return (
+        Usage(
+            input=buckets.get("input_tokens", 0),
+            cache_write=buckets.get("cache_write_tokens", 0),
+            cache_read=buckets.get("cache_read_tokens", 0),
+            output=buckets.get("output_tokens"),
+            requests=None,
+            per_request_input=(),
+            num_turns=None,
+            cost_usd=None,
+            source="codex",
+            warm_start=None,
+            tools_used=tuple(tools),
+        ),
+        envelope,
+    )
+
+
 def _median(values: Sequence[float | int | None]) -> float | None:
     present = [float(v) for v in values if v is not None]
     return statistics.median(present) if present else None
@@ -1201,7 +1286,7 @@ class SideSummary:
 
     def context(self, trial: Trial) -> int | None:
         """``K = I - T*B``: what the skill itself put in context, over all turns."""
-        if self.base_per_request is None:
+        if self.base_per_request is None or trial.usage.requests is None:
             return None
         return trial.usage.total_input - trial.usage.requests * self.base_per_request
 
@@ -1286,7 +1371,10 @@ def run_subject(harness: Harness, subject: Subject, trials: int) -> SubjectRepor
     base: dict[Side, int | None] = {"original": None, "compiled": None}
     stopped: str | None = None
     try:
-        for side in SIDES:
+        # A control measures B, one request's input. Codex reports no requests,
+        # so B (and K) cannot be computed: its controls would spend plan usage
+        # for nothing.
+        for side in SIDES if harness.agent != "codex" else ():
             control = run_trial(harness, subject, side, 0, compiled_dir=compiled_dir, control=True)
             if control.usage.requests == 1 and control.usage.per_request_input:
                 base[side] = control.usage.per_request_input[0]
@@ -1326,13 +1414,24 @@ def _num(value: float | None, unit: str = "", digits: int = 0) -> str:
     return f"{value:.{digits}f}{unit}"
 
 
-def render_markdown(reports: Sequence[SubjectReport], *, model: str, spent: float) -> str:
+def render_markdown(
+    reports: Sequence[SubjectReport],
+    *,
+    model: str | None,
+    spent: float,
+    agent: str = "claude",
+) -> str:
     """The results table (medians per side), grouped by shape, and the checks."""
+    spent_note = (
+        "Spent: no dollar figure (Codex runs on the plan; requests, turns and K are not reported)."
+        if agent == "codex"
+        else f"Spent: ${spent:.3f}."
+    )
     lines = [
-        f"Model: {model}. Medians over the trials that passed every check. Input counts "
-        "every cache bucket. K is what the skill put in context (I - T*B, B from a "
-        "control run per side). Fields: original trial i against compiled trial i; "
-        f"noise: the original against itself. Spent: ${spent:.3f}.",
+        f"Agent: {agent}. Model: {model or 'the CLI default'}. Medians over the trials "
+        "that passed every check. Input counts every cache bucket. K is what the skill "
+        "put in context (I - T*B, B from a control run per side). Fields: original "
+        f"trial i against compiled trial i; noise: the original against itself. {spent_note}",
         "",
     ]
     for shape in ("compute-heavy", "tool-and-copy"):
@@ -1388,10 +1487,13 @@ def render_markdown(reports: Sequence[SubjectReport], *, model: str, spent: floa
     return "\n".join(lines) + "\n"
 
 
-def corpus_record(report: SubjectReport, *, model: str, generated_at: str) -> dict[str, Any]:
+def corpus_record(
+    report: SubjectReport, *, model: str | None, generated_at: str, agent: str = "claude"
+) -> dict[str, Any]:
     return {
         "kind": CORPUS_KIND,
         "generated_at": generated_at,
+        "agent": agent,
         "skill_model": model,
         **{k: v for k, v in report.to_dict().items() if k != "sides"},
         "sides": {
@@ -1417,12 +1519,20 @@ def append_corpus(records: Sequence[dict[str, Any]], path: Path | None = None) -
     return corpus
 
 
-def compile_argv(skill_dir: Path, work: Path, *, model: str | None) -> list[str]:
+def compile_argv(
+    skill_dir: Path, work: Path, *, model: str | None, agent: str = "claude"
+) -> list[str]:
     """The ``rote compile`` argv (without ``rote``) :func:`compile_for_eval`
     runs in ``work``: :func:`rote.proof.compile_command`, pinned, into
-    ``work/compile``, with the sample input at ``work/compile-input.json``."""
+    ``work/compile``, with the sample input at ``work/compile-input.json``.
+    ``agent`` compiles on the same CLI the trials run on."""
     return proof.compile_command(
-        skill_dir, work / "compile-input.json", work / "compile", runtime="skill", model=model
+        skill_dir,
+        work / "compile-input.json",
+        work / "compile",
+        runtime="skill",
+        model=model,
+        agent=agent,
     )
 
 
@@ -1436,6 +1546,7 @@ def compile_for_eval(
     log: Callable[[str], None],
     estimate_usd: float = DEFAULT_COMPILE_ESTIMATE_USD,
     caller: str = "rote eval",
+    agent: str = "claude",
 ) -> tuple[Path, dict[str, Any]]:
     """Compile ``skill_dir`` with :func:`compile_argv`, in its own isolated
     state. Returns the pipeline.yaml and what to record about the compile
@@ -1443,15 +1554,20 @@ def compile_for_eval(
     ledger assumes it costs before any compile has run."""
     from rote.bench.collect import decisions_cost_usd, read_compile_metrics
 
-    ledger.check("compile", estimate_usd)
+    if agent != "codex":  # a Codex compile is on the plan: no dollars to cap
+        ledger.check("compile", estimate_usd)
     input_path = work / "compile-input.json"
     input_path.write_text(json.dumps(input_payload, indent=2), encoding="utf-8")
     out_dir = work / "compile"
-    argv = compile_argv(skill_dir, work, model=model)
+    argv = compile_argv(skill_dir, work, model=model, agent=agent)
     log(f"{caller}: compiling: rote " + " ".join(argv))
     for setting in proof.pinned_settings():
         log(f"  {setting.flag[2:]}: {setting.value}, pinned by {caller} ({setting.why})")
     env = isolated_env(work / "compile-state")
+    if agent == "codex":
+        # The measurement runs on the plan: a key here would bill it, uncapped.
+        for key in ("CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"):
+            env.pop(key, None)
     started = time.monotonic()
     try:
         proc = subprocess.run(
@@ -1460,9 +1576,10 @@ def compile_for_eval(
     except BaseException:
         # Interrupted (Ctrl-C, a kill): the compile may have spent anything up
         # to now, so it is recorded at its estimate, never as free.
-        ledger.record(
-            "compile", f"compile {_skill_name(skill_dir)} (interrupted)", None, estimate_usd
-        )
+        if agent != "codex":
+            ledger.record(
+                "compile", f"compile {_skill_name(skill_dir)} (interrupted)", None, estimate_usd
+            )
         raise
     wall = time.monotonic() - started
     compiled = out_dir / "compiled"
@@ -1474,7 +1591,8 @@ def compile_for_eval(
         if not isinstance(agent_cost, (int, float)) or decisions is None
         else float(agent_cost) + decisions
     )
-    ledger.record("compile", f"compile {_skill_name(skill_dir)}", cost, estimate_usd)
+    if agent != "codex":
+        ledger.record("compile", f"compile {_skill_name(skill_dir)}", cost, estimate_usd)
     if proc.returncode != 0 or not (compiled / "pipeline.yaml").is_file():
         raise SkillAbError(
             f"rote compile exited {proc.returncode}: {failure_excerpt(proc.stderr, proc.stdout)}"

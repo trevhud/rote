@@ -58,6 +58,10 @@ def test_state_paths_names_every_state_override_the_source_reads() -> None:
 
 #: Functions that use the home dir only to shorten paths for display.
 _DISPLAY_ONLY_HOME = {("cli.py", "_cmd_config"), ("bench/runner.py", "_replacements")}
+#: Another tool's home, never rote state: the Codex lane finds the user's Codex
+#: login (``CODEX_HOME`` moves it, and the test session sets that) and hands
+#: the user's own home to rote's header helper inside a run's throwaway HOME.
+_OTHER_TOOLS_HOME = {("eval/codex_lane.py", "login_file"), ("eval/codex_lane.py", "prepared")}
 
 
 def _is_tilde(node: ast.expr) -> bool:
@@ -124,7 +128,10 @@ def _home_paths_without_an_override() -> list[str]:
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if not _touches_home(func) or (rel, func.name) in _DISPLAY_ONLY_HOME:
+            if (
+                not _touches_home(func)
+                or (rel, func.name) in _DISPLAY_ONLY_HOME | _OTHER_TOOLS_HOME
+            ):
                 continue
             reads = {n.value for n in ast.walk(func) if isinstance(n, ast.Constant)} | {
                 n.id for n in ast.walk(func) if isinstance(n, ast.Name)
