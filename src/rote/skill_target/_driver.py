@@ -1856,6 +1856,12 @@ class Driver:
             "--- STEP ---",
             step["description"],
         ]
+        if step.get("instructions"):
+            # The source skill's own text for this step: an exact query or
+            # procedure lives here, not in the one-line description (#336).
+            lines += ["--- WHAT THE SKILL SAYS FOR THIS STEP ---", step["instructions"]]
+        if step.get("contract"):
+            lines += ["--- WHAT THE ANSWER MUST HOLD (later steps read it) ---", step["contract"]]
         extra = []
         if fan is None:
             lines += [

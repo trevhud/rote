@@ -261,6 +261,13 @@ the Anthropic SDK client (see
     no step as a write, so every DO block says what a write is and to
     follow the client's approval. See
     [`docs/design/compiled-skill-target.md`](docs/design/compiled-skill-target.md).
+    A DO block shows the source SKILL.md section the node came from
+    (`source.section`, verbatim, capped) and the stub function's docstring as
+    the answer's contract (`adapters.skill.do_context`, #336): a one-line
+    description lost a reconciliation read's SQL and its six row columns. A
+    DO step with neither is a `do_handoff_thin` review gap, so a stub's
+    contract belongs in the function's docstring (the parallel path's
+    `external_stub` puts it there).
 - **What they do:** consume a validated `Pipeline` IR and write
   runtime-native code into an output directory
 - **Never run an agent loop.** Code emission is pure template

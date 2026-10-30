@@ -158,6 +158,9 @@ prompt does not say `--backend api`. Emit **contract-documented stubs** for the 
 calls: the function signature, a docstring stating the input/output
 contract as precisely as the skill text allows, and a
 `raise NotImplementedError("<which API, and why it is a stub>")` body.
+A compiled skill hands this stub to the agent that runs it, which does the
+step with its own tools, and shows it that docstring: name every field the
+steps after it read (the six columns a later check validates, not "rows").
 Do NOT write vendor API calls from memory — SDK and endpoint shapes
 drift faster than any model's training data, and a plausible-but-wrong
 implementation is worse than an honest stub because it fails at

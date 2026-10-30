@@ -9,6 +9,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A compiled skill's DO step says how to redo the step (#336).** When a
+  compiled skill hands an external read back to the agent, the DO block now
+  shows the source skill's own text for that step (an exact query lives
+  there) and the stub's contract (the fields the steps after it read).
+  Before, it showed a one-line description and a loose answer shape. A DO
+  step with neither is a review gap at compile time.
+
 ## [0.19.4] - 2026-10-29
 
 ### Fixed

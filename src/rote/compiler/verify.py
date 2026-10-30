@@ -629,6 +629,8 @@ def unused_input_questions(
 UNUSED_CONSTANT = "unused_constant"
 #: A System-1 decision the agent says is wrong, which rote did not apply.
 UNAPPLIED_PROPOSAL = "unapplied_proposal"
+#: A compiled skill's DO step that cannot tell the agent how to redo the step.
+DO_HANDOFF_THIN = "do_handoff_thin"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
@@ -642,8 +644,78 @@ REVIEW_GAP_KINDS = frozenset(
         GATE_PAYLOAD_NOT_SKILL_NOUNS,
         OPTIONAL_INPUT_REQUIRED,
         PASSTHROUGH_UNREAD,
+        DO_HANDOFF_THIN,
     }
 )
+
+
+def do_handoff_findings(
+    pipeline: Pipeline,
+    root: Path,
+    target: EmitTarget | None,
+    implementations: list[NodeImplementation],
+) -> list[ContractFinding]:
+    """Each DO step of a compiled skill whose block would not say how to redo it (#336).
+
+    A DO step is the agent redoing what the source skill did, from what the
+    block shows: the skill's text for the step (the node's ``source.section``)
+    and the stub's docstring, the contract its answer must meet for the steps
+    after it. One that has neither section nor contract hands the agent a
+    one-line description, and the compiled skill only looks usable. A review
+    gap, sent back to the agent: it can name the section and write the
+    contract, and no run fails for it.
+    """
+    if target is None or target.runtime != "skill" or target.skill_dir is None:
+        return []
+    from rote.adapters.skill import do_context
+    from rote.plan import PlanError, build_plan
+
+    skill_md = target.skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return []
+    try:
+        plan = build_plan(
+            pipeline,
+            mcp="live",
+            backend="api" if target.external_backend == "api" else "mcp",
+            implementations={i.node_id: i.status for i in implementations},
+        )
+    except PlanError:
+        return []  # the dry emit reports it
+    context = do_context(pipeline, skill_md, root)
+    findings: list[ContractFinding] = []
+    for step in plan["steps"]:
+        if step.get("kind") != "do":
+            continue
+        node = pipeline.node_by_id(step["id"])
+        have = context.get(node.id, {})
+        missing = []
+        if "instructions" not in have:
+            missing.append(
+                "the skill's text for it: set the node's `source.section` to the SKILL.md "
+                "heading the step comes from"
+            )
+        if "contract" not in have:
+            missing.append(
+                "its contract: give the stub a docstring saying what its answer must hold "
+                "(every field the steps after it read)"
+            )
+        if not missing:
+            continue
+        findings.append(
+            ContractFinding(
+                node_id=node.id,
+                kind=DO_HANDOFF_THIN,
+                severity="warning",
+                message=(
+                    f"{node.id} is a DO step (the agent does it with its own tools), and its "
+                    f"block would show only its description, so the agent cannot redo the "
+                    f"step the way the skill does it. It needs {' and '.join(missing)}"
+                ),
+                path=node.impl,
+            )
+        )
+    return findings
 
 
 def unapplied_proposal_findings(root: Path) -> list[ContractFinding]:
@@ -1324,6 +1396,7 @@ def _verify(
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
     findings += unapplied_proposal_findings(root)
+    findings += do_handoff_findings(pipeline, root, emit_target, implementations)
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not

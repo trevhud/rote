@@ -594,6 +594,66 @@ def emitted_skill(output_dir: str | Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
+#: The most of a skill section a DO block carries. A step's section is a few
+#: paragraphs; a longer one is cut, and says so, rather than flooding the block.
+MAX_DO_INSTRUCTIONS = 6000
+
+
+def do_context(
+    pipeline: Pipeline, skill_md: Path, source_dir: Path | None
+) -> dict[str, dict[str, str]]:
+    """What each external call hands the agent if it becomes a DO step (#336).
+
+    A DO step is the agent doing what the source skill did, so it gets the
+    skill's own text for the step (``node.source.section`` of the vouched
+    SKILL.md, verbatim: an exact query lives there) and the stub's docstring,
+    the contract its answer must meet for the steps after it. Before this the
+    block carried a one-line description and a loose answer shape, and a
+    reconciliation read lost its SQL and the six row columns its consumer
+    validates.
+    """
+    import ast
+
+    from rote.adapters._py_common import resolve_extracted_source
+    from rote.skill_source import parse_sections
+
+    sections = parse_sections(skill_md.read_text(encoding="utf-8"))
+    context: dict[str, dict[str, str]] = {}
+    for node in pipeline.nodes:
+        if node.kind is not NodeKind.EXTERNAL_CALL:
+            continue
+        entry: dict[str, str] = {}
+        text = sections.get(node.source.section, "").strip() if node.source else ""
+        if text:
+            if len(text) > MAX_DO_INSTRUCTIONS:
+                text = (
+                    text[:MAX_DO_INSTRUCTIONS] + "\n[... cut: the rest is in the skill's SKILL.md]"
+                )
+            entry["instructions"] = text
+        if node.impl:
+            module, _, symbol = node.impl.partition(":")
+            source = resolve_extracted_source(source_dir, Path(module).stem)
+            try:
+                tree = ast.parse(source) if source else None
+            except SyntaxError:
+                tree = None
+            fn = next(
+                (
+                    stmt
+                    for stmt in (tree.body if tree else [])
+                    if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and stmt.name == symbol
+                ),
+                None,
+            )
+            doc = ast.get_docstring(fn) if fn is not None else None
+            if doc:
+                entry["contract"] = doc.strip()
+        if entry:
+            context[node.id] = entry
+    return context
+
+
 class SkillAdapter:
     """Emit a compiled skill from a :class:`rote.ir.Pipeline`."""
 
@@ -605,7 +665,10 @@ class SkillAdapter:
             )
 
     def _plan(
-        self, pipeline: Pipeline, implementations: dict[str, ImplStatus] | None = None
+        self,
+        pipeline: Pipeline,
+        implementations: dict[str, ImplStatus] | None = None,
+        do_context: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         from rote.skill_target._driver import unrunnable_step
 
@@ -617,6 +680,7 @@ class SkillAdapter:
                 backend=cfg.external_backend,
                 judges=cfg.judges,
                 implementations=dict(implementations or {}),
+                do_context=do_context,
             )
         except PlanError as e:
             raise PlanError(f"the skill runtime cannot run this pipeline: {e}") from e
@@ -718,7 +782,11 @@ class SkillAdapter:
         )
         writer = EmitWriter(output_dir)
         scripts = writer.scoped("scripts")
-        plan = self._plan(pipeline, self._implementations(pipeline, scripts))
+        plan = self._plan(
+            pipeline,
+            self._implementations(pipeline, scripts),
+            do_context(pipeline, identity.skill_md, cfg.extracted_source_dir),
+        )
         agent = agent_steps(plan)
         require_constant_parameters(pipeline, scripts, cfg.extracted_source_dir, agent)
         stubs = [] if cfg.allow_stubs else self._stubs(pipeline, scripts, agent)
