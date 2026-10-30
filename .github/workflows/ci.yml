@@ -35,7 +35,7 @@ jobs:
       # run. A pip install resolved the newest versions on every run,
       # so the lockfile was never tested (newest-deps.yml covers that
       # drift on purpose). setup-uv activates .venv for later steps.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: ${{ matrix.python-version }}
           activate-environment: true
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v7
 
       # The locked environment, as in the test job.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: "3.12"
           activate-environment: true
@@ -96,7 +96,7 @@ jobs:
       - uses: ./.github/actions/disk-tmp
 
       # The locked environment, as in the test job.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: "3.12"
           activate-environment: true
@@ -167,7 +167,7 @@ jobs:
       - uses: ./.github/actions/disk-tmp
 
       # The locked environment, as in the test job.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: "3.12"
           activate-environment: true
@@ -237,7 +237,7 @@ jobs:
       - uses: ./.github/actions/disk-tmp
 
       # The locked environment, as in the test job.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: "3.12"
           activate-environment: true
