@@ -341,6 +341,10 @@ class MeasuredRun:
     #: Skill side: tools the run reached for and the gate refused
     #: (Claude Code's ``permission_denials``), one entry per refusal.
     denied_tools: tuple[str, ...] = ()
+    #: Skill side: which CLI ran the skill (``claude`` or ``codex``). A
+    #: Codex run is on the user's plan, so it has no dollar figure: its
+    #: ``cost_usd`` stays None, never zero.
+    agent: str = "claude"
 
     @property
     def succeeded(self) -> bool:
@@ -451,7 +455,7 @@ def run_skill_trial(
     skill_dir: str | Path,
     input_payload: dict[str, Any],
     *,
-    model: str,
+    model: str | None,
     max_turns: int = 60,
     executable: str = "claude",
     timeout_seconds: float = 1800.0,
@@ -459,8 +463,14 @@ def run_skill_trial(
     mcp_servers: dict[str, dict[str, Any]] | None = None,
     missing_mcp_servers: list[str] | None = None,
     min_expected_turns: int | None = None,
+    agent: str = "claude",
 ) -> MeasuredRun:
     """Run the raw skill once under ``claude -p`` and measure it.
+
+    With ``agent="codex"`` it runs under ``codex exec`` on the user's Codex
+    login instead, through the baseline's Codex trial
+    (:func:`rote.eval.baseline._codex_trial`), with the same servers wired and
+    the same wholesale allowlist.
 
     Billing follows the ClaudeDriver rules: API-key env vars are
     scrubbed so the run uses the subscription OAuth session, and the
@@ -479,6 +489,25 @@ def run_skill_trial(
     skill_path = Path(skill_dir).resolve()
     if not (skill_path / "SKILL.md").is_file():
         raise EmpiricalError(f"{skill_path} does not contain a SKILL.md")
+    if agent == "codex":
+        from rote.eval.baseline import _codex_trial
+
+        run, _, _ = _codex_trial(
+            skill_path,
+            _skill_prompt(skill_path, input_payload, output_fields),
+            model=model or None,
+            mcp_tool_ids=[f"mcp__{name}__*" for name in sorted(mcp_servers or {})],
+            mcp_servers=dict(mcp_servers or {}),
+            servers_skipped={
+                name: "the pipeline binds it, and no endpoint resolves"
+                for name in missing_mcp_servers or ()
+            },
+            timeout_seconds=timeout_seconds,
+            min_expected_turns=min_expected_turns,
+        )
+        return run
+    if agent != "claude":
+        raise EmpiricalError(f"no skill-run lane named {agent!r} (claude or codex)")
     if shutil.which(executable) is None:
         raise EmpiricalError(
             f"`{executable}` CLI not found — install Claude Code or pass a different executable"
@@ -491,8 +520,7 @@ def run_skill_trial(
             executable,
             "-p",
             prompt,
-            "--model",
-            model,
+            *(["--model", model] if model else []),
             "--add-dir",
             str(skill_path),
             *skill_run_isolation_args(
@@ -966,6 +994,8 @@ def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
         "flags": list(r.flags),
         "missing_mcp_servers": dict(r.missing_mcp_servers),
         "denied_tools": list(r.denied_tools),
+        "agent": r.agent,
+        "model": r.model,
     }
 
 

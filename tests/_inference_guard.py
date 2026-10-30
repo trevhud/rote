@@ -135,6 +135,9 @@ def isolate(environ: MutableMapping[str, str], state_dir: Path) -> None:
     environ.update(_uv_dirs(environ))
     for var, rel in XDG_DIRS.items():
         environ[var] = str(state_dir / rel)
+    # The Codex skill-run lane links the user's Codex login into each run: a
+    # test must never find the real one, so Codex's home is an empty dir.
+    environ["CODEX_HOME"] = str(state_dir / "codex-home")
     environ["PATH"] = scrub_path(environ.get("PATH", ""), state_dir / _MIRRORS)
 
 

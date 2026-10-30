@@ -3842,7 +3842,12 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
 
 
 def _resolve_baseline_input(
-    skill_path: Path, input_arg: str | None, *, assume_yes: bool, out_dir: Path
+    skill_path: Path,
+    input_arg: str | None,
+    *,
+    assume_yes: bool,
+    out_dir: Path,
+    agent: str = "claude",
 ) -> dict[str, Any] | None:
     """The baseline's task payload: from ``--input``, or derived + confirmed.
 
@@ -3878,7 +3883,7 @@ def _resolve_baseline_input(
         "no --input given — deriving a representative task from SKILL.md (cheap single-shot call)…",
         file=sys.stderr,
     )
-    derived = derive_input_payload(skill_path)
+    derived = derive_input_payload(skill_path, agent=agent)
     derived_path = out_dir / BASELINE_DIRNAME / DERIVED_INPUT_FILENAME
     derived_path.parent.mkdir(parents=True, exist_ok=True)
     derived_path.write_text(json.dumps(derived, indent=2) + "\n", encoding="utf-8")
@@ -3920,9 +3925,10 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     if not skill_path.is_dir():
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
+    agent = args.agent
     try:
         maybe_payload = _resolve_baseline_input(
-            skill_path, args.input, assume_yes=args.yes, out_dir=Path(args.out)
+            skill_path, args.input, assume_yes=args.yes, out_dir=Path(args.out), agent=agent
         )
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -3939,10 +3945,13 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
             skill_path,
             input_payload,
             args.out,
-            model=args.model or DEFAULT_MODEL,
+            # Codex runs its own default model unless one is named: a Claude
+            # default would be an unknown model there.
+            model=args.model or (DEFAULT_MODEL if agent == "claude" else None),
             trials=args.trials,
             allow_writes=args.allow_writes,
             max_turns=args.max_turns,
+            agent=agent,
         )
     except EmpiricalError as e:
         print(f"rote baseline: {e}", file=sys.stderr)
@@ -4883,6 +4892,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
 
     from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval import skill_ab
+    from rote.eval.codex_lane import codex_binary
     from rote.eval.empirical import EmpiricalError
 
     if args.trials < 1:
@@ -4902,11 +4912,12 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
     if pipeline_only:
         print(
             f"error: {', '.join(pipeline_only)} do not apply to --run --runtime skill: both "
-            "sides run as claude -p agents",
+            "sides run as agents",
             file=sys.stderr,
         )
         return 2
-    if args.budget is None:
+    agent = getattr(args, "agent", "claude")
+    if args.budget is None and agent == "claude":
         print(
             "error: --run --runtime skill needs --budget USD: every trial is a paid "
             "claude -p run, and the eval stops before the one that would cross it",
@@ -4920,19 +4931,26 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    model = args.model or DEFAULT_MODEL
+    # Codex runs its own default model unless one is named.
+    model = args.model or (DEFAULT_MODEL if agent == "claude" else None)
     work = (
         Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="rote-skill-ab-"))
     ).resolve()
     work.mkdir(parents=True, exist_ok=True)
+    # A Codex run is on the user's plan: no dollars to cap unless asked.
     ledger = skill_ab.Ledger(
-        Path(args.ledger) if args.ledger else work / "ledger.json", float(args.budget)
+        Path(args.ledger) if args.ledger else work / "ledger.json",
+        float(args.budget) if args.budget is not None else float("inf"),
     )
     print(f"rote eval: work dir {work}; ledger {ledger.path}", file=sys.stderr)
     log = lambda line: print(line, file=sys.stderr)  # noqa: E731
     target = Path(args.target)
     try:
-        executable = skill_ab.require_executable("claude")
+        executable = (
+            skill_ab.require_executable("claude")
+            if agent == "claude"
+            else str(codex_binary())  # raises with the install hint when missing
+        )
         task = json.loads(Path(args.input).read_text(encoding="utf-8")) if args.input else None
         provenance: dict[str, object] | None = None
         if (target / "SKILL.md").is_file():
@@ -4947,7 +4965,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             if not isinstance(sample, dict):
                 raise skill_ab.SkillAbError("the input must be a JSON object")
             pipeline_yaml, provenance = skill_ab.compile_for_eval(
-                skill_dir, sample, work, ledger, model=args.compile_model, log=log
+                skill_dir, sample, work, ledger, model=args.compile_model, log=log, agent=agent
             )
         else:
             found = _resolve_pipeline_yaml(target)
@@ -4979,6 +4997,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             executable=executable,
             max_turns=args.max_turns,
             log=log,
+            agent=agent,
         )
         report = skill_ab.run_subject(harness, subject, args.trials)
     except skill_ab.BudgetExhausted as e:
@@ -4989,16 +5008,18 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
         return 1
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     corpus = skill_ab.append_corpus(
-        [skill_ab.corpus_record(report, model=model, generated_at=generated_at)]
+        [skill_ab.corpus_record(report, model=model, generated_at=generated_at, agent=agent)]
     )
     print(f"rote eval: measurements appended to {corpus}", file=sys.stderr)
     if args.json:
         rendered = json.dumps(
             {
                 "generated_at": generated_at,
+                "agent": agent,
                 "model": model,
-                "spent_usd": ledger.spent,
-                "budget_usd": ledger.cap_usd,
+                # A Codex run is on the plan: no dollars, and no cap unless one was set.
+                "spent_usd": None if agent == "codex" else ledger.spent,
+                "budget_usd": args.budget if agent == "codex" else ledger.cap_usd,
                 "work_dir": str(work),
                 **report.to_dict(),
             },
@@ -5006,7 +5027,7 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
             default=str,
         )
     else:
-        rendered = skill_ab.render_markdown([report], model=model, spent=ledger.spent)
+        rendered = skill_ab.render_markdown([report], model=model, spent=ledger.spent, agent=agent)
     if args.out:
         Path(args.out).write_text(rendered + ("\n" if args.json else ""), encoding="utf-8")
         print(f"rote eval: wrote {args.out}", file=sys.stderr)
@@ -5196,7 +5217,14 @@ def _run_empirical(
     sample = catalog.sample(provider=args.provider)
     # Default the agent to the mid tier — the realistic "run it as a
     # skill" model — resolved from the live lineup, never hardcoded.
-    skill_model = args.model or (sample[1].model_id if len(sample) > 1 else sample[0].model_id)
+    agent = getattr(args, "agent", "claude")
+    skill_model = args.model or (
+        None
+        if agent == "codex"  # Codex's own default: a Claude model id is unknown there
+        else sample[1].model_id
+        if len(sample) > 1
+        else sample[0].model_id
+    )
 
     output_fields: set[str] = set()
     for exit_id in pipeline.exit_nodes:
@@ -5240,7 +5268,12 @@ def _run_empirical(
         for i in range(args.trials):
             print(
                 f"rote eval: skill trial {i + 1}/{args.trials} "
-                f"(claude -p, {skill_model}, subscription auth) — this takes minutes",
+                + (
+                    f"(codex exec, {skill_model or 'its default model'}, your Codex login)"
+                    if agent == "codex"
+                    else f"(claude -p, {skill_model}, subscription auth)"
+                )
+                + " — this takes minutes",
                 file=sys.stderr,
             )
             skill_runs.append(
@@ -5253,6 +5286,7 @@ def _run_empirical(
                     mcp_servers=mcp_servers or None,
                     missing_mcp_servers=missing_servers or None,
                     min_expected_turns=min_expected_turns_for(pipeline),
+                    agent=agent,
                 )
             )
     else:
@@ -5741,6 +5775,9 @@ def _build_parser() -> argparse.ArgumentParser:
     from rote.compiler.drivers.anthropic_api import DEFAULT_MODEL as API_DEFAULT_MODEL
     from rote.compiler.drivers.claude import DEFAULT_EFFORT, EFFORT_LEVELS
     from rote.compiler.drivers.claude import DEFAULT_MODEL as CLAUDE_DEFAULT_MODEL
+
+    #: The CLIs a skill run (baseline, ``eval --run``) can run on.
+    SKILL_RUN_AGENTS = ("claude", "codex")
     from rote.runners import RUNNABLE_RUNTIMES
 
     EFFORT_HELP = (
@@ -7033,6 +7070,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     eval_cmd.add_argument(
+        "--agent",
+        choices=SKILL_RUN_AGENTS,
+        default="claude",
+        help=(
+            "--run only: which CLI runs the skill side (and, with --runtime "
+            "skill, both sides): claude (`claude -p`, your Claude subscription) "
+            "or codex (`codex exec`, your Codex login). A Codex run reports "
+            "tokens and time but no dollar cost (default: claude)"
+        ),
+    )
+    eval_cmd.add_argument(
         "--inference",
         default=None,
         choices=INFERENCE_PROVIDERS,
@@ -7060,7 +7108,10 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument(
         "--model",
         default=None,
-        help=("Model for the skill-side agent trials (default: the live lineup's mid tier)"),
+        help=(
+            "Model for the skill-side agent trials (default: the live lineup's mid "
+            "tier on claude, the Codex CLI's own default on codex)"
+        ),
     )
     eval_cmd.add_argument(
         "--max-turns",
@@ -7145,11 +7196,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "servers are injected into the run (`rote mcp login` covers it); "
             "by default only tools whose server declares readOnlyHint are "
             "callable — pass --allow-writes if this skill's side effects are "
-            "acceptable to fire once. Billed to your Claude subscription; "
-            "minutes per trial."
+            "acceptable to fire once. Billed to your Claude subscription, or "
+            "with --agent codex to your Codex login; minutes per trial."
         ),
     )
     baseline.add_argument("skill_path", help="Path to the source skill directory")
+    baseline.add_argument(
+        "--agent",
+        choices=SKILL_RUN_AGENTS,
+        default="claude",
+        help=(
+            "Which CLI runs the skill: claude (`claude -p`, your Claude "
+            "subscription) or codex (`codex exec`, your Codex login). Same "
+            "gate, transcript and observed traffic either way; a Codex run "
+            "reports tokens but no dollar cost (default: claude)"
+        ),
+    )
     baseline.add_argument(
         "--out",
         required=True,
@@ -7178,7 +7240,10 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument(
         "--model",
         default=None,
-        help=f"Model for the agent run (default: {CLAUDE_DEFAULT_MODEL})",
+        help=(
+            f"Model for the agent run (default: {CLAUDE_DEFAULT_MODEL} on claude, "
+            "the Codex CLI's own default on codex)"
+        ),
     )
     baseline.add_argument(
         "--max-turns",

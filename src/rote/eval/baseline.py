@@ -43,8 +43,10 @@ from rote.eval.empirical import (
     MeasuredRun,
     _reliability_flags,
     _skill_prompt,
+    failure_excerpt,
     measured_run_record,
     permission_denials,
+    skill_run_file_rules,
     skill_run_isolation_args,
 )
 from rote.eval.gate_server import GATE_SERVER
@@ -69,33 +71,28 @@ def derive_input_payload(
     model: str = DERIVE_MODEL,
     executable: str = "claude",
     timeout_seconds: float = 180.0,
+    agent: str = "claude",
 ) -> dict[str, Any]:
     """Propose one representative input payload for a skill, from its text.
 
-    A cheap single-shot ``claude -p`` call (no tools, cents) reads the
-    SKILL.md and answers with a JSON object. The caller MUST confirm the
-    proposal with the user before spending real money on a baseline run —
-    a derived input is a guess about how the skill is actually invoked.
+    A cheap single-shot call (no tools, cents) reads the SKILL.md and
+    answers with a JSON object: ``claude -p``, or with ``agent="codex"`` an
+    isolated ``codex exec`` on the user's Codex login, so a Codex user needs
+    no Claude login for a baseline. The caller MUST confirm the proposal
+    with the user before spending real money on a baseline run — a derived
+    input is a guess about how the skill is actually invoked.
     """
     skill_path = Path(skill_dir).resolve()
     skill_md_path = skill_path / "SKILL.md"
     if not skill_md_path.is_file():
         raise EmpiricalError(f"{skill_path} does not contain a SKILL.md")
+    if agent == "codex":
+        return _parse_derived(_derive_with_codex(_derive_prompt(skill_md_path), timeout_seconds))
     if shutil.which(executable) is None:
         raise EmpiricalError(
             f"`{executable}` CLI not found — install Claude Code or pass a different executable"
         )
-    skill_md = skill_md_path.read_text(encoding="utf-8")
-    prompt = (
-        "Read this skill definition and produce ONE representative input "
-        "payload for invoking it — the JSON object a user would supply for "
-        "a single, typical run. Prefer values the skill's own examples "
-        "mention; otherwise invent plausible, obviously-sample values.\n\n"
-        "<skill>\n"
-        f"{skill_md}\n"
-        "</skill>\n\n"
-        "Answer with ONLY the JSON object — no prose, no markdown fences."
-    )
+    prompt = _derive_prompt(skill_md_path)
     try:
         proc = subprocess.run(
             [
@@ -132,6 +129,55 @@ def derive_input_payload(
         text = meta.get("result") or ""
     except json.JSONDecodeError as e:
         raise EmpiricalError(f"input derivation: could not parse claude output: {e}") from e
+    return _parse_derived(text)
+
+
+def _derive_prompt(skill_md_path: Path) -> str:
+    skill_md = skill_md_path.read_text(encoding="utf-8")
+    return (
+        "Read this skill definition and produce ONE representative input "
+        "payload for invoking it — the JSON object a user would supply for "
+        "a single, typical run. Prefer values the skill's own examples "
+        "mention; otherwise invent plausible, obviously-sample values.\n\n"
+        "<skill>\n"
+        f"{skill_md}\n"
+        "</skill>\n\n"
+        "Answer with ONLY the JSON object — no prose, no markdown fences."
+    )
+
+
+def _derive_with_codex(prompt: str, timeout_seconds: float) -> str:
+    """The final message of one isolated, tool-less ``codex exec``."""
+    from rote.eval import codex_lane
+
+    with (
+        tempfile.TemporaryDirectory(prefix="rote-derive-") as workdir,
+        tempfile.TemporaryDirectory(prefix="rote-codex-home-") as homes,
+        codex_lane.prepared(
+            Path(homes), workdir=Path(workdir), mcp_servers={}, allowed=[], model=None
+        ) as run,
+    ):
+        try:
+            proc = subprocess.run(
+                run.argv,
+                cwd=workdir,
+                env=run.env,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise EmpiricalError(f"input derivation timed out after {timeout_seconds:g}s") from e
+    outcome = codex_lane.parse_events(proc.stdout.splitlines())
+    if outcome.message is None:
+        detail = outcome.error or failure_excerpt(proc.stderr or proc.stdout)
+        raise EmpiricalError(f"input derivation failed: codex exited {proc.returncode}: {detail}")
+    return outcome.message
+
+
+def _parse_derived(text: str) -> dict[str, Any]:
+    """The JSON object a derivation answered with."""
     # Models occasionally fence anyway; strip a ```json wrapper before parsing.
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -412,7 +458,7 @@ def run_baseline_trial(
     skill_dir: str | Path,
     input_payload: dict[str, Any],
     *,
-    model: str,
+    model: str | None,
     max_turns: int = 60,
     mcp_tool_ids: list[str] | None = None,
     denied_mcp_tool_ids: list[str] | None = None,
@@ -423,8 +469,9 @@ def run_baseline_trial(
     min_expected_turns: int | None = None,
     output_fields: list[str] | None = None,
     extra_instructions: str | None = None,
+    agent: str = "claude",
 ) -> tuple[MeasuredRun, list[ObservedToolCall], list[str]]:
-    """One ``claude -p`` run of the raw skill in stream-json mode.
+    """One ``claude -p`` (or, with ``agent="codex"``, ``codex exec``) run of the raw skill.
 
     Identical billing/metric semantics to
     :func:`rote.eval.empirical.run_skill_trial` (API keys scrubbed, the
@@ -447,6 +494,19 @@ def run_baseline_trial(
     skill_path = Path(skill_dir).resolve()
     if not (skill_path / "SKILL.md").is_file():
         raise EmpiricalError(f"{skill_path} does not contain a SKILL.md")
+    if agent == "codex":
+        return _codex_trial(
+            skill_path,
+            _skill_prompt(skill_path, input_payload, output_fields, extra_instructions),
+            model=model,
+            mcp_tool_ids=mcp_tool_ids or [],
+            mcp_servers=mcp_servers or {},
+            servers_skipped=servers_skipped or {},
+            timeout_seconds=timeout_seconds,
+            min_expected_turns=min_expected_turns,
+        )
+    if agent != "claude":
+        raise EmpiricalError(f"no skill-run lane named {agent!r} (claude or codex)")
     if shutil.which(executable) is None:
         raise EmpiricalError(
             f"`{executable}` CLI not found — install Claude Code or pass a different executable"
@@ -459,8 +519,7 @@ def run_baseline_trial(
             executable,
             "-p",
             prompt,
-            "--model",
-            model,
+            *(["--model", model] if model else []),
             "--add-dir",
             str(skill_path),
             *skill_run_isolation_args(
@@ -566,6 +625,125 @@ def run_baseline_trial(
     return run, observations, lines
 
 
+def _codex_trial(
+    skill_path: Path,
+    prompt: str,
+    *,
+    model: str | None,
+    mcp_tool_ids: list[str],
+    mcp_servers: dict[str, dict[str, Any]],
+    servers_skipped: Mapping[str, str],
+    timeout_seconds: float,
+    min_expected_turns: int | None,
+) -> tuple[MeasuredRun, list[ObservedToolCall], list[str]]:
+    """One ``codex exec`` run of the raw skill, inside the same gate.
+
+    :mod:`rote.eval.codex_lane` translates the gate (the skill dir read, the
+    workspace written, the read-only MCP allowlist) and isolates the run.
+    Codex has no turn cap and no dollar figure on a plan: ``turns`` and
+    ``cost_usd`` are None, never guessed. Tokens come from its usage report.
+    """
+    from rote.eval import codex_lane
+
+    with (
+        tempfile.TemporaryDirectory(prefix="rote-baseline-") as workdir_str,
+        tempfile.TemporaryDirectory(prefix="rote-codex-home-") as homes_str,
+    ):
+        workdir = Path(workdir_str)
+        with codex_lane.prepared(
+            Path(homes_str),
+            workdir=workdir,
+            mcp_servers=mcp_servers,
+            allowed=[*skill_run_file_rules(skill_path), *mcp_tool_ids],
+            model=model,
+        ) as run:
+            started = time.monotonic()
+            timed_out = False
+            try:
+                proc = subprocess.run(
+                    run.argv,
+                    cwd=workdir,
+                    env=run.env,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                )
+                stdout, stderr, code = proc.stdout, proc.stderr, proc.returncode
+            except subprocess.TimeoutExpired as e:
+                timed_out = True
+                stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+                stderr, code = "", None
+            wall = time.monotonic() - started
+        output, parse_error = _read_result(workdir)
+    lines = stdout.splitlines()
+    outcome = codex_lane.parse_events(lines)
+    observations = [
+        ObservedToolCall(
+            server=str(c["server"]),
+            tool=str(c["tool"]),
+            input=c["arguments"] if isinstance(c["arguments"], dict) else {},
+            # The tool's content blocks: the shape the Claude lane records.
+            result=(c["result"] or {}).get("content") if isinstance(c["result"], dict) else None,
+            is_error=c["error"] is not None,
+        )
+        for c in outcome.calls
+        # Codex reports its own resource listing as server "codex": a call to
+        # no server the skill reaches, so not traffic to observe.
+        if c["server"] in mcp_servers
+    ]
+    error: str | None = None
+    if timed_out:
+        error = f"timed out after {timeout_seconds:g}s"
+    elif outcome.error is not None and output is None:
+        error = f"codex reported an error: {outcome.error[:300]}"
+    elif code not in (0, None) and output is None:
+        error = f"codex exited {code}: {failure_excerpt(stderr or stdout)}"
+    elif output is None:
+        error = parse_error
+    missing = missing_named_servers(
+        skill_path, observations, wired=mcp_servers, skipped=servers_skipped
+    )
+    usage = outcome.usage or {}
+    return (
+        MeasuredRun(
+            wall_seconds=wall,
+            output=output,
+            error=error,
+            turns=None,
+            cost_usd=None,
+            input_tokens=usage.get("input_tokens"),
+            cache_read_tokens=usage.get("cache_read_tokens"),
+            cache_creation_tokens=usage.get("cache_write_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            model=model,
+            flags=_reliability_flags(
+                error="timeout" if timed_out else error,
+                subtype=None,
+                turns=None,
+                min_expected_turns=min_expected_turns,
+                missing_mcp_servers=list(missing),
+            ),
+            missing_mcp_servers=missing,
+            agent="codex",
+        ),
+        observations,
+        lines,
+    )
+
+
+def _read_result(workdir: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """The run's result.json, or None and why."""
+    path = workdir / RESULT_FILENAME
+    if not path.is_file():
+        return None, f"agent did not write {RESULT_FILENAME}"
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return None, f"{RESULT_FILENAME} was not valid JSON: {e}"
+    return (loaded if isinstance(loaded, dict) else {"result": loaded}), None
+
+
 # ───────── Orchestration + artifacts ─────────
 
 
@@ -575,12 +753,13 @@ class BaselineResult:
 
     skill_dir: Path
     input_payload: dict[str, Any]
-    model: str
+    model: str | None
     read_only: bool
     runs: tuple[MeasuredRun, ...]
     observations: tuple[ObservedToolCall, ...] = field(default_factory=tuple)
     servers_wired: tuple[str, ...] = ()
     servers_skipped: dict[str, str] = field(default_factory=dict)
+    agent: str = "claude"
 
     @property
     def observed_servers(self) -> list[str]:
@@ -593,14 +772,19 @@ def run_baseline(
     input_payload: dict[str, Any],
     out_dir: str | Path,
     *,
-    model: str,
+    model: str | None,
     trials: int = 1,
     allow_writes: bool = False,
     max_turns: int = 60,
     executable: str = "claude",
     timeout_seconds: float = 1800.0,
+    agent: str = "claude",
 ) -> BaselineResult:
     """Run the baseline and persist its artifacts under ``out_dir``/baseline.
+
+    ``agent`` picks the lane: ``claude`` (``claude -p``) or ``codex`` (``codex
+    exec`` on the user's Codex login, :mod:`rote.eval.codex_lane`), with the
+    same MCP wiring, gate and artifacts either way.
 
     Artifacts: ``metrics.json`` (measured runs + wiring report),
     ``observed-tools.json`` (deduplicated by call — full payloads), and
@@ -625,6 +809,7 @@ def run_baseline(
             timeout_seconds=timeout_seconds,
             mcp_servers=wiring.servers,
             servers_skipped=wiring.skipped,
+            agent=agent,
         )
         (baseline_dir / f"trial-{n}.transcript.jsonl").write_text(
             "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
@@ -641,6 +826,7 @@ def run_baseline(
         observations=tuple(observations),
         servers_wired=tuple(sorted(wiring.servers)),
         servers_skipped=wiring.skipped,
+        agent=agent,
     )
 
     (baseline_dir / METRICS_FILENAME).write_text(
@@ -648,6 +834,7 @@ def run_baseline(
             {
                 "skill_dir": str(result.skill_dir),
                 "input": result.input_payload,
+                "agent": result.agent,
                 "model": result.model,
                 "read_only": result.read_only,
                 "trials": len(result.runs),
@@ -718,7 +905,8 @@ def render_baseline_markdown(result: BaselineResult) -> str:
         f"## Measured baseline ({len(ok)}/{len(result.runs)} "
         f"trial{'s' if len(result.runs) != 1 else ''} succeeded)",
         "",
-        f"Raw skill executed as an agent (`{result.model}`), "
+        f"Raw skill executed as an agent ({result.agent}, "
+        f"`{result.model or 'the CLI default model'}`), "
         + ("read-only MCP gate." if result.read_only else "writes allowed."),
         "",
         "| Metric | Measured |",

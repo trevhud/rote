@@ -529,3 +529,106 @@ def test_a_gated_login_reaches_the_trial_owner_only_and_through_rote_mcp_headers
         "type": "http",
         "url": "https://x.example/mcp",
     }
+
+
+# ───────── the codex agent (#334) ─────────
+
+
+def _codex_harness(tmp_path: Path, runs: list[dict[str, Any]]) -> skill_ab.Harness:
+    """A codex harness whose runner records each call and plays a codex run:
+    it writes result.json and prints codex's JSONL events."""
+    binary = tmp_path / "pkg" / "codex"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+
+    def runner(
+        argv: list[str], cwd: Path, env: dict[str, str], timeout: float, stdin: str | None = None
+    ) -> skill_ab.ProcessResult:
+        runs.append({"argv": argv, "env": env, "stdin": stdin})
+        (cwd / "result.json").write_text(json.dumps({"total": 1}))
+        events = [
+            {"type": "thread.started", "thread_id": "t"},
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": "rote skill run x"},
+            },
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 5000,
+                    "cached_input_tokens": 3000,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 200,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        ]
+        return skill_ab.ProcessResult(tuple(json.dumps(e) for e in events), "", 0, 1.5, False)
+
+    return skill_ab.Harness(
+        work=tmp_path / "work",
+        model=None,
+        ledger=skill_ab.Ledger(tmp_path / "ledger.json", 0.0),
+        log=lambda line: print(line, file=sys.stderr),
+        agent="codex",
+        codex_binary=binary,
+        runner=runner,
+    )
+
+
+def test_a_codex_trial_runs_in_the_translated_gate_and_spends_no_dollars(
+    tmp_path: Path, expense: skill_ab.Subject, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login = tmp_path / "codex-login"
+    login.mkdir()
+    (login / "auth.json").write_text("{}")
+    monkeypatch.setenv("CODEX_HOME", str(login))
+    (tmp_path / "work").mkdir()
+    runs: list[dict[str, Any]] = []
+    # A zero-dollar cap: a codex trial must neither check nor charge it.
+    harness = _codex_harness(tmp_path, runs)
+    original = skill_ab.run_trial(harness, expense, "original", 1, compiled_dir=None)
+    compiled_dir = skill_ab.emit_compiled(expense, tmp_path / "work" / "compiled")
+    compiled = skill_ab.run_trial(harness, expense, "compiled", 1, compiled_dir=compiled_dir)
+    assert harness.ledger.spent == 0 and harness.ledger.runs == []
+    first, second = runs
+    # The prompt goes on stdin (codex exec -), never argv.
+    assert first["argv"][-1] == "-" and first["stdin"] and "expense" in first["stdin"].lower()
+    assert first["env"]["CODEX_HOME"] != str(login) and "CODEX_API_KEY" not in first["env"]
+    # Only the compiled side may run its driver outside the sandbox, as a tool.
+    driver = 'mcp_servers.rote_skill.enabled_tools=["run"]'
+    assert driver not in first["argv"] and driver in second["argv"]
+    assert "rote skill run expense-audit" in second["stdin"]
+    assert "`run` tool of the `rote_skill` MCP server" in second["stdin"]
+    assert "rote_skill" not in first["stdin"]
+    fs = next(a for a in second["argv"] if a.startswith("permissions.rote_skill_run.filesystem="))
+    assert str(compiled_dir.resolve()) in fs
+    # Usage: what codex reports, and None for what it does not.
+    for trial in (original, compiled):
+        assert trial.usage.source == "codex" and trial.usage.cost_usd is None
+        assert (trial.usage.input, trial.usage.cache_read, trial.usage.output) == (2000, 3000, 200)
+        assert trial.usage.requests is None and trial.usage.warm_start is None
+        assert trial.usage.to_dict()["cache"] == "unknown"
+    assert original.ok, original.problems
+    rendered = skill_ab.render_markdown([], model=None, spent=0.0, agent="codex")
+    assert rendered.startswith("Agent: codex. Model: the CLI default.")
+    assert "no dollar figure" in rendered
+
+
+def test_the_codex_usage_report_is_a_total_with_unknowns_left_unknown() -> None:
+    usage, envelope = skill_ab.codex_usage(
+        [json.dumps({"type": "turn.failed", "error": {"message": "usage limit"}})]
+    )
+    assert envelope == {"is_error": True, "result": "usage limit"}
+    assert usage.output is None and usage.requests is None and usage.cost_usd is None
+
+
+def test_a_codex_compile_is_pinned_to_codex() -> None:
+    from rote import proof
+
+    argv = proof.compile_command(
+        Path("s"), Path("i.json"), Path("o"), runtime="skill", agent="codex"
+    )
+    assert argv[argv.index("--agent") + 1] == "codex"
+    default = proof.compile_command(Path("s"), Path("i.json"), Path("o"), runtime="skill")
+    assert default[default.index("--agent") + 1] == "claude"
