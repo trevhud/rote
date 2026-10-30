@@ -1102,9 +1102,12 @@ async def test_the_handshake_reports_rotes_version_not_fastmcps(tmp_path: Path) 
     assert info is not None and (info.name, info.version) == ("rote", rote.__version__)
 
 
+@pytest.mark.slow
 def test_a_legacy_initialize_over_stdio_reports_rotes_version(tmp_path: Path) -> None:
     """The launch command clients run, and the handshake older clients send
-    (Cline, Claude Code), byte for byte as #338 found it."""
+    (Cline, Claude Code), as #338 found it. Slow: it starts a Python
+    subprocess. The server exits when stdin closes, so ``communicate`` with a
+    timeout cannot hang."""
     import json
     import subprocess
     import sys
@@ -1121,20 +1124,21 @@ def test_a_legacy_initialize_over_stdio_reports_rotes_version(tmp_path: Path) ->
             "clientInfo": {"name": "probe", "version": "1"},
         },
     }
-    proc = subprocess.Popen(
+    with subprocess.Popen(
         [sys.executable, "-m", "rote", "serve", "--registry", str(tmp_path / "registry.json")],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
-    )
-    try:
-        assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(json.dumps(request) + "\n")
-        proc.stdin.flush()
-        reply = json.loads(proc.stdout.readline())
-    finally:
-        proc.kill()
-        proc.wait()
+    ) as proc:
+        try:
+            out, err = proc.communicate(json.dumps(request) + "\n", timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            pytest.fail(f"rote serve did not answer initialize: {err[-800:]}")
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert lines, f"no reply on stdout; stderr: {err[-800:]}"
+    reply = json.loads(lines[0])
     assert reply["result"]["serverInfo"]["name"] == "rote"
     assert reply["result"]["serverInfo"]["version"] == rote.__version__
