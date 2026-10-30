@@ -50,6 +50,9 @@ from rote.tool_schema import argument_problem
 
 
 def _matches(response: dict[str, Any], arguments: dict[str, Any]) -> bool:
+    if response.get("exact"):
+        # A replay's recorded call answers that call only (rote.replay).
+        return arguments == (response.get("when") or {})
     for key, want in (response.get("when") or {}).items():
         if arguments.get(key) != want:
             return False
@@ -58,6 +61,43 @@ def _matches(response: dict[str, Any], arguments: dict[str, Any]) -> bool:
         if not isinstance(got, str) or str(want).casefold() not in got.casefold():
             return False
     return True
+
+
+def structured_answer(result: Any, output_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The structured content a tool with ``output_schema`` answers ``result``
+    with, or None when it has no schema or ``result`` cannot meet it.
+
+    Its client validates structured content against the declared schema and,
+    under fastmcp's wrap flag, unwraps ``{"result": ...}``, so the fixture
+    answers the way the real tool did. A wrapped string result is the raw
+    text, never its parse: a ``-> str`` tool returning ``"5"`` or JSON text
+    sent that text as a string.
+    """
+    if not output_schema:
+        return None
+    if output_schema.get("x-fastmcp-wrap-result"):
+        props = output_schema.get("properties") or {}
+        inner = props.get("result") if isinstance(props, dict) else None
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict) and set(parsed) == {"result"}:
+                return parsed  # recorded as the wrapped object itself
+            if isinstance(inner, dict) and inner.get("type") == "string":
+                return {"result": result}
+            return {"result": parsed if parsed is not None else result}
+        if isinstance(result, dict) and set(result) == {"result"}:
+            return result  # already the wrapped object: never wrapped twice
+        return {"result": result}
+    value = result
+    if isinstance(result, str):
+        try:
+            value = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
 
 
 #: The one reading of a tool's input schema (:mod:`rote.tool_schema`), so
@@ -107,18 +147,30 @@ class FixtureTool(Tool):
             raise ValueError(f"no fixture response for {self.name} with arguments {arguments}")
         result = chosen.get("result")
         text = result if isinstance(result, str) else json.dumps(result)
-        return ToolResult(content=[TextContent(type="text", text=text)])
+        content = [TextContent(type="text", text=text)]
+        structured = structured_answer(result, self.output_schema)
+        if structured is None:
+            return ToolResult(content=content)
+        return ToolResult(content=content, structured_content=structured)
 
 
 def build_server(spec: dict[str, Any], log_path: Path) -> FastMCP:
     server = FastMCP(spec["server"])
     for name, tool in spec["tools"].items():
+        responses = list(tool.get("responses") or [])
+        schema = tool.get("output_schema")
+        # Declare the real tool's output schema only when every response can
+        # meet it: the client refuses a declared schema answered without
+        # structured content, which would fail a call the server answered.
+        if schema and any(structured_answer(r.get("result"), schema) is None for r in responses):
+            schema = None
         server.add_tool(
             FixtureTool(
                 name=name,
                 description=tool.get("description", ""),
                 parameters=tool.get("parameters") or {"type": "object", "properties": {}},
-                responses=list(tool.get("responses") or []),
+                output_schema=schema,
+                responses=responses,
                 log_path=str(log_path),
                 server_name=spec["server"],
                 side_effect=bool(tool.get("side_effect", False)),

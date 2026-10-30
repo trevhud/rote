@@ -104,10 +104,13 @@ def load_cases(example_dir: Path) -> CaseFile:
                 http=load_http(c.get("http")),
             )
         )
+    # A replay dir (rote.replay) keeps its tool snapshot beside it, not in a
+    # skill dir: `tools_dir` names it, relative to this file.
+    tools_dir = (path.parent / raw["tools_dir"]).resolve() if raw.get("tools_dir") else None
     return CaseFile(
         example_dir=example_dir,
         output_fields=dict(raw["output_fields"]),
-        servers=_fixture_servers_spec(example_dir, raw.get("servers") or {}),
+        servers=_fixture_servers_spec(example_dir, raw.get("servers") or {}, tools_dir),
         cases=cases,
     )
 
@@ -137,7 +140,7 @@ def _require_distinct_gate_payloads(path: Path, case_id: str, gates: list[Any]) 
 
 
 def _fixture_servers_spec(
-    example_dir: Path, declared: dict[str, dict[str, Any]]
+    example_dir: Path, declared: dict[str, dict[str, Any]], tools_dir: Path | None = None
 ) -> dict[str, dict[str, Any]]:
     """The fixture servers: each tool from the skill's bundled tools/list.
 
@@ -150,8 +153,9 @@ def _fixture_servers_spec(
 
     if not declared:
         return {}
-    snapshot = load_bundled_tools(example_dir / "skill")
-    where = f"{example_dir / 'skill' / BUNDLED_TOOLS_FILENAME} and {CASES_FILENAME}"
+    source = tools_dir if tools_dir is not None else example_dir / "skill"
+    snapshot = load_bundled_tools(source)
+    where = f"{source / BUNDLED_TOOLS_FILENAME} and {CASES_FILENAME}"
     if sorted(snapshot) != sorted(declared):
         raise ValueError(
             f"{where} name different servers: {sorted(snapshot)} vs {sorted(declared)}"
@@ -168,6 +172,11 @@ def _fixture_servers_spec(
                     "description": snapshot[name][tool]["description"],
                     "parameters": snapshot[name][tool]["inputSchema"],
                     "side_effect": bool((tools[tool] or {}).get("side_effect", False)),
+                    **(
+                        {"output_schema": snapshot[name][tool]["outputSchema"]}
+                        if "outputSchema" in snapshot[name][tool]
+                        else {}
+                    ),
                 }
                 for tool in tools
             },

@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Replay a recorded run against the compiled skill (#335).** `rote replay
+  prepare` turns a `rote baseline` recording into a reviewable case: the
+  recorded input, each recorded read as a fixture for that exact call, the
+  tools and whether each writes, and the fields to compare. `rote eval --run
+  --runtime skill --replay <dir> --trust-generated-code` then runs the skill
+  and its compiled skill against it: every write either side proposes is
+  captured and never sent, a call the recording cannot answer marks the
+  trial incomplete, and the report shows where the proposed writes agree.
 - **Skill runs on Codex (#334).** `rote baseline`, `rote eval --run` and the
   paired A/B (`--run --runtime skill`) take `--agent codex`: the skill runs
   under `codex exec` on your Codex login, with the same read-only MCP gate,
