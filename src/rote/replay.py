@@ -10,9 +10,11 @@ example's ``fidelity/cases.yaml``. :func:`prepare` writes one from the
 recording, for a person to review before anything replays it:
 
 - the recorded input, and the gate answers the person supplies;
-- each recorded read as a fixture that answers that exact call, with the
-  result text the real server sent;
-- the tools of every server the run called, with their schemas, and
+- each recorded read as a fixture that answers that exact call (its whole
+  argument object), with the result text the real server sent; a call cut
+  off before its result is left out, never answered `null`;
+- the tools of every server the run called or the compiled pipeline reaches,
+  with their schemas, and
   whether each writes (the server's own ``readOnlyHint``). A write has no
   recorded response (a recording runs read-only), and none is invented:
   the replay logs the write either side proposes and answers it with an
@@ -53,6 +55,14 @@ class Prepared:
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
+def _shown(text: Any) -> str:
+    """A name from a server or a recording, safe to print: invisible
+    characters (ANSI escapes, bidi overrides) spelled out."""
+    from rote.adapters._common import escape_invisible
+
+    return escape_invisible(str(text))
+
+
 def _observations(baseline: Path) -> list[dict[str, Any]]:
     from rote.eval.baseline import OBSERVED_TOOLS_FILENAME
 
@@ -81,6 +91,8 @@ def _recorded_input(baseline: Path) -> dict[str, Any]:
 def _result_text(result: Any) -> Any:
     """What the fixture answers: the text the real server sent, verbatim when
     it sent text, so both sides read exactly what the recorded run read."""
+    if isinstance(result, str):
+        return result  # recorded as the text itself: kept verbatim, never parsed
     if isinstance(result, list):
         blocks = [b for b in result if isinstance(b, dict) and b.get("type") == "text"]
         texts = [b["text"] for b in blocks if isinstance(b.get("text"), str)]
@@ -115,15 +127,28 @@ async def _listed_tools(servers: Sequence[str]) -> dict[str, list[dict[str, Any]
     return listed
 
 
-def _tool_snapshot(skill_dir: Path, servers: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
-    """``{server: [tool, ...]}``: the bundled snapshot when it covers every
-    observed server, else a live read-only listing."""
+def _tool_snapshot(
+    skill_dir: Path, servers: Sequence[str], called: set[tuple[str, str]]
+) -> dict[str, list[dict[str, Any]]]:
+    """``{server: [tool, ...]}``: the bundled snapshot when it lists every
+    server and every tool the run called, else a live read-only listing. A
+    stale snapshot missing a called tool would drop that tool's recorded
+    reads, and a later call to it would never reach a fixture to be logged."""
     import asyncio
 
+    from rote.skill_files import BUNDLED_TOOLS_MAX_BYTES, check_size
+
     bundled_path = skill_dir / "mcp-tools.json"
-    if bundled_path.is_file():
+    if bundled_path.is_file() and not bundled_path.is_symlink():
+        check_size(bundled_path, BUNDLED_TOOLS_MAX_BYTES, "mcp-tools.json")
         raw = json.loads(bundled_path.read_text(encoding="utf-8")).get("servers") or {}
-        if set(servers) <= set(raw):
+        listed = {
+            (s, str(t.get("name")))
+            for s in raw
+            for t in (raw[s].get("tools") or [])
+            if isinstance(t, dict)
+        }
+        if set(servers) <= set(raw) and called <= listed:
             return {s: list(raw[s].get("tools") or []) for s in servers}
     return asyncio.run(_listed_tools(servers))
 
@@ -168,12 +193,24 @@ def prepare(
             f"the compiled pipeline has {gate_count} gate(s) and {len(gates)} answer(s) were "
             "given: a gate with no answer stops the replay (pass --gates)"
         )
-    servers = sorted({str(o["server"]) for o in observed})
-    snapshot = _tool_snapshot(skill_dir, servers)
+    # Every server the compiled pipeline reaches, called or not: a recording
+    # runs read-only, so a server whose tools only write was never called,
+    # and its writes are exactly what a replay must capture.
+    servers = sorted({str(o["server"]) for o in observed} | set(pipeline.required_mcp_servers))
+    called = {(str(o["server"]), str(o["tool"])) for o in observed}
+    snapshot = _tool_snapshot(skill_dir, servers, called)
     fixtures: dict[str, dict[str, list[dict[str, Any]]]] = {}
     seen: dict[tuple[str, str, str], Any] = {}
     for o in observed:
         if o.get("is_error"):
+            continue
+        if o.get("result") is None:
+            # Cut off before its result (an interrupt, the turn cap): a fixture
+            # answering it would invent a `null` the server never sent.
+            notes.append(
+                f"{_shown(o['server'])}.{_shown(o['tool'])} was called and never answered in "
+                "the recording, so the replay has no response for it"
+            )
             continue
         server, tool = str(o["server"]), str(o["tool"])
         arguments = o.get("input") if isinstance(o.get("input"), dict) else {}
@@ -182,20 +219,22 @@ def prepare(
         if key in seen:
             if seen[key] != result:
                 notes.append(
-                    f"{server}.{tool} was called twice with the same arguments and answered "
-                    "differently: the replay answers the first"
+                    f"{_shown(server)}.{_shown(tool)} was called twice with the same arguments "
+                    "and answered differently: the replay answers the first"
                 )
             continue
         seen[key] = result
+        # `exact`: the call's whole argument object, not a subset, so an extra
+        # `page=2` or `limit` is never answered with the recorded page.
         fixtures.setdefault(server, {}).setdefault(tool, []).append(
-            {"when": arguments, "result": result}
+            {"when": arguments, "exact": True, "result": result}
         )
     writes: list[str] = []
     servers_spec: dict[str, Any] = {}
     for server in servers:
         tools = snapshot.get(server) or []
         writing = _writes(server, tools)
-        writes += [f"{server}.{t}" for t in sorted(writing)]
+        writes += [f"{_shown(server)}.{_shown(t)}" for t in sorted(writing)]
         servers_spec[server] = {
             "aliases": [],
             "tools": {str(t["name"]): {"side_effect": str(t["name"]) in writing} for t in tools},
@@ -234,7 +273,9 @@ def prepare(
         "# exact call with what the real server returned. Writes have no response:\n"
         "# the replay logs what each side proposes and answers it with an error.\n"
     )
+    # Not allow_unicode: a bidi or zero-width character from a server's text
+    # stays an escape in the file a person is asked to review.
     (out / "cases.yaml").write_text(
-        header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        header + yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
     )
     return Prepared(out_dir=out_dir, reads=len(seen), writes=tuple(writes), notes=tuple(notes))

@@ -3918,7 +3918,11 @@ def _cmd_replay_prepare(args: argparse.Namespace) -> int:
     pipeline_yaml = compiled / "pipeline.yaml" if compiled.is_dir() else compiled
     gates: list[object] = []
     if args.gates:
-        loaded = json.loads(Path(args.gates).read_text(encoding="utf-8"))
+        try:
+            loaded = json.loads(Path(args.gates).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: --gates: {e}", file=sys.stderr)
+            return 2
         if not isinstance(loaded, list):
             print("error: --gates must be a JSON list, one answer per gate", file=sys.stderr)
             return 2
@@ -4977,6 +4981,9 @@ def _cmd_eval_skill_ab(args: argparse.Namespace) -> int:
         )
         return 2
     cases_dir: Path | None = None
+    if args.trust_generated_code and args.replay is None:
+        print("error: --trust-generated-code applies only to --replay", file=sys.stderr)
+        return 2
     if args.replay is not None:
         from rote.replay import CASE_ID
 

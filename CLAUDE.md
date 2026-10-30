@@ -2472,15 +2472,23 @@ Claude Code 2.1.308, each with a real run:
 through the existing A/B and fixture servers. Rules to keep:
 
 - **Nothing is invented.** Each recorded read is a fixture for that exact
-  call (`when` = its arguments) answering the text the server sent. A
-  write has no recorded response (a recording runs read-only), so the
-  fixture logs the write each side proposes and answers it with an error.
-  A call the recording cannot answer makes the trial `incomplete`, never a
-  pass. The person can add a write's response to the case by hand.
-- **Whether a tool writes comes from the server**: its `readOnlyHint`
-  (`_writes`), from the skill's bundled `mcp-tools.json`, else a read-only
-  `tools/list` of the observed servers. A server the user registered
-  read-only writes nothing.
+  call (`when` with `exact: true`: the whole argument object, so an extra
+  `page=2` is never answered with page one) answering the text the server
+  sent, kept verbatim. A call cut off before its result is left out, never
+  answered `null`. A write has no recorded response (a recording runs
+  read-only), so the fixture logs the write each side proposes and answers
+  it with an error. A call the recording cannot answer makes the trial
+  `incomplete`, never a pass. The person can add a write's response by hand.
+- **Every server the compiled pipeline reaches is in the case**, called or
+  not: a server whose tools only write was never wired into the read-only
+  recording, and its writes are what a replay must capture.
+- **A replay refuses a vendor call in code** (`refuse_code_backed_calls`):
+  the fixtures stand in for MCP only, and an implemented external_call runs
+  in the driver with the user's environment, so its write would be sent.
+- **Whether a tool writes comes from its `readOnlyHint`** (`_writes`), read
+  from the skill's bundled `mcp-tools.json` only when it lists every tool
+  the run called (a stale one would drop reads), else a read-only
+  `tools/list`. A server the user registered read-only writes nothing.
 - **An example's case stays read-only** (`bench_case` refuses write tools);
   only a replay dir (`cases_dir`) may hold them. The case names its own
   snapshot (`tools_dir`), so it needs no example layout.
@@ -2489,9 +2497,12 @@ through the existing A/B and fixture servers. Rules to keep:
   the examples' trust is never assumed for it.
 - **A fixture presents each tool as the real server did**, output schema
   included: the snapshot keeps `outputSchema`, and a fixture with one answers
-  with structured content (the SDK client validates it), wrapped under
-  fastmcp's flag. Without it, a fastmcp tool's `{"result": ...}` reached the
-  compiled step unwrapped and the step failed on a dict (found live).
+  with structured content (the SDK client validates it) through one rule,
+  `fixture_mcp.structured_answer`: wrapped under fastmcp's flag, a string
+  result kept raw, an already-wrapped object never wrapped twice. A schema
+  no recorded answer can meet is not declared. Without the schema, a
+  fastmcp tool's `{"result": ...}` reached the compiled step unwrapped and
+  the step failed on a dict (found live).
 - The report compares proposed writes per pair: the same calls the same
   number of times agree; the same calls a different number of times (a
   compiled step that retries a failed write) agree on what, not how often;

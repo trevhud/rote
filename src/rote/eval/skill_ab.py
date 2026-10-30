@@ -511,6 +511,8 @@ def subject_for(
     gated: dict[str, GatedServer] = {}
     original_only: str | None = None
     if case_id is not None:
+        if cases_dir is not None:
+            refuse_code_backed_calls(pipeline, pipeline_yaml.parent)
         casefile, case = bench_case(skill_dir, case_id, cases_dir)
         _mapped, unknown = map_servers(pipeline, casefile)
         if unknown:
@@ -603,6 +605,67 @@ def given_provenance(pipeline_yaml: Path) -> dict[str, Any]:
         record["compile_cost_usd"] = metrics.get("cost_usd")
         record["compile_turns"] = metrics.get("num_turns")
     return record
+
+
+def refuse_code_backed_calls(pipeline: Pipeline, compiled_dir: Path) -> None:
+    """Refuse a replay whose compiled side would call a vendor for real.
+
+    The fixture servers stand in for MCP only. An external_call whose module
+    holds real code (a `--backend api` compile, or a stub someone filled in)
+    runs that code in the driver, with the user's environment, so a Slack
+    post in it would be sent: a replay must never send a write.
+    """
+    from rote.contracts import implementation_status
+
+    real = sorted(
+        i.node_id
+        for i in implementation_status(pipeline, compiled_dir, runtime="skill")
+        if i.kind == "external_call" and i.status == "implemented" and not i.mcp_backed
+    )
+    if real:
+        raise SkillAbError(
+            f"cannot replay: {', '.join(real)} call a vendor in code, which a replay cannot "
+            "intercept (its fixtures stand in for MCP servers only), so a write there would "
+            "be sent. Replay a compile whose external calls go through MCP"
+        )
+
+
+def replay_accounting(
+    calls: Sequence[Mapping[str, Any]], replay: bool
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """``(writes, incomplete)`` from a trial's fixture-server calls log.
+
+    A write is a call to a tool that writes, answered or not (a fixture never
+    forwards one). On a replay, any call the recording could not answer makes
+    the trial incomplete from that call on.
+    """
+    from rote.adapters._common import escape_invisible
+
+    writes = tuple(
+        {
+            "server": c.get("server"),
+            "tool": c.get("tool"),
+            "arguments": c.get("arguments"),
+            "answered": bool(c.get("matched")),
+        }
+        for c in calls
+        if c.get("side_effect")
+    )
+    if not replay:
+        return writes, ()
+    incomplete = tuple(
+        dict.fromkeys(
+            f"{escape_invisible(str(c.get('server')))}.{escape_invisible(str(c.get('tool')))} "
+            + (
+                "proposed a write the recording has no response for"
+                if c.get("side_effect")
+                else "was called with arguments the recording never saw"
+            )
+            for c in calls
+            if not c.get("matched")
+        )
+    )
+    return writes, incomplete
 
 
 def bench_case(
@@ -1197,31 +1260,7 @@ def run_trial(
         )
     from rote.bench.fidelity import _portable_call
 
-    writes = tuple(
-        {
-            "server": c.get("server"),
-            "tool": c.get("tool"),
-            "arguments": c.get("arguments"),
-            "answered": bool(c.get("matched")),
-        }
-        for c in calls
-        if c.get("side_effect")
-    )
-    incomplete: tuple[str, ...] = ()
-    if subject.replay:
-        incomplete = tuple(
-            dict.fromkeys(
-                (
-                    f"{c.get('server')}.{c.get('tool')} proposed a write the recording has no "
-                    "response for"
-                    if c.get("side_effect")
-                    else f"{c.get('server')}.{c.get('tool')} was called with arguments the "
-                    "recording never saw"
-                )
-                for c in calls
-                if not c.get("matched")
-            )
-        )
+    writes, incomplete = replay_accounting(calls, subject.replay)
     trial = Trial(
         side=side,
         index=index,
@@ -1551,6 +1590,8 @@ def _write_key(write: Mapping[str, Any]) -> str:
 
 def _replay_lines(report: SubjectReport) -> list[str]:
     """A replay's proposed writes, side by side per pair, and its timing caveat."""
+    from rote.adapters._common import escape_invisible
+
     lines = [
         f"- {report.subject.label}: replayed against recorded responses; wall times are "
         "against local fixture servers, not live service latency"
@@ -1586,9 +1627,8 @@ def _replay_lines(report: SubjectReport) -> list[str]:
             for key, n in counts.items():
                 server, tool, arguments = json.loads(key)
                 times = f" x{n}" if n > 1 else ""
-                lines.append(
-                    f"  - {side}: {server}.{tool} {json.dumps(arguments, sort_keys=True)}{times}"
-                )
+                name = f"{escape_invisible(str(server))}.{escape_invisible(str(tool))}"
+                lines.append(f"  - {side}: {name} {json.dumps(arguments, sort_keys=True)}{times}")
     return lines
 
 

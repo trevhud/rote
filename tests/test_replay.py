@@ -127,8 +127,8 @@ def test_a_recording_becomes_a_reviewable_case(tmp_path: Path) -> None:
     assert case["fixtures"] == {
         "notes": {
             "read_note": [
-                {"when": {"name": "alpha"}, "result": '{"text": "hello"}'},
-                {"when": {"name": "beta"}, "result": "plain text, not JSON"},
+                {"when": {"name": "alpha"}, "exact": True, "result": '{"text": "hello"}'},
+                {"when": {"name": "beta"}, "exact": True, "result": "plain text, not JSON"},
             ]
         }
     }
@@ -356,3 +356,267 @@ async def test_a_fixture_answers_as_the_real_tool_did_under_its_output_schema(
     # No declared schema: text only, as before.
     assert plain.structured_content is None
     assert plain.content[0].text == "just text"
+
+
+# ───────── review fixes ─────────
+
+
+@pytest.mark.asyncio
+async def test_a_replay_fixture_answers_only_the_exact_call(tmp_path: Path) -> None:
+    """A subset match answered `page=2` with the recorded first page."""
+    from fastmcp import Client
+
+    from rote.bench.fixture_mcp import build_server
+
+    spec = {
+        "server": "s",
+        "tools": {
+            "search": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}, "page": {"type": "integer"}},
+                },
+                "responses": [{"when": {"q": "a"}, "exact": True, "result": "page one"}],
+            }
+        },
+    }
+    log = tmp_path / "calls.jsonl"
+    async with Client(build_server(spec, log)) as client:
+        hit = await client.call_tool("search", {"q": "a"})
+        with pytest.raises(Exception, match="no fixture response"):
+            await client.call_tool("search", {"q": "a", "page": 2})
+    assert hit.content[0].text == "page one"
+    logged = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [c["matched"] for c in logged] == [True, False]
+
+
+def test_an_unanswered_recorded_call_is_never_a_null_fixture(tmp_path: Path) -> None:
+    cut_off = {"server": "notes", "tool": "read_note", "input": {"name": "x"}, "result": None}
+    done = prepare(
+        _skill(tmp_path),
+        _recording(tmp_path, [_call({"name": "alpha"}, "a"), cut_off]),
+        _compiled(tmp_path),
+        tmp_path / "r",
+    )
+    assert done.reads == 1
+    assert any("never answered in the recording" in n for n in done.notes)
+    doc = yaml.safe_load((tmp_path / "r" / "fidelity" / "cases.yaml").read_text())
+    whens = [f["when"] for f in doc["cases"][0]["fixtures"]["notes"]["read_note"]]
+    assert whens == [{"name": "alpha"}]
+
+
+def test_a_server_the_recording_never_called_is_still_in_the_case(tmp_path: Path) -> None:
+    """A recording runs read-only, so a write-only server is never called."""
+    two = {
+        **PIPELINE,
+        "nodes": [
+            *PIPELINE["nodes"],
+            {
+                "id": "post",
+                "kind": "external_call",
+                "description": "Post it.",
+                "mcp": {"server": "slack", "tool": "post_message"},
+                "inputs": {"text": "summarize.output.summary"},
+            },
+        ],
+        "edges": [*PIPELINE["edges"], {"from": "summarize", "to": "post"}],
+        "exit_nodes": ["summarize", "post"],
+    }
+    skill = _skill(tmp_path)
+    tools = json.loads((skill / "mcp-tools.json").read_text())
+    tools["servers"]["slack"] = {
+        "tools": [
+            {
+                "name": "post_message",
+                "description": "Post.",
+                "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}},
+            }
+        ]
+    }
+    (skill / "mcp-tools.json").write_text(json.dumps(tools))
+    done = prepare(
+        skill,
+        _recording(tmp_path, [_call({"name": "alpha"}, "a")]),
+        _compiled(tmp_path, two),
+        tmp_path / "r",
+    )
+    assert "slack.post_message" in done.writes
+    doc = yaml.safe_load((tmp_path / "r" / "fidelity" / "cases.yaml").read_text())
+    assert doc["servers"]["slack"]["tools"] == {"post_message": {"side_effect": True}}
+
+
+def test_a_snapshot_missing_a_called_tool_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote import replay
+
+    skill = _skill(tmp_path)
+    listed: list[list[str]] = []
+
+    async def fake_listing(servers: Any) -> dict[str, list[dict[str, Any]]]:
+        listed.append(list(servers))
+        return {s: TOOLS["servers"]["notes"]["tools"] for s in servers}
+
+    monkeypatch.setattr(replay, "_listed_tools", fake_listing)
+    stale = {
+        "server": "notes",
+        "tool": "renamed_tool",
+        "input": {},
+        "result": [{"type": "text", "text": "x"}],
+    }
+    replay._tool_snapshot(skill, ["notes"], {("notes", "renamed_tool")})
+    assert listed == [["notes"]]
+    del stale
+
+
+def test_the_accounting_comes_from_the_calls_log() -> None:
+    from rote.eval.skill_ab import replay_accounting
+
+    calls = [
+        {"server": "notes", "tool": "read_note", "arguments": {}, "matched": True},
+        {"server": "notes", "tool": "read_note", "arguments": {"x": 1}, "matched": False},
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "arguments": {"n": 1},
+            "matched": False,
+            "side_effect": True,
+        },
+        {"server": "evil\u202e", "tool": "t", "arguments": {}, "matched": False},
+    ]
+    writes, incomplete = replay_accounting(calls, replay=True)
+    assert writes == (
+        {"server": "notes", "tool": "write_note", "arguments": {"n": 1}, "answered": False},
+    )
+    assert incomplete == (
+        "notes.read_note was called with arguments the recording never saw",
+        "notes.write_note proposed a write the recording has no response for",
+        "evil\\u202e.t was called with arguments the recording never saw",
+    )
+    # Not a replay: writes are still listed, nothing is incomplete.
+    assert replay_accounting(calls, replay=False)[1] == ()
+
+
+def test_a_replay_refuses_a_vendor_call_in_code(tmp_path: Path) -> None:
+    """The fixtures stand in for MCP only: code would send the write."""
+    from rote.eval.skill_ab import SkillAbError, refuse_code_backed_calls
+    from rote.ir import Pipeline
+
+    pipe = {
+        **PIPELINE,
+        "nodes": [
+            *PIPELINE["nodes"],
+            {
+                "id": "post",
+                "kind": "external_call",
+                "description": "Post it.",
+                "impl": "extracted/slack.py:post",
+                "inputs": {"text": "summarize.output.summary"},
+            },
+        ],
+        "edges": [*PIPELINE["edges"], {"from": "summarize", "to": "post"}],
+    }
+    (tmp_path / "extracted").mkdir()
+    (tmp_path / "extracted" / "slack.py").write_text(
+        "import httpx\n\n\ndef post(text):\n"
+        "    return httpx.post('https://slack.com/api', json={'t': text}).json()\n"
+    )
+    with pytest.raises(SkillAbError, match="post call a vendor in code"):
+        refuse_code_backed_calls(Pipeline.model_validate(pipe), tmp_path)
+    # A stub (the DO path) is not code that sends anything.
+    (tmp_path / "extracted" / "slack.py").write_text(
+        "def post(text):\n    raise NotImplementedError('[rote stub] slack')\n"
+    )
+    refuse_code_backed_calls(Pipeline.model_validate(pipe), tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("result", "schema", "answer"),
+    [
+        # A `-> str` tool returning JSON-looking text sent that text as a string.
+        (
+            "5",
+            {"properties": {"result": {"type": "string"}}, "x-fastmcp-wrap-result": True},
+            {"result": "5"},
+        ),
+        (
+            '{"a": 1}',
+            {"properties": {"result": {"type": "string"}}, "x-fastmcp-wrap-result": True},
+            {"result": '{"a": 1}'},
+        ),
+        (
+            '{"result": "x"}',
+            {"properties": {"result": {"type": "string"}}, "x-fastmcp-wrap-result": True},
+            {"result": "x"},
+        ),
+        (
+            "7",
+            {"properties": {"result": {"type": "integer"}}, "x-fastmcp-wrap-result": True},
+            {"result": 7},
+        ),
+        ('{"a": 1}', {"type": "object"}, {"a": 1}),
+        # Found live: a recording decoded to the wrapped dict was wrapped again.
+        (
+            {"result": "x"},
+            {"properties": {"result": {"type": "string"}}, "x-fastmcp-wrap-result": True},
+            {"result": "x"},
+        ),
+        ("a summary, not an object", {"type": "object"}, None),
+        ("x", None, None),
+    ],
+)
+def test_a_structured_answer_meets_the_declared_schema(
+    result: Any, schema: dict[str, Any] | None, answer: dict[str, Any] | None
+) -> None:
+    from rote.bench.fixture_mcp import structured_answer
+
+    assert structured_answer(result, schema) == answer
+
+
+def test_a_schema_no_recorded_answer_can_meet_is_not_declared(tmp_path: Path) -> None:
+    from rote.bench.fixture_mcp import build_server
+
+    spec = {
+        "server": "s",
+        "tools": {
+            "t": {
+                "parameters": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object"},
+                "responses": [{"result": "plain prose"}],
+            }
+        },
+    }
+    import asyncio
+
+    tools = asyncio.run(build_server(spec, tmp_path / "log").list_tools())
+    assert tools[0].output_schema is None
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--replay", "r"], "pass --trust-generated-code"),
+        (["--input", "i.json", "--trust-generated-code"], "applies only to --replay"),
+    ],
+)
+def test_the_replay_flags_are_refused_out_of_place(
+    argv: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from rote.cli import main
+
+    status = main(["eval", "x", "--run", "--runtime", "skill", "--budget", "1", *argv])
+    assert status == 2 and message in capsys.readouterr().err
+
+
+def test_a_result_recorded_as_a_string_is_kept_verbatim(tmp_path: Path) -> None:
+    """Claude records some tool results as one string, not text blocks."""
+    raw = {
+        "server": "notes",
+        "tool": "read_note",
+        "input": {"name": "alpha"},
+        "result": '{"result": "hello"}',
+        "is_error": False,
+    }
+    prepare(_skill(tmp_path), _recording(tmp_path, [raw]), _compiled(tmp_path), tmp_path / "r")
+    doc = yaml.safe_load((tmp_path / "r" / "fidelity" / "cases.yaml").read_text())
+    assert doc["cases"][0]["fixtures"]["notes"]["read_note"][0]["result"] == '{"result": "hello"}'
