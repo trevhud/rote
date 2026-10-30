@@ -222,6 +222,15 @@ def escape_invisible(text: str) -> str:
     return "".join(out)
 
 
+def _quoted(text: str) -> str:
+    """Skill or docstring text inside a block, its lines unable to pass for the
+    block's own ``--- NAME ---`` separators: such a line is indented."""
+    return "\n".join(
+        f"  {line}" if line.startswith("--- ") and line.rstrip().endswith(" ---") else line
+        for line in text.splitlines()
+    )
+
+
 def _compact(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
@@ -1859,9 +1868,12 @@ class Driver:
         if step.get("instructions"):
             # The source skill's own text for this step: an exact query or
             # procedure lives here, not in the one-line description (#336).
-            lines += ["--- WHAT THE SKILL SAYS FOR THIS STEP ---", step["instructions"]]
+            lines += ["--- WHAT THE SKILL SAYS FOR THIS STEP ---", _quoted(step["instructions"])]
         if step.get("contract"):
-            lines += ["--- WHAT THE ANSWER MUST HOLD (later steps read it) ---", step["contract"]]
+            lines += [
+                "--- WHAT THE ANSWER MUST HOLD (later steps read it) ---",
+                _quoted(step["contract"]),
+            ]
         extra = []
         if fan is None:
             lines += [

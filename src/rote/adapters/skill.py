@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -594,49 +595,98 @@ def emitted_skill(output_dir: str | Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-#: The most of a skill section a DO block carries. A step's section is a few
-#: paragraphs; a longer one is cut, and says so, rather than flooding the block.
+#: The most of a skill section, and of a stub's contract, a DO block carries.
+#: A step's section is a few paragraphs; a longer one is cut, and says so,
+#: rather than flooding a block whose every byte stays in the agent's context.
 MAX_DO_INSTRUCTIONS = 6000
+MAX_DO_CONTRACT = 4000
+
+_FENCE = ("```", "~~~")
+_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+
+
+def step_section(skill_text: str, heading: str) -> tuple[str | None, str | None]:
+    """``(the section under heading, None)``, or ``(None, why there is none)``.
+
+    The section is the heading's subtree: down to the next heading of the
+    same or a higher level, so a step's query under a ``### SQL`` subheading
+    stays with it. A heading that occurs twice (a ``### Query`` under two
+    steps) is ambiguous: neither is chosen, since the wrong one hands the
+    agent another step's query. A heading with no text under it is no
+    instructions. Headings inside a fenced block (backticks or tildes) are
+    content.
+    """
+    lines = skill_text.splitlines()
+    fenced = False
+    headings: list[tuple[int, int, str]] = []
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(_FENCE):
+            fenced = not fenced
+            continue
+        m = None if fenced else _HEADING.match(line)
+        if m:
+            headings.append((i, len(m.group(1)), m.group(2)))
+    matches = [(i, level) for i, level, text in headings if text == heading]
+    if not matches:
+        return None, f"no heading {heading!r} in SKILL.md"
+    if len(matches) > 1:
+        return None, f"the heading {heading!r} occurs {len(matches)} times in SKILL.md"
+    start, level = matches[0]
+    stop = next((i for i, lvl, _ in headings if i > start and lvl <= level), len(lines))
+    section = "\n".join(lines[start:stop]).strip()
+    if not "\n".join(lines[start + 1 : stop]).strip():
+        return None, f"the section {heading!r} has no text under its heading"
+    return section, None
+
+
+def _capped(text: str, limit: int, rest: str) -> str:
+    """``text``, cut at ``limit`` with a note, and any code fence it opened closed."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    open_fence = sum(1 for line in cut.splitlines() if line.lstrip().startswith(_FENCE)) % 2
+    return cut + ("\n```" if open_fence else "") + f"\n[... cut: the rest is in {rest}]"
 
 
 def do_context(
-    pipeline: Pipeline, skill_md: Path, source_dir: Path | None
+    pipeline: Pipeline, skill_dir: Path, source_dir: Path | None
 ) -> dict[str, dict[str, str]]:
     """What each external call hands the agent if it becomes a DO step (#336).
 
     A DO step is the agent doing what the source skill did, so it gets the
-    skill's own text for the step (``node.source.section`` of the vouched
-    SKILL.md, verbatim: an exact query lives there) and the stub's docstring,
-    the contract its answer must meet for the steps after it. Before this the
-    block carried a one-line description and a loose answer shape, and a
-    reconciliation read lost its SQL and the six row columns its consumer
-    validates.
+    skill's own text for the step (:func:`step_section` of the node's
+    ``source.section``, verbatim: an exact query lives there) and the stub's
+    docstring, the contract its answer must meet for the steps after it.
+    Before this the block carried a one-line description and a loose answer
+    shape, and a reconciliation read lost its SQL and the six row columns its
+    consumer validates. ``"why"`` says why a node has no instructions.
     """
     import ast
 
     from rote.adapters._py_common import resolve_extracted_source
-    from rote.skill_source import parse_sections
+    from rote.skill_files import read_skill_md
 
-    sections = parse_sections(skill_md.read_text(encoding="utf-8"))
+    skill_text = read_skill_md(skill_dir)
     context: dict[str, dict[str, str]] = {}
     for node in pipeline.nodes:
         if node.kind is not NodeKind.EXTERNAL_CALL:
             continue
         entry: dict[str, str] = {}
-        text = sections.get(node.source.section, "").strip() if node.source else ""
-        if text:
-            if len(text) > MAX_DO_INSTRUCTIONS:
-                text = (
-                    text[:MAX_DO_INSTRUCTIONS] + "\n[... cut: the rest is in the skill's SKILL.md]"
-                )
-            entry["instructions"] = text
+        if node.source is None:
+            entry["why"] = "the node names no source section"
+        else:
+            text, why = step_section(skill_text, node.source.section)
+            if text is not None:
+                entry["instructions"] = _capped(text, MAX_DO_INSTRUCTIONS, "the skill's SKILL.md")
+            else:
+                entry["why"] = str(why)
         if node.impl:
             module, _, symbol = node.impl.partition(":")
-            source = resolve_extracted_source(source_dir, Path(module).stem)
             try:
+                source = resolve_extracted_source(source_dir, Path(module).stem)
                 tree = ast.parse(source) if source else None
-            except SyntaxError:
-                tree = None
+            except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+                tree = None  # verification reports an unreadable module itself
             fn = next(
                 (
                     stmt
@@ -647,10 +697,9 @@ def do_context(
                 None,
             )
             doc = ast.get_docstring(fn) if fn is not None else None
-            if doc:
-                entry["contract"] = doc.strip()
-        if entry:
-            context[node.id] = entry
+            if doc and doc.strip():
+                entry["contract"] = _capped(doc.strip(), MAX_DO_CONTRACT, "the stub's docstring")
+        context[node.id] = entry
     return context
 
 
@@ -785,7 +834,7 @@ class SkillAdapter:
         plan = self._plan(
             pipeline,
             self._implementations(pipeline, scripts),
-            do_context(pipeline, identity.skill_md, cfg.extracted_source_dir),
+            do_context(pipeline, identity.skill_md.parent, cfg.extracted_source_dir),
         )
         agent = agent_steps(plan)
         require_constant_parameters(pipeline, scripts, cfg.extracted_source_dir, agent)
