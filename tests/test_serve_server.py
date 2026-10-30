@@ -1089,3 +1089,56 @@ async def test_serve_over_real_stdio_transport(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_the_handshake_reports_rotes_version_not_fastmcps(tmp_path: Path) -> None:
+    """#338: without ``version=``, fastmcp reports its own version (the modern era here)."""
+    import rote
+
+    server = build_server(tmp_path / "registry.json")
+    async with Client(server) as client:
+        info = client.server_info
+    assert info is not None and (info.name, info.version) == ("rote", rote.__version__)
+
+
+@pytest.mark.slow
+def test_a_legacy_initialize_over_stdio_reports_rotes_version(tmp_path: Path) -> None:
+    """The launch command clients run, and the handshake older clients send
+    (Cline, Claude Code), as #338 found it. Slow: it starts a Python
+    subprocess. The server exits when stdin closes, so ``communicate`` with a
+    timeout cannot hang."""
+    import json
+    import subprocess
+    import sys
+
+    import rote
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"},
+        },
+    }
+    with subprocess.Popen(
+        [sys.executable, "-m", "rote", "serve", "--registry", str(tmp_path / "registry.json")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as proc:
+        try:
+            out, err = proc.communicate(json.dumps(request) + "\n", timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            pytest.fail(f"rote serve did not answer initialize: {err[-800:]}")
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert lines, f"no reply on stdout; stderr: {err[-800:]}"
+    reply = json.loads(lines[0])
+    assert reply["result"]["serverInfo"]["name"] == "rote"
+    assert reply["result"]["serverInfo"]["version"] == rote.__version__

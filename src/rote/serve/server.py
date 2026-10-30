@@ -662,8 +662,13 @@ def build_server(
 ) -> FastMCP[None]:
     """Build the ``rote serve`` FastMCP server for a registry file."""
     provider = RegistryProvider(registry_path, poll_interval=poll_interval)
+    from rote import __version__
+
     server: FastMCP[None] = FastMCP(
         name="rote",
+        # fastmcp reports its own version when none is given (#338): every
+        # client that shows server versions would list rote as fastmcp's.
+        version=__version__,
         instructions=(
             "Tools on this server trigger compiled rote pipelines: "
             "deterministic workflows produced from Anthropic-style skills. "

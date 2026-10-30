@@ -27,6 +27,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   there) and the stub's contract (the fields the steps after it read).
   Before, it showed a one-line description and a loose answer shape. A DO
   step with neither is a review gap at compile time.
+- **`rote serve` reports rote's version, not fastmcp's (#338).** The MCP
+  handshake answered with fastmcp's version (4.1.4), so every client that
+  shows server versions listed rote as that.
 
 ## [0.19.4] - 2026-10-29
 
