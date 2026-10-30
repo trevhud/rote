@@ -62,11 +62,6 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match rote.__version__ ($pkg_version)" >&2
             exit 1
           fi
-          ext_version="$(jq -r .version gemini-extension.json)"
-          if [ "$ext_version" != "$tag_version" ]; then
-            echo "gemini-extension.json version ($ext_version) does not match the tag; bump it with the release" >&2
-            exit 1
-          fi
 
       - uses: ./.github/actions/bubblewrap
 

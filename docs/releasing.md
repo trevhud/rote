@@ -67,7 +67,8 @@ That's it. No secrets to create, rotate, or leak.
    Claude Code plugin manifests to match: `plugin/.claude-plugin/plugin.json`
    and `.claude-plugin/marketplace.json` (they carry their own `version`
    and back the "install from Claude Code" path). `tests/test_plugin_manifest.py`
-   fails if either drifts from `rote.__version__`.
+   fails if either drifts from `rote.__version__`. Bump `gemini-extension.json` too; `tests/test_gemini_extension.py`
+   pins it the same way (`server.json` is stamped from the tag at publish time).
 2. Run the pre-PR checklist from [CLAUDE.md](../CLAUDE.md): `pytest
    tests/`, `ruff check . && ruff format .`, `mypy src/rote`,
    `./scripts/sanity-check.sh`.
@@ -120,7 +121,7 @@ byte-identical to `docs/oauth/rote-cli.json`
   `mcp-name: io.github.trevhud/rote` marker in README.md, which PyPI serves
   as the package description, so never drop that comment.
 - `gemini-extension.json` is crawled daily by the Gemini CLI extension
-  gallery. Its `version` must equal the tag; the test job checks it.
+  gallery. Its `version` must equal `rote.__version__`; the fast suite checks it.
 - `llms-install.md` is what Cline's marketplace and other agents read to
   install `rote serve`. Keep its launch command in step with the `serve`
   extra.
