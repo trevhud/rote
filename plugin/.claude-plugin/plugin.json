@@ -1,7 +1,7 @@
 {
   "name": "rote",
   "displayName": "Rote",
-  "version": "0.19.4",
+  "version": "0.20.0",
   "description": "New to rote? /rote:setup walks you through importing your MCP servers, compiling one of your skills, and checking it gives the same answer. Compile an AI agent skill into a deterministic workflow for DBOS, Temporal, Cloudflare Workflows, Inngest, or plain Python with /rote:compile, fill in its emitted stub modules with /rote:implement, then trigger the deployed workflows from Claude over MCP with /rote:serve.",
   "author": {
     "name": "Trevor Hudson",
