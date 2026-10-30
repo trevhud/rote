@@ -9,6 +9,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Skill runs on Codex (#334).** `rote baseline`, `rote eval --run` and the
+  paired A/B (`--run --runtime skill`) take `--agent codex`: the skill runs
+  under `codex exec` on your Codex login, with the same read-only MCP gate,
+  file scoping and isolation as the Claude lane, and the A/B compiles on
+  Codex too. A Codex run reports time and tokens; what Codex does not report
+  (requests, turns, a dollar cost on your plan) is marked unavailable, never
+  zero, and `--budget` does not apply (only a ChatGPT login runs).
+
 ### Fixed
 
 - **A compiled skill's DO step says how to redo the step (#336).** When a
