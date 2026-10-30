@@ -27,6 +27,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   (requests, turns, a dollar cost on your plan) is marked unavailable, never
   zero, and `--budget` does not apply (only a ChatGPT login runs).
 
+### Fixed
+
+- **A compiled skill's DO step says how to redo the step (#336).** When a
+  compiled skill hands an external read back to the agent, the DO block now
+  shows the source skill's own text for that step (an exact query lives
+  there) and the stub's contract (the fields the steps after it read).
+  Before, it showed a one-line description and a loose answer shape. A DO
+  step with neither is a review gap at compile time.
+- **`rote serve` reports rote's version, not fastmcp's (#338).** The MCP
+  handshake answered with fastmcp's version (4.1.4), so every client that
+  shows server versions listed rote as that.
+
 ## [0.19.4] - 2026-10-29
 
 ### Fixed

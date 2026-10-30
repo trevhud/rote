@@ -1343,16 +1343,15 @@ def external_stub(ctx: Context, node: Any) -> str:
             "so rote does not guess a vendor call. Implement it here"
         )
     returns = _json(ctx.output_schema(node.id)).replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    # The contract is the function's docstring: a compiled skill hands this
+    # stub to its agent as a DO step and shows that docstring (#336).
+    contract = "\n".join(f"    {line}" if line else "" for line in returns.splitlines())
     return "\n".join(
         [
             f'"""{safe_docstring_line(np.unit.section, node.id)}: direct-API backend stub.',
             "",
             "rote wrote this from the IR (no model). The pipeline's default backend",
             "does not import it; `rote emit --backend api` does.",
-            "",
-            "Returns a value matching this JSON Schema:",
-            "",
-            returns,
             '"""',
             "",
             "from __future__ import annotations",
@@ -1361,6 +1360,10 @@ def external_stub(ctx: Context, node: Any) -> str:
             "",
             "",
             def_line(ctx, node),
+            '    """Returns a value matching this JSON Schema:',
+            "",
+            contract,
+            '    """',
             f"    raise NotImplementedError({json.dumps(why)})",
             "",
         ]

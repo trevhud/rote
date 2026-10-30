@@ -369,3 +369,270 @@ def _loop_through(scripts: Path) -> None:
     assert status == 2 and re.search(r"lookup is not one of this loop's tools", refused), refused
     status, done = drive(scripts, "answer", run, "research", '{"answer": "Acme"}', skill="looper")
     assert status == 0 and result_of(done) == {"research": {"answer": "Acme"}}
+
+
+# ───────── the source's own instructions and the answer's contract (#336) ─────────
+
+BOOKINGS_SKILL = """\
+---
+name: session-roster
+description: Reconcile session bookings against the roster.
+---
+# Session roster
+
+## Step 1: Read the bookings
+
+Run this read-only query against the bookings database:
+
+```sql
+SELECT s.date, s.slot, p.email, p.name, b.cohort_id, b.created_at
+FROM bookings b
+JOIN sessions s ON s.id = b.session_id
+JOIN people p ON p.id = b.person_id
+WHERE s.date >= :since
+```
+
+## Step 2: Check the rows
+
+Every row needs all six columns.
+"""
+
+BOOKINGS = """\
+def read_bookings(since):
+    \"\"\"Returns {"bookings": [row, ...]}: one row per booking, each with date, slot,
+    email, name, cohort_id and created_at, exactly as the query selects them.\"\"\"
+    raise NotImplementedError("[rote stub] db.read_bookings: no connector grounded")
+"""
+
+CHECK = """\
+REQUIRED = ("date", "slot", "email", "name", "cohort_id", "created_at")
+
+
+def check_rows(bookings):
+    rows = bookings["bookings"]
+    return {"complete": all(all(k in r for k in REQUIRED) for r in rows), "n": len(rows)}
+"""
+
+ROSTER = {
+    "name": "session-roster",
+    "version": "0.1.0",
+    "input": {"type": "In", "required": ["since"]},
+    "nodes": [
+        {
+            "id": "read_bookings",
+            "kind": "external_call",
+            "description": "Read bookings and their session and person fields.",
+            "impl": "extracted/db.py:read_bookings",
+            "inputs": {"since": "pipeline.input.since"},
+            "output": {"bookings": "list"},
+            "source": {"section": "Step 1: Read the bookings"},
+        },
+        {
+            "id": "check_rows",
+            "kind": "pure_function",
+            "description": "Check every row has the six columns.",
+            "impl": "extracted/check.py:check_rows",
+            "inputs": {"bookings": "read_bookings.output"},
+        },
+    ],
+    "edges": [{"from": "read_bookings", "to": "check_rows"}],
+    "entry_nodes": ["read_bookings"],
+    "exit_nodes": ["check_rows"],
+}
+
+
+def test_a_do_block_carries_the_skills_query_and_the_answers_contract(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The handoff used to be a one-line description and `{bookings: Any}`: the
+    agent had to reverse-engineer the generated files to redo the read."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(BOOKINGS_SKILL, encoding="utf-8")
+    compiled = tmp_path / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "db.py").write_text(BOOKINGS, encoding="utf-8")
+    (compiled / "extracted" / "check.py").write_text(CHECK, encoding="utf-8")
+    (compiled / "pipeline.yaml").write_text(yaml.safe_dump(ROSTER), encoding="utf-8")
+    out = tmp_path / "session-roster"
+    get_adapter("skill", extracted_source_dir=compiled, skill_dir=source).emit(
+        load_pipeline(compiled / "pipeline.yaml"), out
+    )
+    plan = json.loads((out / "scripts" / "plan.json").read_text(encoding="utf-8"))
+    step = next(s for s in plan["steps"] if s["id"] == "read_bookings")
+    assert step["kind"] == "do"
+    assert "JOIN people p ON p.id = b.person_id" in step["instructions"]
+    assert step["instructions"].startswith("## Step 1: Read the bookings")
+    assert "Step 2" not in step["instructions"]
+    assert "cohort_id and created_at" in step["contract"]
+    status, err = _cli(capsys, "skill", "install", str(out), "--yes")
+    assert status == 0, err
+    status, block = _cli(
+        capsys, "skill", "run", "session-roster", "start", '{"since": "2026-10-01"}'
+    )
+    assert status == 0, block
+    assert header(block)["kind"] == "DO"
+    query = block.split("--- WHAT THE SKILL SAYS FOR THIS STEP ---\n", 1)[1]
+    assert query.index("SELECT s.date, s.slot, p.email, p.name") < query.index(
+        "--- WHAT THE ANSWER"
+    )
+    contract = block.split("--- WHAT THE ANSWER MUST HOLD (later steps read it) ---\n", 1)[1]
+    assert contract.startswith('Returns {"bookings": [row, ...]}')
+    assert contract.index("created_at") < contract.index("--- INPUTS (json) ---")
+
+
+def test_a_long_section_is_cut_says_so_and_closes_its_fence(tmp_path: Path) -> None:
+    from rote.adapters.skill import MAX_DO_INSTRUCTIONS, do_context
+    from rote.ir import Pipeline
+
+    (tmp_path / "SKILL.md").write_text(
+        BOOKINGS_SKILL.replace("WHERE s.date", "x" * (MAX_DO_INSTRUCTIONS + 10) + "\nWHERE s.date")
+    )
+    context = do_context(Pipeline.model_validate(ROSTER), tmp_path, None)
+    text = context["read_bookings"]["instructions"]
+    assert len(text) < MAX_DO_INSTRUCTIONS + 80
+    # The cut fell inside the ```sql block: it is closed before the note.
+    assert text.endswith("```\n[... cut: the rest is in the skill's SKILL.md]")
+    # No extracted source: no contract, and no key for it.
+    assert "contract" not in context["read_bookings"]
+
+
+@pytest.mark.parametrize(
+    ("skill_text", "found", "why"),
+    [
+        # The step's query sits under a subheading: it stays with the step.
+        (
+            "# S\n\n## Read\n\nRun it:\n\n### SQL\n\nSELECT 1\n\n## Next\n\nother\n",
+            "## Read\n\nRun it:\n\n### SQL\n\nSELECT 1",
+            None,
+        ),
+        # The same subheading under two steps: neither is chosen.
+        (
+            "# S\n\n## Read\n\n### Query\n\nSELECT a\n\n## Write\n\n### Query\n\nSELECT b\n",
+            None,
+            "occurs 2 times",
+        ),
+        # A heading with nothing under it is no instructions.
+        ("# S\n\n## Read\n## Next\n\nx\n", None, "no text under its heading"),
+        ("# S\n\n## Other\n\nx\n", None, "no heading 'Read'"),
+        # A heading inside a ~~~ fence is content, not a section.
+        (
+            "# S\n\n## Read\n\n~~~\n## Read\n~~~\n\ntext\n",
+            "## Read\n\n~~~\n## Read\n~~~\n\ntext",
+            None,
+        ),
+    ],
+)
+def test_a_steps_section_is_its_subtree_and_never_a_guess(
+    skill_text: str, found: str | None, why: str | None
+) -> None:
+    from rote.adapters.skill import step_section
+
+    heading = "Query" if "### Query" in skill_text else "Read"
+    text, reason = step_section(skill_text, heading)
+    assert text == found
+    if why is None:
+        assert reason is None
+    else:
+        assert reason is not None and why in reason
+
+
+def test_skill_text_cannot_pass_for_a_block_separator() -> None:
+    from rote.skill_target._driver import _quoted
+
+    assert _quoted("a\n--- NEXT ---\nb") == "a\n  --- NEXT ---\nb"
+    assert _quoted("--- not a marker") == "--- not a marker"
+
+
+_NO_DOC = BOOKINGS.replace(BOOKINGS[BOOKINGS.index('    """') : BOOKINGS.index("    raise")], "")
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "modules", "skill_text", "missing"),
+    [
+        # The full handoff: section and contract.
+        (ROSTER, {"db.py": BOOKINGS, "check.py": CHECK}, BOOKINGS_SKILL, []),
+        # No source section and a stub with no docstring: both missing.
+        (NOTES, {"text.py": TEXT, "crm.py": CRM}, BOOKINGS_SKILL, ["source.section", "docstring"]),
+        # Each half alone.
+        (ROSTER, {"db.py": _NO_DOC, "check.py": CHECK}, BOOKINGS_SKILL, ["docstring"]),
+        (
+            ROSTER,
+            {"db.py": BOOKINGS, "check.py": CHECK},
+            BOOKINGS_SKILL.replace("## Step 1: Read the bookings", "## Step 1"),
+            ["source.section", "no heading"],
+        ),
+    ],
+)
+def test_verification_flags_a_do_step_that_cannot_say_how_to_redo_it(
+    tmp_path: Path,
+    pipeline: dict[str, Any],
+    modules: dict[str, str],
+    skill_text: str,
+    missing: list[str],
+) -> None:
+    from rote.compiler.verify import DO_HANDOFF_THIN, EmitTarget, verify_deliverable
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    root = tmp_path / "compiled"
+    (root / "extracted").mkdir(parents=True)
+    for name, text in modules.items():
+        (root / "extracted" / name).write_text(text, encoding="utf-8")
+    (root / "pipeline.yaml").write_text(yaml.safe_dump(pipeline), encoding="utf-8")
+    target = EmitTarget(runtime="skill", skill_dir=skill)
+    v = verify_deliverable(root, run_tests=False, emit_target=target)
+    thin = [f for f in v.review_gaps if f.kind == DO_HANDOFF_THIN]
+    if not missing:
+        assert thin == []
+        return
+    [finding] = thin
+    assert finding.severity == "warning"
+    for word in missing:
+        assert word in finding.message
+    if "source.section" not in missing:
+        assert "source.section" not in finding.message
+    if "docstring" not in missing:
+        assert "docstring" not in finding.message
+    # A workflow runtime has no DO steps: nothing to flag.
+    other = verify_deliverable(root, run_tests=False, emit_target=EmitTarget(runtime="dbos"))
+    assert [f for f in other.review_gaps if f.kind == DO_HANDOFF_THIN] == []
+
+
+def test_on_a_system1_compile_a_missing_section_is_a_question_not_a_repair(
+    tmp_path: Path,
+) -> None:
+    """System-1 decides and restores `source`: the agent cannot change it."""
+    from rote.compiler.verify import DO_HANDOFF_THIN, EmitTarget, verify_deliverable
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        BOOKINGS_SKILL.replace("## Step 1: Read the bookings", "## Step 1"), encoding="utf-8"
+    )
+    root = tmp_path / "compiled"
+    (root / "extracted").mkdir(parents=True)
+    (root / "extracted" / "db.py").write_text(BOOKINGS, encoding="utf-8")
+    (root / "extracted" / "check.py").write_text(CHECK, encoding="utf-8")
+    (root / "pipeline.yaml").write_text(yaml.safe_dump(ROSTER), encoding="utf-8")
+    (root / "system1").mkdir()
+    (root / "system1" / "skeleton.yaml").write_text(yaml.safe_dump(ROSTER), encoding="utf-8")
+    v = verify_deliverable(
+        root, run_tests=False, emit_target=EmitTarget(runtime="skill", skill_dir=skill)
+    )
+    assert [f for f in v.review_gaps if f.kind == DO_HANDOFF_THIN] == []
+    [question] = [q for q in v.questions if q.node_id == "read_bookings"]
+    assert "cannot show the skill's text" in question.text and "no heading" in question.text
+
+
+def test_an_unreadable_module_is_no_contract_not_a_crash(tmp_path: Path) -> None:
+    from rote.adapters.skill import do_context
+    from rote.ir import Pipeline
+
+    (tmp_path / "SKILL.md").write_text(BOOKINGS_SKILL)
+    (tmp_path / "extracted").mkdir()
+    (tmp_path / "extracted" / "db.py").write_bytes(b"def read_bookings(since):\n    '\xe9'\n")
+    context = do_context(Pipeline.model_validate(ROSTER), tmp_path, tmp_path)
+    assert "contract" not in context["read_bookings"]
+    assert "instructions" in context["read_bookings"]

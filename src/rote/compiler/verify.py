@@ -629,6 +629,8 @@ def unused_input_questions(
 UNUSED_CONSTANT = "unused_constant"
 #: A System-1 decision the agent says is wrong, which rote did not apply.
 UNAPPLIED_PROPOSAL = "unapplied_proposal"
+#: A compiled skill's DO step that cannot tell the agent how to redo the step.
+DO_HANDOFF_THIN = "do_handoff_thin"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
@@ -642,8 +644,93 @@ REVIEW_GAP_KINDS = frozenset(
         GATE_PAYLOAD_NOT_SKILL_NOUNS,
         OPTIONAL_INPUT_REQUIRED,
         PASSTHROUGH_UNREAD,
+        DO_HANDOFF_THIN,
     }
 )
+
+
+def do_handoff_findings(
+    pipeline: Pipeline,
+    root: Path,
+    target: EmitTarget | None,
+    implementations: list[NodeImplementation],
+) -> tuple[list[ContractFinding], list[ContractQuestion]]:
+    """Each DO step of a compiled skill whose block would not say how to redo it (#336).
+
+    A DO step is the agent redoing what the source skill did, from what the
+    block shows: the skill's text for the step (the node's ``source.section``)
+    and the stub's docstring, the contract its answer must meet for the steps
+    after it. A missing contract is a review gap, sent back to the agent,
+    which writes the module. A missing section is too on a full-rubric
+    compile, and an Open question on a System-1 one: there rote decides and
+    restores ``source``, so asking the agent to change it would spend repair
+    rounds on something it cannot touch.
+    """
+    if target is None or target.runtime != "skill" or target.skill_dir is None:
+        return [], []
+    from rote.adapters.skill import do_context
+    from rote.plan import PlanError, build_plan
+
+    if not (target.skill_dir / "SKILL.md").is_file():
+        return [], []
+    try:
+        plan = build_plan(
+            pipeline,
+            mcp="live",
+            backend="api" if target.external_backend == "api" else "mcp",
+            implementations={i.node_id: i.status for i in implementations},
+        )
+        context = do_context(pipeline, target.skill_dir, root)
+    except (PlanError, OSError, ValueError):
+        return [], []  # the dry emit and the skill checks report these
+    system1 = (root / "system1" / "skeleton.yaml").is_file()
+    findings: list[ContractFinding] = []
+    questions: list[ContractQuestion] = []
+    for step in plan["steps"]:
+        if step.get("kind") != "do":
+            continue
+        node = pipeline.node_by_id(step["id"])
+        have = context.get(node.id, {})
+        missing = []
+        if "instructions" not in have:
+            why = have.get("why", "no section")
+            if system1:
+                questions.append(
+                    ContractQuestion(
+                        node_id=node.id,
+                        text=(
+                            f"{node.id} is a DO step and its block cannot show the skill's text "
+                            f"for it ({why}): the agent that runs the compiled skill redoes it "
+                            "from the description alone"
+                        ),
+                    )
+                )
+            else:
+                missing.append(
+                    f"the skill's text for it ({why}): set the node's `source.section` to "
+                    "the one SKILL.md heading the step comes from"
+                )
+        if "contract" not in have:
+            missing.append(
+                "its contract: give the stub a docstring saying what its answer must hold "
+                "(every field the steps after it read)"
+            )
+        if not missing:
+            continue
+        findings.append(
+            ContractFinding(
+                node_id=node.id,
+                kind=DO_HANDOFF_THIN,
+                severity="warning",
+                message=(
+                    f"{node.id} is a DO step (the agent does it with its own tools), and its "
+                    f"block cannot tell the agent how to redo the step the way the skill "
+                    f"does. It needs {' and '.join(missing)}"
+                ),
+                path=node.impl,
+            )
+        )
+    return findings, questions
 
 
 def unapplied_proposal_findings(root: Path) -> list[ContractFinding]:
@@ -1324,6 +1411,9 @@ def _verify(
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
     findings += unapplied_proposal_findings(root)
+    thin, thin_questions = do_handoff_findings(pipeline, root, emit_target, implementations)
+    findings += thin
+    questions += thin_questions
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not
