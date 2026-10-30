@@ -17,7 +17,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   file scoping and isolation as the Claude lane, and the A/B compiles on
   Codex too. A Codex run reports time and tokens; what Codex does not report
   (requests, turns, a dollar cost on your plan) is marked unavailable, never
-  zero, and `--budget` is optional there.
+  zero, and `--budget` does not apply (only a ChatGPT login runs).
+
+### Fixed
+
+- **`rote serve` reports rote's version, not fastmcp's (#338).** The MCP
+  handshake answered with fastmcp's version (4.1.4), so every client that
+  shows server versions listed rote as that.
 
 ## [0.19.4] - 2026-10-29
 
