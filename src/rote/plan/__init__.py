@@ -57,6 +57,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from rote.adapters._common import PROMPT_PLACEHOLDER
@@ -156,8 +157,14 @@ def build_plan(
     gate_answers: dict[str, dict[str, Any]] | None = None,
     backend: Literal["mcp", "api"] = "mcp",
     judges: JudgeMode = "session",
+    do_context: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The plan for ``pipeline``, as JSON-ready data.
+
+    ``do_context`` (``{node id: {"instructions": ..., "contract": ...}}``) is
+    what a ``do`` step hands the agent besides its description: the source
+    skill's own text for the step, and the stub's contract for its answer
+    (#336). A key that is absent stays out of the step.
 
     ``mcp="recorded"`` is the compile-time prefix: an MCP step carries the
     baseline's ``observations`` (matched on exact arguments by the runner),
@@ -241,12 +248,17 @@ def build_plan(
                 call_step["env"] = list(node.env)
             return call_step
         if kind == "do":
-            return {
+            do_step: dict[str, Any] = {
                 "description": node.description.strip(),
                 "constants": node.constants,
                 "output_schema": declared_answer_schema(node),
                 "fan_param": fan,
             }
+            for key in ("instructions", "contract"):
+                text = (do_context or {}).get(node.id, {}).get(key)
+                if text:
+                    do_step[key] = text
+            return do_step
         if kind == "judge":
             spec = node.signature_spec
             assert spec is not None

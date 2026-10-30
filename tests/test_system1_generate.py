@@ -1525,3 +1525,22 @@ def test_a_reader_of_a_gate_that_may_be_skipped_is_told_it_gets_none(tmp_path: P
     card = "\n".join(generate._node_card(always, always.node("recap")))
     assert "is skipped and this value is None" not in card
     assert "anyOf" not in always.param_schema(always.node("recap"), "answer")
+
+
+def test_an_external_stubs_contract_is_its_functions_docstring(tmp_path: Path) -> None:
+    """A compiled skill shows the stub's function docstring to the agent that
+    does the step (#336), so the return contract lives there, not only in
+    the module docstring."""
+    import ast
+
+    from rote.compiler.system1.generate import external_stub
+
+    ctx, _ = _context(tmp_path, "ops-report")
+    node = next(n for n in ctx.pipeline.nodes if n.kind.value == "external_call")
+    tree = ast.parse(external_stub(ctx, node))
+    fn = next(s for s in tree.body if isinstance(s, ast.FunctionDef))
+    doc = ast.get_docstring(fn)
+    assert doc is not None and doc.startswith("Returns a value matching this JSON Schema:")
+    assert json.loads(doc.split(":", 1)[1]) == ctx.output_schema(node.id)
+    module_doc = ast.get_docstring(tree)
+    assert module_doc is not None and "JSON Schema" not in module_doc
