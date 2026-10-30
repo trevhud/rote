@@ -24,7 +24,8 @@ copy of these rules (generated Python, say) is how payload semantics drift.
 Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
 ``bindings`` (``[param, source, node_id, field]`` per input):
 
-- ``call``: ``module``, ``symbol``, ``constants``, ``fan_param``, ``retry``.
+- ``call``: ``module``, ``symbol``, ``constants``, ``fan_param``, ``retry``,
+  and ``env`` (the variable names its code reads) when the node declares any.
 - ``mcp``: ``server``, ``tool``, ``url``, ``args``, ``fan_param``,
   ``retry``; recorded plans add ``observed`` and ``probe_shapes``.
 - ``judge``: ``prompt``, ``references`` (the dotted paths the prompt
@@ -198,6 +199,11 @@ def build_plan(
                 "answer_schema": declared_answer_schema(node),
                 "timeout_s": _gate_timeout_s(node, pipeline),
             }
+            if node.when is not None:
+                # Absent otherwise, so a plan with no conditional gate is byte
+                # for byte what it was.
+                ref = parse_input_ref(node.when)
+                gate["when"] = {"node": ref.node_id, "field": ref.field}
             if node.id in answers:
                 # The sample says what the person answered: the gate's
                 # result, so the nodes after it run on the sample too.
@@ -221,13 +227,19 @@ def build_plan(
         if kind == "call":
             assert node.impl is not None
             module, symbol = _module_of(node.impl)
-            return {
+            call_step: dict[str, Any] = {
                 "module": module,
                 "symbol": symbol,
                 "constants": node.constants,
                 "fan_param": fan,
                 "retry": _retry(node),
             }
+            if node.env:
+                # The variables a compiled skill's run passes its code
+                # (rote.skill_target.trust.plan_env); absent when none, so a
+                # plan that reads none is byte for byte what it was.
+                call_step["env"] = list(node.env)
+            return call_step
         if kind == "do":
             return {
                 "description": node.description.strip(),
@@ -474,7 +486,9 @@ def _step_kind(
     from rote.adapters._common import mcp_backed
 
     if node.kind is NodeKind.HITL_GATE:
-        return "gate" if live or node.id in answers else "skip"
+        # A conditional gate is a step even with no sample answer: on a sample
+        # where its condition is false it is skipped, and the run goes on.
+        return "gate" if live or node.id in answers or node.when is not None else "skip"
     if node.mcp is not None and (not live or mcp_backed(node, "skill", backend)):
         return "mcp"
     if node.kind in CONSTANT_ARGUMENT_KINDS and node.impl is not None:

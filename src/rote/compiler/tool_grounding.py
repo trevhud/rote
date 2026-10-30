@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from rote.contracts import ContractFinding
-from rote.ir import Node, Pipeline
+from rote.ir import Node, NodeKind, Pipeline
 from rote.tool_schema import checkable, is_json_type, names_problem
 
 #: Per-server cap on one ``tools/list``. Servers are listed concurrently,
@@ -225,11 +225,13 @@ def logged_in_servers(registered: Mapping[str, Any]) -> list[str]:
 
 
 def adopt_offered(
-    candidates: ToolSchemas, bound_servers: Iterable[str]
+    candidates: ToolSchemas, bound_servers: Iterable[str], loop_tools: Iterable[str] = ()
 ) -> tuple[ToolSchemas, list[str]]:
-    """The offered tools of the servers a plan binds a step to, and the
-    offered servers it binds nothing of (left unused, never grounding)."""
-    bound = set(bound_servers)
+    """The offered tools of the servers a plan binds a step to or offering
+    a tool one of its loops lists, and the offered servers it uses nothing
+    of (left unused, never grounding)."""
+    listed = set(loop_tools)
+    bound = set(bound_servers) | {server for server, tool in candidates if tool in listed}
     adopted = {k: v for k, v in candidates.items() if k[0] in bound}
     unused = sorted({s for s, _ in candidates} - bound)
     return adopted, unused
@@ -807,6 +809,197 @@ def listed_tools(tools: ToolSchemas) -> dict[str, set[str]]:
     return listed
 
 
+def _servers_by_tool(tools: ToolSchemas) -> dict[str, set[str]]:
+    by_tool: dict[str, set[str]] = {}
+    for server, tool in tools:
+        by_tool.setdefault(tool, set()).add(server)
+    return by_tool
+
+
+def _unpinned_loop_tools(pipeline: Pipeline) -> list[tuple[Node, str]]:
+    return [
+        (node, tool)
+        for node in pipeline.nodes
+        if node.kind is NodeKind.AGENT_LOOP
+        for tool in node.tools or ()
+        if tool not in (node.tool_servers or {})
+    ]
+
+
+def loop_tool_pins(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, dict[str, str]]:
+    """``{loop id: {tool: server}}`` for each agent-loop tool the loop does not
+    pin and exactly one grounded server lists.
+
+    A loop's ``tools`` are bare names, and the compiled skill calls a loop
+    tool only on the server ``tool_servers`` pins it to. The grounded
+    servers' tools are the evidence: one server offering the tool is its
+    server. A tool two servers offer is left unpinned (:func:`tool_questions`
+    asks), because pinning either would send the loop to an endpoint
+    nothing chose. A pin the loop already has always stays.
+    """
+    by_tool = _servers_by_tool(tools)
+    pins: dict[str, dict[str, str]] = {}
+    for node, tool in _unpinned_loop_tools(pipeline):
+        servers = by_tool.get(tool, set())
+        if len(servers) == 1:
+            pins.setdefault(node.id, {})[tool] = next(iter(servers))
+    return pins
+
+
+def with_loop_pins(pipeline: Pipeline, pins: Mapping[str, Mapping[str, str]]) -> Pipeline:
+    """``pipeline`` with ``pins`` added to its loops' ``tool_servers``."""
+    nodes = [
+        n.model_copy(update={"tool_servers": {**pins[n.id], **(n.tool_servers or {})}})
+        if n.id in pins
+        else n
+        for n in pipeline.nodes
+    ]
+    return pipeline.model_copy(update={"nodes": nodes})
+
+
+def write_loop_pins(path: Path, pipeline: Pipeline, pins: Mapping[str, Mapping[str, str]]) -> bool:
+    """Write ``pins`` into the pipeline.yaml at ``path`` by editing only the
+    pinned loops' ``tool_servers`` lines, so the agent's comments (its
+    ``# rote: assumption:`` markers among them) survive.
+
+    ``pipeline`` is what ``path`` holds. Returns False, with the file as it
+    was, when the edited text does not load as exactly
+    :func:`with_loop_pins` of it (a layout the edit does not handle).
+    """
+    from rote.ir import load_pipeline
+
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    current = {n.id: dict(n.tool_servers or {}) for n in pipeline.nodes}
+    for node_id, new in pins.items():
+        found = _id_line(lines, node_id)
+        if found is None:
+            return False
+        at, col = found
+        start, end = _item_bounds(lines, at, col)
+        merged = dict(sorted({**new, **current[node_id]}.items()))
+        line = f"{' ' * col}tool_servers: {json.dumps(merged)}\n"
+        key = re.compile(rf"^(?: *- +| {{{col}}})tool_servers:")
+        existing = next((i for i in range(start, end) if key.match(lines[i])), None)
+        if existing is None:
+            lines.insert(at + 1, line)
+            continue
+        if lines[existing].lstrip().startswith("-"):
+            return False  # the item opens with tool_servers: not a layout this edits
+        stop = existing + 1
+        while stop < end and (not lines[stop].strip() or _indent(lines[stop]) > col):
+            stop += 1
+        lines[existing:stop] = [line]
+    path.write_text("".join(lines), encoding="utf-8")
+    try:
+        written: Pipeline | None = load_pipeline(path)
+    except Exception:  # noqa: BLE001 (any load failure means the edit did not hold)
+        written = None
+    if written is None or written.model_dump() != with_loop_pins(pipeline, pins).model_dump():
+        path.write_text(original, encoding="utf-8")
+        return False
+    return True
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _id_line(lines: list[str], node_id: str) -> tuple[int, int] | None:
+    """The one line holding ``id: <node_id>`` as a list item's key, and the
+    column the item's keys start at."""
+    pattern = re.compile(
+        rf"^(?P<lead> *- +| +)id: *(?P<q>['\"]?){re.escape(node_id)}(?P=q) *(?:#.*)?\n?$"
+    )
+    hits = [(i, len(m.group("lead"))) for i, ln in enumerate(lines) if (m := pattern.match(ln))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _item_bounds(lines: list[str], at: int, col: int) -> tuple[int, int]:
+    """``[start, end)`` of the list item whose keys sit at ``col``, around line ``at``."""
+    start = at
+    while start > 0 and lines[start][col - 2 : col] != "- ":
+        start -= 1
+    end = at + 1
+    while end < len(lines):
+        text = lines[end].strip()
+        if text and not text.startswith("#") and _indent(lines[end]) < col:
+            break
+        end += 1
+    return start, end
+
+
+#: The finding :func:`unserved_loop_tool_findings` raises.
+LOOP_TOOL_UNSERVED = "loop_tool_unserved"
+
+
+def unserved_loop_tool_findings(
+    pipeline: Pipeline, skill_dir: Path | None, tools: ToolSchemas, unlisted: Iterable[str]
+) -> list[ContractFinding]:
+    """Each unpinned agent-loop tool no grounded server offers, when that proves something.
+
+    It does only when a live ``tools/list`` answered and every server the
+    skill names (:func:`servers_named`, told which registered servers rote
+    did not list) is among the live-listed ones: then no server the skill
+    uses offers the tool. A command the skill calls a tool
+    (``chrome_cdp_snapshot``, a browser CLI) is the usual cause. With no live
+    listing, or a named server rote could not list, nothing is known and
+    nothing is said.
+
+    Even then it is a review gap, not an error: rote does not contact a
+    registered server the skill never names, and that server may offer the
+    tool, so a failure here could fail a correct compile. The structure
+    pass's own placeholder (``<loop id>_tool``, written when no declared tool
+    fits) is not reported: settle restores it, so the agent cannot change
+    it, and the report already lists it for review.
+    """
+    listed = listed_tools(tools)
+    if not listed or skill_dir is None or not (skill_dir / "SKILL.md").is_file():
+        return []
+    if set(servers_named(skill_dir, unlisted)) - set(listed):
+        return []
+    served = _servers_by_tool(tools)
+    return [
+        ContractFinding(
+            node_id=node.id,
+            kind=LOOP_TOOL_UNSERVED,
+            severity="warning",
+            message=(
+                f"{node.id} lists `{tool}` in its tools, but no server the skill uses offers "
+                f"it (rote listed {', '.join(sorted(listed))}). An agent loop calls MCP tools "
+                f"only: if `{tool}` is a command or a script (a CLI, a browser), make that work "
+                f"a loop_body sub-node whose impl runs it and drop it from tools; if it is an "
+                f"MCP tool, use the name a listed server offers. It may also be on a server "
+                f"the skill does not name, which rote did not contact (--tool-discovery all "
+                f"lists every registered server)"
+            ),
+            path="pipeline.yaml",
+        )
+        for node, tool in _unpinned_loop_tools(pipeline)
+        if tool not in served and tool != placeholder_loop_tool(node.id)
+    ]
+
+
+def placeholder_loop_tool(loop_id: str) -> str:
+    """The tool name System-1's structure pass gives a loop no declared tool fits."""
+    return f"{loop_id}_tool"
+
+
+def _loop_tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
+    """``(loop id, text)`` for each unpinned loop tool several grounded servers offer."""
+    by_tool = _servers_by_tool(tools)
+    return [
+        (
+            node.id,
+            f"its tool `{tool}` is offered by {' and '.join(sorted(by_tool[tool]))}, so rote "
+            f"left it unpinned rather than pick one. The compiled skill refuses a loop tool "
+            f"tool_servers does not pin: pin it in the node's tool_servers ({tool}: <server>)",
+        )
+        for node, tool in _unpinned_loop_tools(pipeline)
+        if len(by_tool.get(tool, ())) > 1
+    ]
+
+
 def _unknown_tool(node_id: str, server: str, tool: str, offered: set[str]) -> ContractFinding:
     return ContractFinding(
         node_id=node_id,
@@ -924,6 +1117,187 @@ def unchecked_tools(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, list[st
     return {server: sorted(names) for server, names in sorted(unchecked.items())}
 
 
+def result_schema(
+    server: str, tool: str, tools: ToolSchemas, observations: Iterable[Any]
+) -> tuple[dict[str, Any], str] | None:
+    """A tool's result schema and where it is from, when data says it.
+
+    A baseline's recorded results first (they show the values a real call
+    returned), then the outputSchema the server declares. Both describe what
+    the step receives: a recorded result is decoded from its text, and
+    fastmcp's ``{"result": ...}`` wrapper is removed by the same rule the
+    emitted runtime helper applies. ``None``: nothing observed or declared.
+    """
+    from rote.mcp._runtime_helper import returned_schema
+    from rote.probe import infer_schema, parse_tool_result
+
+    declared = tools.get((server, tool))
+    output_schema = getattr(declared, "output_schema", None)
+    results = [
+        value
+        for o in observations
+        if (getattr(o, "server", None), getattr(o, "tool", None)) == (server, tool)
+        and not getattr(o, "is_error", False)
+        and (value := parse_tool_result(getattr(o, "result", None), output_schema)) is not None
+    ]
+    if results:
+        return infer_schema(results), "observed in a recorded run"
+    if getattr(declared, "declared", False):
+        schema = returned_schema(output_schema)
+        if schema:
+            return schema, "declared by the server's tools/list"
+    return None
+
+
+#: A node reads a field of an MCP result whose known shape has no such field.
+RESULT_FIELD_MISSING = "result_field_missing"
+
+
+def result_field_checks(
+    pipeline: Pipeline, tools: ToolSchemas, observations: Iterable[Any]
+) -> tuple[list[ContractFinding], list[tuple[str, str]]]:
+    """Every ``<node>.output.<field>`` read of an MCP-bound node's result,
+    against what is known of that result (#253).
+
+    Known (recorded, or declared by the server) and without the field: an
+    error, because the run fails at that read. A result that is a string or
+    a list has no fields; an object that lists its properties is closed, as
+    the vendors leave ``additionalProperties`` out. An object that admits
+    other keys proves nothing. Unknown: an open question, never a guess.
+    """
+    from rote.ir import parse_input_ref
+
+    observed = tuple(observations)
+    findings: list[ContractFinding] = []
+    questions: list[tuple[str, str]] = []
+    by_id = {n.id: n for n in pipeline.nodes}
+    for node in pipeline.nodes:
+        for param, source in sorted((node.inputs or {}).items()):
+            ref = parse_input_ref(source)
+            producer = by_id.get(ref.node_id) if ref.node_id is not None else None
+            if ref.field is None or producer is None or producer.mcp is None:
+                continue
+            if producer.fan_out:
+                continue  # its result is the list of its runs, read whole
+            call = f"{producer.mcp.server}.{producer.mcp.tool}"
+            known = result_schema(producer.mcp.server, producer.mcp.tool, tools, observed)
+            if known is None:
+                questions.append(
+                    (
+                        node.id,
+                        f"`{param}` reads `{ref.field}` from {producer.id}'s result, but no "
+                        f"recorded run or declared outputSchema shows what {call} returns; "
+                        "if it returns text or a list, every run fails at this read",
+                    )
+                )
+                continue
+            schema, where = known
+            missing = _field_missing(schema, ref.field)
+            if missing is not None:
+                findings.append(
+                    ContractFinding(
+                        node_id=node.id,
+                        kind=RESULT_FIELD_MISSING,
+                        severity="error",
+                        message=(
+                            f"`{param}` reads `{ref.field}` from {producer.id}'s result, but "
+                            f"{call}'s result ({where}) {missing}. Read the result whole, or "
+                            "add a pure_function after the call that builds the value"
+                        ),
+                        path="pipeline.yaml",
+                    )
+                )
+    return findings, questions
+
+
+def _field_missing(schema: Mapping[str, Any], field: str) -> str | None:
+    """Why ``schema`` cannot have ``field``, or None when it can (or may)."""
+    kind = schema.get("type")
+    if kind in ("string", "array", "number", "integer", "boolean", "null"):
+        article = "an" if kind in ("array", "integer") else "a"
+        return f"is {article} {kind}, which has no fields"
+    if kind != "object":
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping) or schema.get("additionalProperties") not in (
+        None,
+        False,
+    ):
+        return None
+    if field in properties:
+        return None
+    listed = ", ".join(f"`{k}`" for k in sorted(properties)) or "none"
+    return f"has no field `{field}` (its fields: {listed})"
+
+
+#: An MCP call never sends constants the skill states, and its tool's schema
+#: says which parameters take them: the agent binds them.
+MCP_CONSTANT_UNSENT = "mcp_constant_unsent"
+#: The same, with no schema to bind them by: grounding is missing.
+MCP_ARGS_UNGROUNDED = "mcp_args_ungrounded"
+
+
+def unsent_constant_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFinding]:
+    """Every MCP call whose node holds constants ``mcp.args`` never sends (#291).
+
+    The skill's document ids and search query sat in ``constants`` while
+    every binding had ``mcp.args: {}``, so each call went out empty and the
+    summary still said the nodes ran via their binding. With the tool's
+    declared, checkable input schema the agent can bind each constant to its
+    parameter, so it is an error. Without one, guessing parameter names is
+    worse than stopping: it is a review gap naming the server to register,
+    and the node blocks the run (:attr:`rote.contracts.NodeImplementation.blocks_run`).
+    An empty ``mcp.args`` on a node with no constants is a zero-argument call
+    and is left alone.
+    """
+    from rote.adapters._common import unsent_constants
+
+    findings: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        unsent = unsent_constants(node)
+        if not unsent:
+            continue
+        assert node.mcp is not None
+        call = f"{node.mcp.server}.{node.mcp.tool}"
+        names = ", ".join(f"`{c}`" for c in unsent)
+        schema = tools.get((node.mcp.server, node.mcp.tool))
+        view = checkable(schema.input_schema) if schema is not None and schema.declared else None
+        if view is not None:
+            params = ", ".join(f"`{p}`" for p in sorted(view.get("properties") or {})) or "none"
+            findings.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind=MCP_CONSTANT_UNSENT,
+                    severity="error",
+                    message=(
+                        f"{node.id} holds constants {names} that its call to {call} never "
+                        f"sends: `mcp.args` names none of them, so the call goes out without "
+                        f"the values the skill states. Map each to the tool's parameter in "
+                        f"`mcp.args` (parameter: constant name). {call} takes {params}"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+        else:
+            findings.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind=MCP_ARGS_UNGROUNDED,
+                    severity="warning",
+                    message=(
+                        f"{node.id} holds constants {names} that its call to {call} never "
+                        f"sends, and no schema for {call} says which parameters take them, "
+                        f"so this call cannot run as the skill describes. Register and log "
+                        f"in to {node.mcp.server} (rote mcp add {node.mcp.server} <url>, "
+                        f"rote mcp login {node.mcp.server}) and compile again, so rote can "
+                        f"read its tools/list and bind them"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+    return findings
+
+
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
     """``(node id, text)`` for every binding whose arguments nothing could check."""
     questions: list[tuple[str, str]] = []
@@ -967,4 +1341,4 @@ def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, st
                         f"was not available to check it",
                     )
                 )
-    return questions
+    return questions + _loop_tool_questions(pipeline, tools)

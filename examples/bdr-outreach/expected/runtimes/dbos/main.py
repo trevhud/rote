@@ -138,6 +138,140 @@ def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
     return {key: pipeline_input[field]} if field in pipeline_input else {}
 
 
+# rote's gate-message renderer (rote.adapters._gate_runtime_helper), verbatim.
+# Every Python workflow runtime and the compiled skill's driver use it, and
+# the TS twin is GATE_MESSAGE_HELPER_TS in rote.adapters._ts_common: change a
+# rule in both and run tests/test_gate_message.py with -m "slow or not slow".
+# Stdlib only, imports inside the functions, and nothing from rote.
+
+
+def _gate_number(value: float) -> str:
+    """``value`` as JavaScript's ``JSON.stringify`` writes a number.
+
+    Both languages pick the same shortest digits; only the layout differs
+    (Python ``2.0`` and ``1e+16``, JavaScript ``2`` and
+    ``10000000000000000``), so the digits come from ``repr`` and the layout
+    follows ECMAScript's Number::toString.
+    """
+    import decimal
+    import math
+
+    if not math.isfinite(value):
+        return "null"
+    if value == 0:
+        return "0"
+    _, digit_tuple, exponent = decimal.Decimal(repr(abs(value))).as_tuple()
+    assert isinstance(exponent, int)
+    padded = "".join(str(d) for d in digit_tuple)
+    digits = padded.rstrip("0")
+    exponent += len(padded) - len(digits)
+    k = len(digits)
+    n = exponent + k
+    if k <= n <= 21:
+        text = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        text = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        text = "0." + "0" * -n + digits
+    else:
+        e = n - 1
+        mantissa = digits if k == 1 else digits[0] + "." + digits[1:]
+        text = mantissa + "e" + ("+" if e >= 0 else "-") + str(abs(e))
+    return ("-" if value < 0 else "") + text
+
+
+def _gate_json(value: object) -> str:
+    """``value`` as JavaScript's ``JSON.stringify`` writes it, compact.
+
+    An integer beyond 2**53 is the double JavaScript would hold, and an
+    object lists its array-index keys ("0", "7") first in numeric order,
+    then the rest in insertion order, as a JavaScript object does. A value
+    JSON cannot carry fails, naming its type.
+    """
+    import json
+    import re
+
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        if abs(value) <= 2**53:
+            return str(value)
+        try:
+            return _gate_number(float(value))
+        except OverflowError:
+            return "null"
+    if isinstance(value, float):
+        return _gate_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_gate_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        for key in value:
+            if not isinstance(key, str):
+                raise TypeError(f"object key {key!r} is not a string")
+        index = sorted(
+            (k for k in value if re.fullmatch("0|[1-9][0-9]*", k) and int(k) <= 2**32 - 2),
+            key=int,
+        )
+        rest = [k for k in value if k not in set(index)]
+        return (
+            "{"
+            + ",".join(
+                json.dumps(k, ensure_ascii=False) + ":" + _gate_json(value[k]) for k in index + rest
+            )
+            + "}"
+        )
+    raise TypeError(f"{type(value).__name__} is not a JSON value")
+
+
+def _gate_input(name: str, source: object, field: str) -> dict[str, object]:
+    """``{name: source[field]}`` when the run has that value, else nothing.
+
+    Spread into a gate's message values, so a value the run does not have
+    (an omitted optional input, a key an upstream result lacks) is absent
+    and its placeholder is kept as written, never a KeyError at the gate.
+    The TS twin is ``roteGateField``.
+    """
+    return {name: source[field]} if isinstance(source, dict) and field in source else {}
+
+
+def _render_gate_message(template: str, values: dict[str, object]) -> str:
+    """A gate's message: each ``{name}`` filled from ``values``, its bound inputs.
+
+    A string is used as is; any other value is written as JSON, the way the
+    TypeScript runtimes write it (``renderGateMessage``), so one run reads
+    the same on every runtime. A placeholder whose input the run left out
+    (``_gate_input``) is kept as written. Then every invisible
+    character (controls, format characters such as bidi overrides, line
+    and paragraph separators, lone surrogates) is spelled ``\\uXXXX``, so a
+    value cannot drive the terminal the message is shown on. The newline
+    and the tab stay.
+    """
+    import re
+    import unicodedata
+
+    def fill(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in values:
+            return match.group(0)
+        value = values[name]
+        return value if isinstance(value, str) else _gate_json(value)
+
+    out: list[str] = []
+    for ch in re.sub("\\{([A-Za-z_][A-Za-z0-9_]*)\\}", fill, template):
+        if ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Cs"):
+            code = ord(ch)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 _ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
 _ASYNC_LOOP_THREAD: threading.Thread | None = None
 _ASYNC_LOOP_LOCK = threading.Lock()
@@ -460,6 +594,8 @@ def run_pipeline(pipeline_input: dict) -> dict:
     _input_error = _missing_inputs_error(pipeline_input, ("campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area",))
     if _input_error is not None:
         raise ValueError(_input_error)
+    # Every gate this run has reached, for the rote_gate_status event.
+    _rote_gates: list[dict] = []
 
     # ─── Wave 1 ───
     # Parallel fan-out: enqueue every node in the wave, then
@@ -492,6 +628,11 @@ def run_pipeline(pipeline_input: dict) -> dict:
 
     # ─── Wave 3 ───
     # ─── HITL gate: contact_review_gate ───
+    # Says which gate the run waits at, and the gate's message, in
+    # the workflow event `rote run` watches. Display only: nothing
+    # is sent to a person or a channel.
+    _rote_gates.append({"gate": "contact_review_gate", "signal": "contact_review_approved", "message": _render_gate_message("BDR campaign awaiting review: {drug_brand} for {condition_acronym}.\nApprove, remove or reprioritize the vetted contacts before CRM upload.\n", {**_gate_input("drug_brand", pipeline_input, "drug_brand"), **_gate_input("condition_acronym", pipeline_input, "condition_acronym")}), "shows": {**_gate_input("vetted_contacts", lead_generation_loop_result, "vetted_contacts"), **_gate_input("discarded_summary", lead_generation_loop_result, "discarded_summary")}})
+    DBOS.set_event("rote_gate_status", {"reached": list(_rote_gates)})
     # Durable receive: the workflow parks in the system database until
     # DBOS.send(workflow_id, payload, topic='contact_review_approved')
     # delivers the resume message. Survives process restarts.
@@ -575,6 +716,11 @@ def run_pipeline(pipeline_input: dict) -> dict:
 
     # ─── Wave 12 ───
     # ─── HITL gate: manual_enrollment_handoff ───
+    # Says which gate the run waits at, and the gate's message, in
+    # the workflow event `rote run` watches. Display only: nothing
+    # is sent to a person or a channel.
+    _rote_gates.append({"gate": "manual_enrollment_handoff", "signal": "bdr_enrollment_complete", "message": _render_gate_message("BDR campaign ready for manual enrollment: {campaign_name}\n\n{report_markdown}\n", {**_gate_input("campaign_name", pipeline_input, "drug_brand"), **_gate_input("report_markdown", pre_enrollment_report_result, "report_markdown")}), "shows": {}})
+    DBOS.set_event("rote_gate_status", {"reached": list(_rote_gates)})
     # Durable receive: the workflow parks in the system database until
     # DBOS.send(workflow_id, payload, topic='bdr_enrollment_complete')
     # delivers the resume message. Survives process restarts.

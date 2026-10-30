@@ -60,6 +60,7 @@ from rote.compiler.grounding import (
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
+from rote.compiler.system1.enforce import proposals as enforce_proposals
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
 from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
 from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
@@ -70,10 +71,11 @@ from rote.compiler.update import (
     build_update_plan,
     render_update_brief,
 )
-from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
+from rote.compiler.usage import CompileUsage, compile_usage
+from rote.compiler.verify import UNAPPLIED_PROPOSAL, EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
-from rote.ir import Pipeline, load_pipeline
+from rote.ir import Pipeline, load_pipeline, save_pipeline
 from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
 from rote.vendor_specs import SpecStore
 
@@ -117,10 +119,17 @@ class CompilationResult:
     #: verification is not ``ok`` still returns: the artifacts are the
     #: output of a paid run. The CLI reports it and exits non-zero.
     verification: Verification | None = None
+    #: What the compile's model calls are known to have used, stage by
+    #: stage (:mod:`rote.compiler.usage`). ``None`` when the compiler that
+    #: built this result reported none, which the CLI reports as unknown.
+    usage: CompileUsage | None = None
 
 
-def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
-    """Persist bounded metrics before adapters can fail; never copy driver prose."""
+def _write_compile_metrics(result: DriverResult, output_dir: Path) -> CompileUsage:
+    """Persist bounded metrics before adapters can fail; never copy driver prose.
+
+    Returns the usage it recorded, which the CLI reports, so the file and
+    every other report are one computation."""
     metadata: dict[str, Any] = {}
     for key in (
         "input_tokens",
@@ -146,7 +155,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     ):
         metadata["session_id"] = session_id
     source = result.metadata.get("usage_source")
-    if source in ("stream", "usage", "modelUsage", "generations"):
+    if source in ("stream", "usage", "modelUsage", "generations", "turn.completed"):
         metadata["usage_source"] = source
     complete = result.metadata.get("usage_complete")
     if isinstance(complete, bool):
@@ -162,10 +171,14 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     search = result.metadata.get("web_search_usd")
     if isinstance(search, (int, float)) and not isinstance(search, bool) and search >= 0:
         metadata["web_search_usd"] = search
+    usage = compile_usage(result.driver_name, metadata, output_dir)
     payload: dict[str, Any] = {
         "schema_version": 1,
         "driver": result.driver_name,
         "metadata": metadata,
+        # Every stage, so an empty metadata object reads as unmeasured, not
+        # as a free run (rote.compiler.usage).
+        "usage": usage.as_dict(),
     }
     if "cost_usd" in metadata:
         payload["cost_basis"] = "driver_estimate"
@@ -190,6 +203,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    return usage
 
 
 def _default_compiler_skill_dir() -> Path:
@@ -589,6 +603,8 @@ class Compiler:
                     driver_metadata={
                         "update": "no source sections changed; previous pipeline kept"
                     },
+                    # No model call ran: a measured zero, not a missing count.
+                    usage=CompileUsage([]),
                 )
 
         driver = self.select_driver()
@@ -693,10 +709,13 @@ class Compiler:
                         error.usage = usage  # type: ignore[attr-defined]
                         raise error from e
                     raise CompilerError(str(e)) from e
-                # An offered server the plan binds a step to is now grounding
-                # like any other; one it binds nothing of is left unused.
+                # An offered server the plan binds a step to, or whose tool a
+                # loop lists, is now grounding like any other; one it uses
+                # nothing of is left unused.
                 adopted, unused = tool_grounding.adopt_offered(
-                    candidates, (n.mcp["server"] for n in s1_plan.nodes if n.mcp)
+                    candidates,
+                    (n.mcp["server"] for n in s1_plan.nodes if n.mcp),
+                    (t for n in s1_plan.nodes for t in n.tools or ()),
                 )
                 for server in sorted({s for s, _ in adopted}):
                     self._emit(
@@ -714,7 +733,7 @@ class Compiler:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
                     self._emit(
                         "log",
-                        f"system1: structure pass by {st.model} via {st.lane}, "
+                        f"system1: structure pass by {st.model_label} via {st.lane}, "
                         f"{st.rounds} round(s), {len(st.resolved)} unresolved ({cost})",
                     )
                 tb = s1_plan.tiebreak
@@ -792,8 +811,8 @@ class Compiler:
                 # the SAME agent conversation with the verbatim problems
                 # instead of shipping the paid run broken. Only drivers whose
                 # run() declares the ``repair`` parameter can resume a
-                # conversation (the in-process drivers, and claude via
-                # `--resume`).
+                # conversation (the in-process drivers, claude via
+                # `--resume`, and codex via `codex exec resume`).
                 if "repair" in inspect.signature(driver.run).parameters:
                     settle_round = (
                         None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
@@ -806,6 +825,11 @@ class Compiler:
                         portable_judges=s1_plan is not None,
                         web_research=research,
                         spec_store=specs,
+                        rebind=(
+                            None
+                            if s1_plan is None
+                            else self._rebind(driver, skill_dir, work_dir, s1_plan)
+                        ),
                     )
 
             try:
@@ -879,6 +903,10 @@ class Compiler:
                         f"restructure is intentional."
                     )
 
+            pipeline = self._pin_loop_tools(
+                Path(result.pipeline_yaml_path), pipeline, grounding.tools
+            )
+
             # The final verdict, after any repair rounds: what the CLI
             # reports, and what decides its exit code. Run before the move
             # so a verification crash can't strand the work in the temp dir
@@ -929,7 +957,7 @@ class Compiler:
             else:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
-            _write_compile_metrics(result, output_dir)
+            usage = _write_compile_metrics(result, output_dir)
             tool_grounding.write_declared(output_dir, grounding.tools)
             if self.emit_target is not None and self.emit_target.external_backend in BACKENDS:
                 # Beside the IR, never in it: a later `rote emit` must not
@@ -1007,6 +1035,7 @@ class Compiler:
                 driver_name=result.driver_name,
                 driver_metadata=metadata,
                 verification=verification,
+                usage=usage,
             )
 
     async def _generate_text(
@@ -1061,6 +1090,7 @@ class Compiler:
             run_tests=self.run_generated_tests,
             trust_skill=self.trust_skill,
             redecide=self._redecide(driver, skill_dir, work_dir, s1_plan, grounding),
+            rebind=self._rebind(driver, skill_dir, work_dir, s1_plan),
         )
 
     def _redecide(
@@ -1103,6 +1133,35 @@ class Compiler:
                 return [f"re-deciding MCP bindings failed, the findings stand: {e}"]
             record.usage += usage
             record.redecided += changes
+            return changes
+
+        return run
+
+    def _rebind(
+        self, driver: Any, skill_dir: Path, work_dir: Path, s1_plan: system1.Plan
+    ) -> generate.Redecide | None:
+        """The structure pass's re-decide for data flow, when it decided the skeleton.
+
+        A value that never reaches the step needing it (#329) is a binding: the
+        structure pass decided every one, so it decides this one too, and the
+        text follows. Its calls bill to the structure pass's record.
+        """
+        record = s1_plan.structure
+        if record is None:
+            return None
+        from rote.compiler.system1 import structure
+
+        lane = structure.lane_for(driver, self.system1_structure)
+        skill_md = structure.skill_text(skill_dir)
+
+        def run(findings: dict[str, list[str]]) -> list[str]:
+            try:
+                changes, usage = structure.rebind(work_dir, findings, skill_md, lane)
+            except structure.StructureUnavailable as e:
+                record.usage += e.usage
+                return [f"re-deciding data flow failed, the findings stand: {e}"]
+            record.usage += usage
+            record.redecided += [c for c in changes if ": bound (" in c]
             return changes
 
         return run
@@ -1267,6 +1326,7 @@ class Compiler:
         portable_judges: bool = False,
         web_research: api_docs.WebResearch | None = None,
         spec_store: SpecStore | None = None,
+        rebind: generate.Redecide | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -1292,16 +1352,21 @@ class Compiler:
         # fix that breaks pipeline.yaml in the last contract round must
         # still go back rather than end the paid run on a validation error.
         invalid_attempts = 0
+        # Each proposal goes back once. The agent may rightly keep one (its
+        # code cannot meet the skill without the change), and asking again
+        # buys a resumed turn whose only right answer is to change nothing.
+        sent_proposals: set[tuple[str, str]] = set()
+        # Each data-flow finding (and binding proposal) goes to the structure
+        # pass once: what it keeps is its decision.
+        rebound: set[tuple[str, str]] = set()
 
-        def _repair(pipeline_yaml_path: Path) -> str | None:
-            nonlocal attempts, invalid_attempts
-            artifact_dir = pipeline_yaml_path.parent
+        def _verify(artifact_dir: Path) -> Verification:
             if before_verify is not None:
                 try:
                     before_verify(artifact_dir)
                 except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
                     self._emit("warning", f"preparing the deliverable for verification failed: {e}")
-            verification = verify_deliverable(
+            return verify_deliverable(
                 artifact_dir,
                 base_dir=base_dir,
                 run_tests=self.run_generated_tests,
@@ -1314,9 +1379,62 @@ class Compiler:
                 web_research=web_research,
                 spec_store=spec_store,
             )
+
+        def _rebind(artifact_dir: Path, verification: Verification) -> list[str]:
+            """Send new data-flow findings and binding proposals to the structure
+            pass; return what it bound (nothing when it bound nothing)."""
+            if rebind is None or verification.pipeline_error is not None:
+                return []
+            if attempts >= MAX_VALIDATION_REPAIRS:
+                # No turn follows to write the code a new binding needs: a
+                # binding now would ship a step that cannot take its payload.
+                return []
+            flows = generate.dataflow_findings(verification, rebound)
+            found, _ = enforce_proposals(artifact_dir)
+            for p in found:
+                if p.field != "inputs":
+                    continue
+                line = f"the agent proposes reads {p.value!r} (because: {p.reason or 'none given'})"
+                if (str(p.node), line) not in rebound:
+                    flows.setdefault(str(p.node), []).append(line)
+            if not flows:
+                return []
+            rebound.update((n, m) for n, msgs in flows.items() for m in msgs)
+            changes = rebind(flows)
+            for change in changes:
+                self._emit("log", f"structure: {change}")
+            return [c for c in changes if ": bound (" in c]
+
+        def _repair(pipeline_yaml_path: Path) -> str | None:
+            nonlocal attempts, invalid_attempts
+            artifact_dir = pipeline_yaml_path.parent
+            verification = _verify(artifact_dir)
+            bound = _rebind(artifact_dir, verification)
+            if bound:
+                # The settle lays the new bindings into pipeline.yaml; verify
+                # what will ship, so the agent repairs against it.
+                verification = _verify(artifact_dir)
+            fresh = [
+                f
+                for f in verification.findings
+                if f.kind != UNAPPLIED_PROPOSAL or (f.node_id, f.message) not in sent_proposals
+            ]
+            verification = dataclasses.replace(verification, findings=fresh)
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None:
                 return None
+            if bound:
+                instruction += (
+                    "\n\nrote's structure pass, which decides what each step reads, added "
+                    "these bindings for the data-flow problems: "
+                    + "; ".join(bound)
+                    + ". Each step named takes the new parameter now: update its module, "
+                    "contract and tests to use it, and delete any proposal in "
+                    "system1/proposals.yaml it answers."
+                )
+            sent_proposals.update(
+                (f.node_id, f.message) for f in fresh if f.kind == UNAPPLIED_PROPOSAL
+            )
             invalid = verification.pipeline_error is not None
             if (invalid_attempts if invalid else attempts) >= MAX_VALIDATION_REPAIRS:
                 return None
@@ -1325,6 +1443,10 @@ class Compiler:
                 # and lays text.yaml over it, so an edit to pipeline.yaml alone
                 # is undone and the same error comes back.
                 instruction += SYSTEM1_REPAIR_NOTE
+            if portable_judges:
+                # A refused input field is not a verification finding: say why,
+                # or the agent sees only the field still missing.
+                instruction += system1.added_inputs.refusal_note(artifact_dir) or ""
             if invalid:
                 invalid_attempts += 1
             else:
@@ -1334,13 +1456,15 @@ class Compiler:
             else:
                 problems = len(verification.errors)
                 gaps = len(verification.provenance_gaps)
-                dead = len(verification.review_gaps) - gaps
+                proposed = sum(1 for f in verification.review_gaps if f.kind == UNAPPLIED_PROPOSAL)
+                dead = len(verification.review_gaps) - gaps - proposed
                 tests = verification.tests
                 red = tests is not None and tests.status == "failed"
                 what = (
                     f"the deliverable failed verification ({problems} contract "
                     f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
-                    f"{f', {dead} unused constant(s)' if dead else ''}"
+                    f"{f', {dead} review gap(s)' if dead else ''}"
+                    f"{f', {proposed} unapplied proposal(s)' if proposed else ''}"
                     f"{', generated tests failing' if red else ''})"
                 )
             attempt = invalid_attempts if invalid else attempts
@@ -1476,6 +1600,31 @@ class Compiler:
             f"disagree, trust the traffic and note the discrepancy in the "
             f"compilation report."
         )
+
+    def _pin_loop_tools(
+        self, pipeline_yaml: Path, pipeline: Pipeline, tools: tool_grounding.ToolSchemas
+    ) -> Pipeline:
+        """Pin each agent-loop tool to the one grounded server that offers it.
+
+        One place for every path (legacy, System-1, update): after the agent's
+        last stop and System-1's settle, before the final verification, so
+        what is verified is what ships. A pin already in the IR wins.
+        """
+        pins = tool_grounding.loop_tool_pins(pipeline, tools)
+        if not pins:
+            return pipeline
+        for node_id, pinned in sorted(pins.items()):
+            servers = ", ".join(f"{t} -> {s}" for t, s in sorted(pinned.items()))
+            self._emit("log", f"tool schemas: pinned {node_id}'s tools: {servers}")
+        if not tool_grounding.write_loop_pins(pipeline_yaml, pipeline, pins):
+            pinned_pipeline = tool_grounding.with_loop_pins(pipeline, pins)
+            save_pipeline(pinned_pipeline, pipeline_yaml)
+            self._emit(
+                "warning",
+                "pipeline.yaml was rewritten whole to add tool_servers (its layout did not "
+                "allow a line edit), so its YAML comments were not kept",
+            )
+        return load_pipeline(pipeline_yaml)
 
     @staticmethod
     def _repoint_source_skill(

@@ -314,6 +314,7 @@ def _install_mock_compiler(
     """
     from rote.compiler import CompilationResult
     from rote.compiler.events import CompilationEvent
+    from rote.compiler.usage import compile_usage
     from rote.ir import load_pipeline
 
     real_pipeline = load_pipeline(pipeline_yaml or BDR_PIPELINE_YAML)
@@ -347,16 +348,19 @@ def _install_mock_compiler(
                         message="turn 1: working",
                     )
                 )
+            metadata = (
+                driver_metadata
+                if driver_metadata is not None
+                else {"num_turns": 7, "input_tokens": 1000, "output_tokens": 500}
+            )
             return CompilationResult(
                 pipeline=real_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
-                driver_metadata=(
-                    driver_metadata
-                    if driver_metadata is not None
-                    else {"num_turns": 7, "input_tokens": 1000, "output_tokens": 500}
-                ),
+                driver_metadata=metadata,
                 verification=verification,  # type: ignore[arg-type]
+                # As the real Compiler computes it, from the same inputs.
+                usage=compile_usage("mock", metadata, output_dir),
             )
 
     monkeypatch.setattr("rote.cli.Compiler", _MockCompiler)
@@ -849,6 +853,112 @@ def test_compile_incomplete_usage_keeps_null_output_in_final_summary(
     }
     assert summary["usage_complete"] is False
     assert "cost_usd" not in summary
+
+
+def test_a_failed_verification_is_reported_as_failed_everywhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#291 part 4: a deliverable that still failed verification printed
+    ``rote compile: ✓``, a ``next: rote run`` line and ``contract_errors: 0``
+    before the failure. The exit stays 1 and the artifacts stay, but the
+    header, --json and the progress summary all say it failed."""
+    from rote.compiler.verify import Verification
+    from rote.contracts import ContractFinding, check_contracts
+    from rote.ir import load_pipeline
+
+    pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    unresolved = ContractFinding(
+        node_id="enrich_contacts",
+        kind="prefix_failed",
+        severity="error",
+        message="KeyError: 'expense_id' at extracted/enrich.py:12",
+    )
+    _install_mock_compiler(
+        monkeypatch, verification=Verification(pipeline=pipeline, findings=[unresolved])
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    out = tmp_path / "out"
+    rc = cli_main(
+        ["compile", str(skill), "--out", str(out), "--runtime", "dbos", "--no-eval", "--json"]
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert (out / "compiled" / "pipeline.yaml").is_file()
+    assert (out / "runtime" / "dbos").is_dir()
+
+    human = captured.err
+    assert "✓" not in human
+    assert "rote compile: ✗ bdr-campaign v0.1.0: verification FAILED (1 unresolved" in human
+    assert "rote run" not in human
+    assert not [line for line in human.splitlines() if line.strip().startswith("next:")]
+    assert "still fails verification" in human
+
+    payload = json.loads(captured.out)
+    assert payload["verification"]["status"] == "failed"
+    assert payload["verification"]["ok"] is False
+    assert payload["verification"]["error_count"] == 1
+    assert payload["verification"]["errors"] == [unresolved.as_dict()]
+
+    static = {
+        (f.node_id, f.kind, f.message)
+        for f in check_contracts(pipeline, out / "compiled")
+        if f.severity == "error"
+    }
+    summary = _read_ndjson(out / "progress.jsonl")[-1]
+    verdict = {"status": "failed", "ok": False, "error_count": 1, "tests": "not_run"}
+    assert summary["verification"] == verdict
+    assert {k: payload["verification"][k] for k in verdict} == verdict
+    # The unresolved problem is counted, once, beside the static check's own.
+    assert summary["contract_errors"] == len(static) + 1 == payload["contract_errors"]
+
+
+def test_review_gaps_reach_json_and_the_progress_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A review gap (an unapplied proposal, #310) is not a failure, but a
+    machine reader must see it: it used to reach only the human summary."""
+    from rote.compiler.verify import UNAPPLIED_PROPOSAL, Verification
+    from rote.contracts import ContractFinding
+    from rote.ir import load_pipeline
+
+    gap = ContractFinding(
+        node_id="enrich_contacts",
+        kind=UNAPPLIED_PROPOSAL,
+        severity="warning",
+        message="the agent proposes kind -> 'external_call'",
+        path="system1/proposals.yaml",
+    )
+    pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    _install_mock_compiler(
+        monkeypatch, verification=Verification(pipeline=pipeline, findings=[gap])
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    out = tmp_path / "out"
+    cli_main(["compile", str(skill), "--out", str(out), "--runtime", "dbos", "--no-eval", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verification"]["review_gaps"] == [gap.as_dict()]
+    assert _read_ndjson(out / "progress.jsonl")[-1]["review_gaps"] == [gap.as_dict()]
+
+
+def test_contract_errors_count_a_finding_both_checks_made_once() -> None:
+    """Final verification runs the same contract check the summary runs
+    again after the move, so one broken symbol is in both lists."""
+    from rote.cli import _distinct_error_count
+    from rote.contracts import ContractFinding
+
+    shared = ContractFinding("n", "missing_symbol", "error", "no f in extracted/x.py")
+    only_verification = ContractFinding("m", "prefix_failed", "error", "KeyError: 'id'")
+    warning = ContractFinding("m", "unused_constant", "warning", "k is never read")
+    assert _distinct_error_count([shared, warning], [shared, only_verification]) == 2
 
 
 def test_compile_writes_progress_sidecar_by_default(
@@ -1684,7 +1794,7 @@ def test_the_runtimes_own_billed_cost_wins_over_the_priced_estimate(tmp_path: Pa
     # a real branch rather than the estimate having been removed.
     sink2 = _sink(tmp_path, _Rates(input_per_mtok=3.0, output_per_mtok=15.0))
     sink2._file = (tmp_path / "q.ndjson").open("w", encoding="utf-8")  # type: ignore[attr-defined]
-    sink2.write_summary(dict(digest))  # type: ignore[attr-defined]
+    sink2.write_summary(dict(digest), priced_tokens=digest["total_tokens"])  # type: ignore[attr-defined]
     sink2.close()  # type: ignore[attr-defined]
     fallback = json.loads((tmp_path / "q.ndjson").read_text(encoding="utf-8").strip())
     assert fallback["cost_usd"] == pytest.approx(0.0105)

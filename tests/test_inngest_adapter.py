@@ -145,11 +145,11 @@ def test_function_retries_is_max_across_nodes(bdr_pipeline: Pipeline) -> None:
     assert _function_retries(bdr_pipeline) == 5
 
 
-def test_function_retries_defaults_to_sdk_default_when_undeclared() -> None:
-    """No node declares a retry policy → keep Inngest's default (3),
-    not 0: platform retries are the baseline for transient HTTP
-    failures, not an opt-in."""
-    assert _function_retries(_minimal_pipeline()) == 3
+def test_function_retries_is_zero_when_undeclared() -> None:
+    """No node declares a retry policy, so each is attempted once, as on
+    every runtime (#271). The SDK's default of 3 would run a paid judge or
+    a non-idempotent call four times."""
+    assert _function_retries(_minimal_pipeline()) == 0
 
 
 def test_function_retries_clamps_to_inngest_maximum() -> None:

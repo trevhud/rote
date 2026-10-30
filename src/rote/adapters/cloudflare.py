@@ -67,6 +67,7 @@ from rote.adapters._ts_common import (
     SCHEMA_ERRORS_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
+    conditional_gate_ts,
     constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
@@ -74,6 +75,9 @@ from rote.adapters._ts_common import (
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_condition_helper_ts,
+    gate_message_helper_ts,
+    gate_report_ts,
     impl_input_type_block,
     llm_clients,
     module_imports,
@@ -82,7 +86,7 @@ from rote.adapters._ts_common import (
     required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
-from rote.mcp.parked import AUTH_PARK_MARKER
+from rote.mcp.parked import AUTH_PARK_MARKER, GATE_PARK_MARKER
 
 # ───────── Adapter configuration ─────────
 
@@ -155,10 +159,17 @@ def _step_config_literal(node: Node, cfg: CloudflareAdapterConfig) -> str:
     The IR ``backoff`` enum values match Cloudflare's exactly, so the
     mapping is lossless — unlike Temporal where ``backoff_coefficient``
     is numeric.
+
+    A node with no ``retry:`` is attempted once, as on every runtime, so it
+    gets ``retries: { limit: 0 }``: left out, ``step.do`` retries 5 times,
+    which reruns a paid judge or a non-idempotent call.
     """
     timeout = node.timeout or cfg.default_step_timeout
     parts = [f"timeout: {json.dumps(_ir_duration_to_cf(timeout))}"]
-    if node.retry:
+    if node.retry is None:
+        retry_delay = _ir_duration_to_cf(cfg.default_step_retry_delay)
+        parts.insert(0, f"retries: {{ limit: 0, delay: {json.dumps(retry_delay)} }}")
+    else:
         backoff = node.retry.backoff if node.retry.backoff in _VALID_BACKOFFS else "exponential"
         retry_delay = _ir_duration_to_cf(cfg.default_step_retry_delay)
         retry_obj = (
@@ -462,6 +473,11 @@ def _emit_fan_out_parkable(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
 
 
 def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
+    # Thrown from run() itself, as the input check is: it fails the instance.
+    return conditional_gate_ts(node, _hitl_gate_block(node, cfg), "Error", " " * 8)
+
+
+def _hitl_gate_block(node: Node, cfg: CloudflareAdapterConfig) -> str:
     assert node.signal is not None
     _validate_signal_name(node.signal, node.id)
     timeout = node.timeout or cfg.default_hitl_timeout
@@ -470,7 +486,14 @@ def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
         f"        // ─── HITL gate: {node.id} ───\n"
         f"        // Workflow suspends here until an event of type {node.signal!r}\n"
         f"        // arrives. Survives hibernation; events that arrive before this\n"
-        f"        // line is reached are buffered and delivered when reached.\n"
+        f"        // line is reached are buffered and delivered when reached. First\n"
+        f"        // it tells `rote run` which gate it waits at, and the gate's\n"
+        f"        // message (it can print again on replay; the wait name\n"
+        f"        // de-duplicates it). Display only: nothing is sent anywhere.\n"
+        f"        console.error(\n"
+        f'            "{GATE_PARK_MARKER} " +\n'
+        f"                JSON.stringify({gate_report_ts(node, wait=node.id)}),\n"
+        f"        );\n"
         f"        const {node.id}_event = await step.waitForEvent<any>(\n"
         f"            {json.dumps(node.id)},\n"
         f"            {{ type: {json.dumps(node.signal)}, timeout: {json.dumps(timeout_cf)} }},\n"
@@ -719,6 +742,10 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
     if pipeline.needs_input_check:
         helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
+    if gate_helper := gate_message_helper_ts(pipeline):
+        helper_block += f"{gate_helper}\n"
+    if condition_helper := gate_condition_helper_ts(pipeline):
+        helper_block += f"{condition_helper}\n"
     impl_input = impl_input_type_block(class_block)
     if impl_input:
         helper_block += f"{impl_input}\n"

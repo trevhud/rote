@@ -299,12 +299,13 @@ async def test_codex_enables_live_search_and_reports_it_only_when_asked(
         skill_dir, compiler_dir, work_dir, on_event=events.append
     )
     args = list(recorder.calls[0]["args"])
+    # --json on both: it is also the run's only usage report.
+    assert "--json" in args
     if web_tools:
         assert args[args.index("-c") + 1] == WEB_SEARCH_CONFIG == 'web_search="live"'
-        assert "--json" in args
         assert any(e.tool_name == "web_fetch" and e.url == GMAIL for e in events)
     else:
-        assert "-c" not in args and "--json" not in args
+        assert "-c" not in args
         assert not [e for e in events if e.type == "tool"]
 
 

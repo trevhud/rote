@@ -121,19 +121,20 @@ def parse_events(stdout: str) -> tuple[str | None, dict[str, Any] | None, str | 
 
 
 def usage_row(usage: dict[str, Any] | None) -> dict[str, Any]:
-    """Codex's turn usage in the helper's four buckets.
+    """Codex's turn usage in the helper's four buckets, split the one way the
+    compile driver splits it (:func:`rote.compiler.drivers.codex.split_usage`):
+    Codex's ``input_tokens`` holds cached reads and cache writes, so a split
+    that took out only the reads counted every cache write twice. Unreported
+    input or output leaves every bucket None, never zero."""
+    from rote.compiler.drivers.codex import split_usage
 
-    Codex counts cached tokens inside ``input_tokens``, like OpenAI, so they
-    are split out; reasoning tokens are already inside ``output_tokens``."""
-    u = usage or {}
-    total = u.get("input_tokens")
-    cached = u.get("cached_input_tokens") or 0
-    return {
-        "input_tokens": None if total is None else total - cached,
-        "output_tokens": u.get("output_tokens"),
-        "cache_write_tokens": u.get("cache_write_input_tokens"),
-        "cache_read_tokens": cached,
-    }
+    split = split_usage(usage or {})
+    if split is None:
+        return {
+            k: None
+            for k in ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens")
+        }
+    return dict(split)
 
 
 def call(

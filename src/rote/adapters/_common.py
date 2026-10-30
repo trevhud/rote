@@ -23,7 +23,7 @@ from typing import Any
 from pydantic_core import PydanticSerializationError
 
 from rote.inference import STRUCTURED_INEXPRESSIBLE, structured_output_schema
-from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
+from rote.ir import GATE_MESSAGE_PLACEHOLDER, MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -143,6 +143,20 @@ def judge_override_readme(pipeline: Pipeline) -> str:
 # ───────── Prose → safe code comment/docstring ─────────
 
 
+def unsent_constants(node: Node) -> list[str]:
+    """The constants an MCP-bound node never sends its tool.
+
+    A constant reaches a tool only when ``mcp.args`` names it
+    (:func:`mcp_tool_arguments`); an omitted ``mcp.args`` sends the inputs,
+    never the constants. So a constant ``mcp.args`` does not name is dead
+    config: the document id or search query the skill states never reaches
+    the call (#291). Empty for a node with no binding."""
+    if node.mcp is None or not node.constants:
+        return []
+    named = {v for v in (node.mcp.args or {}).values() if isinstance(v, str)}
+    return [c for c in node.constants if c not in named]
+
+
 def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     """How an MCP-bound step builds its tool arguments, on every runtime.
 
@@ -174,6 +188,17 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
         else:
             sources.append((tool_arg, "payload", source))
     return sources
+
+
+def gate_message_names(node: Node) -> list[str]:
+    """The bound inputs a gate's message names, in first-use order.
+
+    The IR requires every ``{name}`` to be bound, so this is every name the
+    template uses. Only these are evaluated: the message needs nothing else.
+    """
+    template = (node.notify.message_template if node.notify else None) or ""
+    names = dict.fromkeys(re.findall(GATE_MESSAGE_PLACEHOLDER, template))
+    return [name for name in names if name in (node.inputs or {})]
 
 
 #: Characters that render invisibly or reorder what a reader sees: controls

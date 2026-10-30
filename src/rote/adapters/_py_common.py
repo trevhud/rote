@@ -28,6 +28,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
+from rote.adapters import _gate_runtime_helper
 from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     PROMPT_PLACEHOLDER,
@@ -35,6 +36,7 @@ from rote.adapters._common import (
     EmitWriter,
     _to_pascal_case,
     agent_loop_output,
+    gate_message_names,
     mcp_tool_arguments,
     py_str_literal,
     safe_docstring_line,
@@ -226,6 +228,122 @@ def fan_out_list_helper() -> str:
     drift, the same broken pipeline reports differently per target.
     """
     return _FAN_OUT_LIST_HELPER_PY
+
+
+# ───────── gate messages ─────────
+
+#: The emitted ``_render_gate_message`` and what it needs. The TS twin is
+#: ``rote.adapters._ts_common.GATE_MESSAGE_HELPER_TS``; change a rule in
+#: both and run tests/test_gate_message.py with ``-m "slow or not slow"``.
+#: The renderer's source is a real module, so the compiled skill's driver
+#: ships the same file (``scripts/_rote_gate.py``) instead of a second rule.
+GATE_MESSAGE_HELPER_PATH = Path(__file__).with_name("_gate_runtime_helper.py")
+GATE_MESSAGE_HELPER_PY = GATE_MESSAGE_HELPER_PATH.read_text(encoding="utf-8")
+
+#: The emitted renderer itself, for rote's own tests and callers.
+render_gate_message = _gate_runtime_helper._render_gate_message
+
+
+def gate_message_helper(pipeline: Pipeline) -> str:
+    """:data:`GATE_MESSAGE_HELPER_PY` when a gate has a message or shows data, else ""."""
+    needed = any(
+        (n.notify and n.notify.message_template) or n.inputs
+        for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    )
+    return GATE_MESSAGE_HELPER_PY if needed else ""
+
+
+_GATE_CONDITION_HELPER_PY = '''\
+def _gate_condition_error(result: object, field: str, gate: str, ref: str) -> str | None:
+    """Why a gate with a ``when`` cannot tell whether to wait, or None.
+
+    The condition must be exactly true or false: a count or a list would be
+    "truthy" here and an error on another runtime, so anything else stops
+    the run naming the gate and the reference."""
+    if not isinstance(result, dict) or field not in result:
+        return f"hitl_gate {gate!r} waits only when {ref} is true, but that result has no {field!r}"
+    value = result[field]
+    if isinstance(value, bool):
+        return None
+    return (
+        f"hitl_gate {gate!r} waits only when {ref} is true, and it is "
+        f"{type(value).__name__}, not true or false"
+    )
+'''
+
+
+def gate_condition_helper(pipeline: Pipeline) -> str:
+    """:data:`_GATE_CONDITION_HELPER_PY` when a gate has a ``when``, else ""."""
+    return _GATE_CONDITION_HELPER_PY if pipeline.conditional_gates else ""
+
+
+def conditional_gate_py(node: Node, wait_block: str, raise_stmt: str, indent: str) -> str:
+    """``wait_block`` (the gate's wait, at ``indent``) run only when ``node.when``
+    is true, with the gate's result None otherwise. A gate with no ``when``
+    gets its block unchanged. ``raise_stmt`` raises ``_when_error`` the way
+    the runtime fails without a retry."""
+    if node.when is None:
+        return wait_block
+    ref = parse_input_ref(node.when)
+    assert ref.node_id is not None and ref.field is not None
+    result, field = f"{ref.node_id}_result", json.dumps(ref.field)
+    nested = "".join(
+        f"    {line}" if line.strip() else line for line in wait_block.splitlines(keepends=True)
+    )
+    return (
+        f"{indent}# {node.id} asks the person only when {node.when} is true;\n"
+        f"{indent}# otherwise it is skipped and its result is None.\n"
+        f"{indent}_when_error = _gate_condition_error(\n"
+        f"{indent}    {result}, {field}, {json.dumps(node.id)}, {json.dumps(node.when)}\n"
+        f"{indent})\n"
+        f"{indent}if _when_error is not None:\n"
+        f"{indent}    {raise_stmt}\n"
+        f"{indent}if {result}[{field}]:\n"
+        f"{nested}"
+        f"{indent}else:\n"
+        f"{indent}    {node.id}_result = None\n"
+    )
+
+
+def gate_report_py(node: Node) -> str:
+    """The dict a Python runtime reports when its run reaches ``node``.
+
+    ``{"gate", "signal", "message", "shows"}``: the message rendered from the
+    gate's actual inputs (None when the gate has no ``message_template``), and
+    every other bound input, by name. A gate binds what the person decides on
+    (``Node._validate_gate_shows_what_it_binds``), so a draft its message only
+    calls "below" is shown here (#325). The template is an escaped literal
+    (invariant #7).
+    """
+    template = node.notify.message_template if node.notify else None
+    named = set(gate_message_names(node))
+    shows = []
+    for name, ref in (node.inputs or {}).items():
+        if name in named:
+            continue
+        parsed = parse_input_ref(ref)
+        base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+        shows.append(
+            f"{json.dumps(name)}: {base}"
+            if parsed.field is None
+            else f"**_gate_input({json.dumps(name)}, {base}, {json.dumps(parsed.field)})"
+        )
+    if template:
+        entries = []
+        for name in gate_message_names(node):
+            parsed = parse_input_ref((node.inputs or {})[name])
+            base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+            entries.append(
+                f"{json.dumps(name)}: {base}"
+                if parsed.field is None
+                else f"**_gate_input({json.dumps(name)}, {base}, {json.dumps(parsed.field)})"
+            )
+        message = f"_render_gate_message({py_str_literal(template)}, {{{', '.join(entries)}}})"
+    else:
+        message = "None"
+    gate, signal = json.dumps(node.id), json.dumps(node.signal)
+    shown = "{" + ", ".join(shows) + "}"
+    return f'{{"gate": {gate}, "signal": {signal}, "message": {message}, "shows": {shown}}}'
 
 
 _ASYNC_RUNNER_HELPER_PY = '''\

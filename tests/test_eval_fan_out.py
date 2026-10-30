@@ -75,9 +75,7 @@ def _single_call_usd() -> float:
     single = estimate_pipeline(_pipeline(fan_out=False), HeuristicTokenCounter())
     (judge,) = [n for n in single.nodes if n.node_id == "score_post"]
     assert judge.calls.low == judge.calls.high == 1
-    return (
-        judge.llm_input_tokens_per_call * 3.0 + judge.llm_output_tokens_per_call * 15.0
-    ) / 1_000_000
+    return (judge.llm_input_tokens.high * 3.0 + judge.llm_output_tokens.high * 15.0) / 1_000_000
 
 
 def test_the_sidecar_iterations_set_the_fan_width() -> None:

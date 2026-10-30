@@ -45,6 +45,7 @@ from rote.adapters._common import (
     agent_loop_named_types,
     agent_loop_output,
     effort_env_vars,
+    gate_message_names,
     mcp_tool_arguments,
     override_env_vars,
     safe_block_comment_line,
@@ -57,6 +58,7 @@ from rote.inference import (
 )
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
+    GATE_MESSAGE_PLACEHOLDER,
     LLMSignature,
     Node,
     NodeKind,
@@ -859,6 +861,83 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
 """
 
 
+GATE_CONDITION_HELPER_TS = """\
+/** Why a gate with a `when` cannot tell whether to wait, or null.
+ *
+ * The condition must be exactly true or false: a count or a list would be
+ * truthy here and an error on another runtime, so anything else stops the
+ * run naming the gate and the reference. The Python runtimes emit the same
+ * check (`_gate_condition_error`). */
+function gateConditionError(
+    result: unknown,
+    field: string,
+    gate: string,
+    ref: string,
+): string | null {
+    if (
+        result === null ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        !Object.prototype.hasOwnProperty.call(result, field)
+    ) {
+        return (
+            `hitl_gate '${gate}' waits only when ${ref} is true, ` +
+            `but that result has no '${field}'`
+        );
+    }
+    const value = (result as Record<string, unknown>)[field];
+    if (typeof value === "boolean") {
+        return null;
+    }
+    const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    return (
+        `hitl_gate '${gate}' waits only when ${ref} is true, ` +
+        `and it is ${kind}, not true or false`
+    );
+}
+"""
+
+
+def gate_condition_helper_ts(pipeline: Pipeline) -> str:
+    """:data:`GATE_CONDITION_HELPER_TS` when a gate has a ``when``, else ""."""
+    return GATE_CONDITION_HELPER_TS if pipeline.conditional_gates else ""
+
+
+def conditional_gate_ts(node: Node, wait_block: str, error_class: str, indent: str) -> str:
+    """``wait_block`` run only when ``node.when`` is true, with the gate's
+    result null otherwise. The block binds ``const <id>_result = ...`` once;
+    the result is declared before the branch instead, so later waves see it.
+    A gate with no ``when`` gets its block unchanged. ``error_class`` fails
+    the run without a retry (Inngest's retries are function-level)."""
+    if node.when is None:
+        return wait_block
+    ref = parse_input_ref(node.when)
+    assert ref.node_id is not None and ref.field is not None
+    binding = f"{indent}const {node.id}_result = "
+    assert wait_block.count(binding) == 1, node.id
+    body = wait_block.replace(binding, f"{indent}{node.id}_result = ")
+    nested = "".join(
+        f"    {line}" if line.strip() else line for line in body.splitlines(keepends=True)
+    )
+    result, field = f"{ref.node_id}_result", json.dumps(ref.field)
+    return (
+        f"{indent}// {node.id} asks the person only when {node.when} is true;\n"
+        f"{indent}// otherwise it is skipped and its result is null.\n"
+        f"{indent}const {node.id}_whenError = gateConditionError(\n"
+        f"{indent}    {result}, {field}, {json.dumps(node.id)}, {json.dumps(node.when)},\n"
+        f"{indent});\n"
+        f"{indent}if ({node.id}_whenError !== null) {{\n"
+        f"{indent}    throw new {error_class}({node.id}_whenError);\n"
+        f"{indent}}}\n"
+        f"{indent}let {node.id}_result: Record<string, unknown> | null = null;\n"
+        # Indexed plainly, as ref_to_ts_expr does: `as Record<...>` fails tsc
+        # (TS2352) when the step returns an interface.
+        f"{indent}if ({result}[{field}] === true) {{\n"
+        f"{nested}"
+        f"{indent}}}\n"
+    )
+
+
 MISSING_INPUTS_HELPER_TS = """\
 /** Why `pipelineInput` cannot start a run, or null when it can.
  *
@@ -885,6 +964,128 @@ function missingInputsError(pipelineInput: unknown, required: string[]): string 
         : null;
 }
 """
+
+
+#: The emitted ``renderGateMessage``: the TS twin of the Python
+#: ``_render_gate_message`` (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY``),
+#: whose docstrings state the rule. Change it in both and run
+#: tests/test_gate_message.py with ``-m "slow or not slow"``.
+GATE_MESSAGE_HELPER_TS = (
+    r"""/** A gate's message: each `{name}` filled from `values`, its bound inputs.
+ *
+ * A string is used as is; any other value is written as JSON.stringify
+ * writes it, which the Python runtimes reproduce (`_render_gate_message`),
+ * so one run reads the same on every runtime. A placeholder whose value the
+ * run does not have (`roteGateField`) is kept as written. Then every
+ * invisible character (controls, format characters such as bidi overrides,
+ * line and paragraph separators, lone surrogates) is spelled `\uXXXX`, so a
+ * value cannot drive the terminal the message is shown on. The newline and
+ * the tab stay. */
+const ROTE_GATE_PLACEHOLDER = new RegExp(__PLACEHOLDER__, "g");
+const ROTE_GATE_INVISIBLE = /^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]$/u;
+
+/** `source[field]`, or undefined when the run does not have that value (an
+ * omitted optional input, a key an upstream result lacks), so its
+ * placeholder is kept as written. The Python twin is `_gate_input`. */
+function roteGateField(source: unknown, field: string): unknown {
+    return source !== null &&
+        typeof source === "object" &&
+        !Array.isArray(source) &&
+        Object.prototype.hasOwnProperty.call(source, field)
+        ? (source as Record<string, unknown>)[field]
+        : undefined;
+}
+
+function renderGateMessage(template: string, values: Record<string, unknown>): string {
+    const filled = template.replace(ROTE_GATE_PLACEHOLDER, (whole: string, name: string) => {
+        const value = Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+        if (value === undefined) return whole;
+        return typeof value === "string" ? value : String(JSON.stringify(value));
+    });
+    let out = "";
+    for (const ch of filled) {
+        if (ch !== "\n" && ch !== "\t" && ROTE_GATE_INVISIBLE.test(ch)) {
+            const code = ch.codePointAt(0) as number;
+            out +=
+                code <= 0xffff
+                    ? `\\u${code.toString(16).padStart(4, "0")}`
+                    : `\\U${code.toString(16).padStart(8, "0")}`;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+"""
+).replace("__PLACEHOLDER__", json.dumps(GATE_MESSAGE_PLACEHOLDER))
+
+
+def gate_report_ts(node: Node, wait: str | None = None) -> str:
+    """The object a TS runtime reports when its run reaches ``node``.
+
+    The twin of ``_py_common.gate_report_py``: ``{gate, signal, message,
+    shows}``, the message rendered from the gate's actual inputs (null when the
+    gate has no ``message_template``) and every other bound input by name (#325),
+    plus the wait's step id when ``wait``
+    is given (the log marker's de-duplication key). Every IR string is a
+    JSON literal (invariant #7).
+    """
+    template = node.notify.message_template if node.notify else None
+    if template:
+        entries = []
+        for name in gate_message_names(node):
+            ref = (node.inputs or {})[name]
+            parsed = parse_input_ref(ref)
+            base = "pipelineInput" if parsed.node_id is None else f"{parsed.node_id}_result"
+            entries.append(
+                f"{json.dumps(name)}: "
+                + (
+                    ref_to_ts_expr(ref)
+                    if parsed.field is None
+                    else f"roteGateField({base}, {json.dumps(parsed.field)})"
+                )
+            )
+        values = ", ".join(entries)
+        message = f"renderGateMessage({json.dumps(template)}, {{ {values} }})"
+    else:
+        message = "null"
+    named = set(gate_message_names(node))
+    pairs = []
+    for name, ref in (node.inputs or {}).items():
+        if name in named:
+            continue
+        parsed = parse_input_ref(ref)
+        base = "pipelineInput" if parsed.node_id is None else f"{parsed.node_id}_result"
+        value = (
+            ref_to_ts_expr(ref)
+            if parsed.field is None
+            else f"roteGateField({base}, {json.dumps(parsed.field)})"
+        )
+        pairs.append(f"[{json.dumps(name)}, {value}]")
+    # A value the run does not have is left out, as a message keeps its
+    # placeholder (the Python twin spreads _gate_input).
+    shows = (
+        "Object.fromEntries([" + ", ".join(pairs) + "].filter(([, value]) => value !== undefined))"
+        if pairs
+        else "{}"
+    )
+    entries = [
+        f"gate: {json.dumps(node.id)}",
+        f"signal: {json.dumps(node.signal)}",
+        f"message: {message}",
+        f"shows: {shows}",
+        *([f"wait: {json.dumps(wait)}"] if wait is not None else []),
+    ]
+    return "{ " + ", ".join(entries) + " }"
+
+
+def gate_message_helper_ts(pipeline: Pipeline) -> str:
+    """:data:`GATE_MESSAGE_HELPER_TS` when a gate has a message or shows data, else ""."""
+    needed = any(
+        (n.notify and n.notify.message_template) or n.inputs
+        for n in pipeline.nodes_by_kind(NodeKind.HITL_GATE)
+    )
+    return GATE_MESSAGE_HELPER_TS if needed else ""
 
 
 def required_inputs_ts_guard(pipeline: Pipeline, error_class: str, indent: str) -> list[str]:
@@ -3306,6 +3507,7 @@ export function passthroughValues(
 ): Record<string, unknown> {
     const values: Record<string, unknown> = {};
     for (const [target, source] of Object.entries(passthrough)) {
+        if (itemPassthrough(target, source) !== null) continue;
         let value: unknown = input;
         let found = true;
         for (const part of source.split(".")) {
@@ -3337,7 +3539,95 @@ export function withPassthrough(
     for (const [key, value] of Object.entries(answer)) {
         if (!Object.prototype.hasOwnProperty.call(passthrough, key)) kept[key] = value;
     }
-    return { ...kept, ...passthroughValues(input, passthrough) };
+    const merged: Record<string, unknown> = { ...kept, ...passthroughValues(input, passthrough) };
+    const byArray = new Map<string, ItemPassthrough[]>();
+    for (const [target, source] of Object.entries(passthrough)) {
+        const entry = itemPassthrough(target, source);
+        if (entry !== null) byArray.set(entry.array, [...(byArray.get(entry.array) ?? []), entry]);
+    }
+    for (const [array, entries] of byArray) {
+        const answered = merged[array];
+        if (Array.isArray(answered)) merged[array] = hydrateItems(answered, input, array, entries);
+    }
+    return merged;
+}
+
+interface ItemPassthrough {
+    array: string;
+    field: string;
+    path: string;
+    key: string;
+    recordField: string;
+}
+
+const ITEM_TARGET = /^([A-Za-z_][A-Za-z0-9_]*)\[\]\.([A-Za-z_][A-Za-z0-9_]*)$/;
+const ITEM_SOURCE =
+    /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\[([A-Za-z_][A-Za-z0-9_]*)\]\.([A-Za-z_][A-Za-z0-9_]*)$/;
+
+/** A per-item passthrough entry (`items[].body` <- `prs[number].body`), or null. */
+function itemPassthrough(target: string, source: string): ItemPassthrough | null {
+    const t = ITEM_TARGET.exec(target);
+    const s = ITEM_SOURCE.exec(source);
+    if (t === null || s === null) return null;
+    return { array: t[1], field: t[2], path: s[1], key: s[2], recordField: s[3] };
+}
+
+/**
+ * Each answered item with its copied fields filled from the input record
+ * whose key equals the item's (#320); an item whose key matches no record,
+ * or several, or another item's, throws in the same words as the Python
+ * helper's _hydrate_items.
+ */
+function hydrateItems(
+    answered: unknown[],
+    input: unknown,
+    array: string,
+    entries: ItemPassthrough[],
+): unknown[] {
+    const { path, key } = entries[0];
+    let records: unknown = input;
+    for (const part of path.split(".")) {
+        records = isJsonObject(records) ? records[part] : undefined;
+    }
+    if (!Array.isArray(records)) {
+        throw new Error(`passthrough into ${array}[]: the input's ${path} is not a list`);
+    }
+    const copied = new Set(entries.map((e) => e.field));
+    const seen: unknown[] = [];
+    return answered.map((item, i) => {
+        if (!isJsonObject(item) || !Object.prototype.hasOwnProperty.call(item, key)) {
+            throw new Error(`passthrough into ${array}[${i}]: the item names no ${key}`);
+        }
+        const wanted = item[key];
+        if (seen.some((s) => s === wanted)) {
+            throw new Error(
+                `passthrough into ${array}[${i}]: ${key} ${JSON.stringify(wanted)} names a ` +
+                    "record another item already names",
+            );
+        }
+        seen.push(wanted);
+        const matches = records.filter(
+            (r): r is Record<string, unknown> =>
+                isJsonObject(r) &&
+                Object.prototype.hasOwnProperty.call(r, key) &&
+                r[key] === wanted,
+        );
+        if (matches.length !== 1) {
+            const which = matches.length === 0 ? "no" : String(matches.length);
+            throw new Error(
+                `passthrough into ${array}[${i}]: ${key} ${JSON.stringify(wanted)} matches ` +
+                    `${which} record(s) of the input's ${path}, so its fields cannot be copied`,
+            );
+        }
+        const filled: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(item)) if (!copied.has(k)) filled[k] = v;
+        for (const e of entries) {
+            if (Object.prototype.hasOwnProperty.call(matches[0], e.recordField)) {
+                filled[e.field] = JSON.parse(JSON.stringify(matches[0][e.recordField]));
+            }
+        }
+        return filled;
+    });
 }
 """
 

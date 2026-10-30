@@ -121,6 +121,9 @@ kind. The validator enforces kind-specific requirements.
   mandatory: false               # optional, default false
   constants:                     # optional, arbitrary key/value dict
     batch_size: 10
+  env: [BDR_EXPORT_DIR]          # optional, pure_function / external_call only:
+                                 # every variable its code reads (os.environ /
+                                 # os.getenv) by name; rote checks it is complete
   cache:                         # optional
     strategy: persistent
     ttl: 30d
@@ -501,10 +504,37 @@ keys as a mapping, never a single type name, so a caller can see what
 to send. When rote gives you a sample gate payload, use its keys
 exactly. rote checks both and sends a mismatch back to you.
 
+**A gate the skill asks only sometimes has `when:`.** When the skill
+asks the person only if something holds ("ask who owns the meeting if
+that is unclear", "if anything is missing, ask for it"), an earlier node
+computes that as a true-or-false output key, and the gate names it:
+
+```yaml
+- id: detect_owner
+  kind: pure_function
+  output: { ambiguous: bool, candidates: list }
+- id: ask_owner
+  kind: hitl_gate
+  when: detect_owner.output.ambiguous
+  inputs: { candidates: detect_owner.output.candidates }
+  output: { owner: str }
+  signal: owner_chosen
+- id: write_recap
+  kind: pure_function
+  inputs: { answer: ask_owner.output }   # whole: null when the gate was skipped
+```
+
+True, the gate waits as any gate does. False, it is skipped and its
+result is null, so a node that reads the gate binds it whole
+(`ask_owner.output`, never `ask_owner.output.owner`) and handles null; a
+judge's input schema must allow null for it. Any other value fails the
+run naming the gate. Without `when:`, a gate waits on every run, which
+is wrong for a question the skill asks only sometimes.
+
 **Constraint:** `mandatory: true` is not allowed on `agent_loop` nodes
-(meaningless) but is allowed on every other kind. For HITL gates,
-`mandatory` is implicit — you can't skip a gate the workflow is
-waiting on.
+(meaningless) but is allowed on every other kind. A gate with no
+`when:` always waits; one with `when:` waits exactly when its condition
+is true.
 
 ## Edge object
 

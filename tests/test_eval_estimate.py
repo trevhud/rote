@@ -81,8 +81,8 @@ def test_bdr_pipeline_estimate_shape(
     # Only sampled kinds contribute LLM tokens.
     for node_est in est.nodes:
         if node_est.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL, NodeKind.HITL_GATE):
-            assert node_est.llm_input_tokens_per_call == 0
-            assert node_est.llm_output_tokens_per_call == 0
+            assert node_est.llm_input_tokens_per_call == Range.exact(0)
+            assert node_est.llm_output_tokens_per_call == Range.exact(0)
 
     assert est.llm_input_tokens.high > est.llm_input_tokens.low >= 0
     assert est.critical_path_seconds.low > 0
@@ -170,8 +170,12 @@ def test_agent_loop_per_call_cost_scales_with_turns_per_iteration(
     (node_est,) = estimate_pipeline(pipeline, counter, priors).nodes
     assert node_est.calls.high == 4  # the declared bound, not the prior default
     assert node_est.note is None
-    assert node_est.llm_input_tokens_per_call == round(turns * priors.transcript_growth_per_turn)
-    assert node_est.llm_output_tokens_per_call == round(turns * priors.output_tokens_per_turn)
+    assert node_est.llm_input_tokens_per_call == Range.exact(
+        round(turns * priors.transcript_growth_per_turn)
+    )
+    assert node_est.llm_output_tokens_per_call == Range.exact(
+        round(turns * priors.output_tokens_per_turn)
+    )
     assert node_est.wall_seconds_per_call == pytest.approx(turns * priors.seconds_per_turn)
     # …and the per-call figures compound over the iteration bound.
     assert node_est.wall_seconds.high == pytest.approx(4 * turns * priors.seconds_per_turn)

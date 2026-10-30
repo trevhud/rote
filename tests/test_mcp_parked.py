@@ -61,6 +61,9 @@ class _FakeChannel:
     def poll(self) -> list[AuthPark]:
         return list(self.parks)
 
+    def poll_gates(self) -> list[Any]:
+        return []
+
     def release(self, park: AuthPark) -> None:
         self.released.append(park)
         self.parks = [p for p in self.parks if p.server != park.server]
@@ -505,6 +508,9 @@ class _EventClient:
         self.sent: list[tuple[str, Any, str, Any]] = []
 
     def get_event(self, workflow_id: str, key: str, timeout_seconds: float) -> Any:
+        if key == "rote_gate_status":  # this app reports no gates
+            assert (workflow_id, timeout_seconds) == ("wf-7", 0)
+            return None
         assert (workflow_id, key, timeout_seconds) == ("wf-7", "rote_auth_status", 0)
         return self.events.pop(0)
 
@@ -594,6 +600,9 @@ def test_wait_for_exit_extends_the_deadline_by_time_spent_with_the_user() -> Non
             # Pretend each tick spent 10s in a browser login.
             return 10.0
 
+        def drain(self) -> None:
+            pass
+
     watcher = _Blocking()
     # A 0.3s budget alone would time out; the reported user time extends it.
     wait_for_exit(proc, deadline=time.monotonic() + 0.3, watcher=watcher, poll_interval=0.1)  # type: ignore[arg-type]
@@ -608,6 +617,9 @@ def test_wait_for_exit_times_out_without_user_time() -> None:
         class _Idle:
             def tick(self) -> float:
                 return 0.0
+
+            def drain(self) -> None:
+                pass
 
         with pytest.raises(subprocess.TimeoutExpired):
             wait_for_exit(proc, deadline=time.monotonic() + 0.3, watcher=_Idle(), poll_interval=0.1)  # type: ignore[arg-type]

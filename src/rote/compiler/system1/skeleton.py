@@ -25,6 +25,7 @@ import yaml
 
 from rote.compiler.system1.decide import REVIEW_BELOW, NodePlan, Plan
 from rote.compiler.system1.parse import RuleTable, slug
+from rote.ir import constant_text
 
 BRIEF_DIRNAME = "system1"
 DECISIONS_FILENAME = "decisions.json"
@@ -54,9 +55,11 @@ def _description(n: NodePlan) -> str:
     return f"{n.unit.title}: {first}"[:400]
 
 
-def _output(n: NodePlan) -> dict[str, str] | str:
-    """The node's ``output``: the fanned list's `items`, the decided keys, or "dict"."""
-    keys = {k: "Any" for k in n.output_keys}
+def _output(n: NodePlan, conditions: frozenset[str] = frozenset()) -> dict[str, str] | str:
+    """The node's ``output``: the fanned list's `items`, the decided keys, or "dict".
+    A key a gate's ``when`` reads (``conditions``, ``<node>.output.<key>``) is
+    ``bool``: the IR refuses a condition of any other declared type."""
+    keys = {k: "bool" if f"{n.id}.output.{k}" in conditions else "Any" for k in n.output_keys}
     if n.lists_output:
         return {"items": "list", **{k: v for k, v in keys.items() if k != "items"}}
     return keys or "dict"
@@ -103,6 +106,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     request_schema = input_schema(plan)
     fanned = frozenset(x.id for x in plan.nodes if x.fan_out)
+    conditions = frozenset(x.when for x in plan.nodes if x.when)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -111,7 +115,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             "source": {"section": n.unit.section},
             "description": _description(n),
             "inputs": dict(n.inputs),
-            "output": _output(n),
+            "output": _output(n, conditions),
         }
         if n.output_schema is not None:
             node["output_schema"] = dict(n.output_schema)
@@ -121,6 +125,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["fan_out"] = True
         if n.constants:
             node["constants"] = dict(n.constants)
+        if n.constant_units:
+            node["constant_units"] = dict(n.constant_units)
         if n.kind in ("pure_function", "external_call"):
             node["impl"] = f"extracted/{n.id}.py:{n.id}"
         if n.kind == "external_call":
@@ -147,6 +153,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
+            if n.when:
+                node["when"] = n.when
             if n.message:
                 # No channel or target: the skill names none, and the runtime
                 # that reaches the person (the compiled skill's agent) needs none.
@@ -396,11 +404,13 @@ def brief_markdown(plan: Plan, table_names: list[str]) -> str:
     ]
     for n in plan.nodes:
         low = min(n.decisions, key=lambda d: d.confidence)
+        constants = ", ".join(
+            f"`{k}`={constant_text(v, n.constant_units.get(k))}" for k, v in n.constants.items()
+        )
         lines.append(
             f"| `{n.id}` | {n.kind} | {_quoted(n.unit.section)} | "
             f"{', '.join(f'`{k}`' for k in n.inputs)} | {'yes' if n.fan_out else ''} | "
-            f"{'yes' if n.mandatory else ''} | "
-            f"{', '.join(f'`{k}`={v!r}' for k, v in n.constants.items())} | "
+            f"{'yes' if n.mandatory else ''} | {constants} | "
             f"{low.field} {low.confidence:.2f} |"
         )
     if table_names:

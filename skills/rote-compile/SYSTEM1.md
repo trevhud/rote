@@ -27,7 +27,21 @@ the compile report itself. Your job is the implementations, and only those.
 
 If you think a decision is wrong, add an entry to `system1/proposals.yaml`
 (a YAML list of `{node, field, value, reason}`). rote lists it for a person
-and never applies it. **Never cite `system1/` files or `pipeline.yaml` in a
+and never applies it. One kind goes further: when a step needs a value an
+earlier step returns and does not read it (an account, a workspace id), propose
+`field: inputs` with the new reads as `{param: "<step>.output.<field>"}`.
+rote hands it to the structure pass, which decides every binding. If the pass
+adds it, the step takes the new parameter on your next turn. Never supply
+the missing value yourself (a default, a guess, a constant).
+
+The one decision you can extend is the pipeline input. When a module needs
+a value the skill says the caller supplies and the input schema lacks it,
+add an entry to `system1/input_fields.yaml` (a YAML list of `{name, type,
+required, description, quote}`: an identifier, a JSON type, true or false,
+one line, and the skill's own words that ask for the value, verbatim). rote
+adds it to the input schema and lists it for review. It only adds: it never
+renames, retypes or removes a field, and a field the sample input lacks
+cannot be required. **Never cite `system1/` files or `pipeline.yaml` in a
 `# skill:` comment.** Cite only the skill's own text.
 
 ## What you write, in four turns (five with `--backend api`)
@@ -57,7 +71,9 @@ How the modules plug in:
 
 - The function takes exactly the node's `inputs:` keys as parameters, plus
   one parameter per `constants:` key. `request` is the whole pipeline
-  input.
+  input. A constant arrives typed; `constant_units:` names a number's unit
+  (`percent` is the percentage itself, so 75 is 75 percent, and
+  `currency:USD` is dollars). Use the number as given, never parse it from text.
 - A parameter named after an upstream node is that node's whole return
   value (`<node>.output`). On a `fan_out` node, the parameter bound to
   `<node>.output.items` is ONE element.
@@ -65,6 +81,8 @@ How the modules plug in:
   list, because a later node fans out over it.
 - Import rule-table values from `extracted.rule_tables` instead of
   retyping them.
+- A module that reads an environment variable reads it by a literal name,
+  and its node lists the name in `env:` in pipeline.yaml.
 
 `system1/text.yaml` maps node ids to the text fields only you can write:
 
@@ -79,7 +97,9 @@ vet_contact_judge:
 A judge output field that is input data returned unchanged goes in
 `signature_spec.passthrough: {<output field>: <input path>}` (an input
 path of exactly that field's schema): code copies it and the prompt does
-not mention it (llm-judge-extraction.md, "Fields returned unchanged").
+not mention it (llm-judge-extraction.md, "Fields returned unchanged"). For
+fetched records the judge returns as a list, copy each item's fields by key
+(`items[].body: prs[number].body`), so a record written back is the one read.
 
 Declare the `properties` of every object in a judge's `output_schema`,
 nested ones included: structured outputs reject free-form objects and

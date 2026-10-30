@@ -9,6 +9,249 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.19.4] - 2026-10-29
+
+### Fixed
+
+- **A value that never reaches the step needing it is caught and re-decided
+  (#329).** A judge copied the signed-in account id into its output and the
+  ticket-creation fan-out read only the items, so every ticket lost its
+  assignee while verification passed. Verification now flags a step whose
+  code reads a key its bound value cannot hold, and a copied value no later
+  step reads. Both, and the agent's own binding proposals, go back to the
+  structure pass, which adds the binding when it resolves; the text follows.
+  A fan over one field of a result can now read another field of the same
+  result as shared (that binding used to be an ambiguity error).
+
+## [0.19.3] - 2026-10-29
+
+### Fixed
+
+- **`rote run` shows a gate's data, not only its message (#325).** A gate
+  binds what the person decides on, but every workflow runtime reported
+  only the rendered message, so a message calling a draft "below" showed
+  nothing below it. Each runtime now reports the gate's other bound inputs,
+  and `rote run` prints them under the message: a string as written, keeping
+  its lines, and anything else as compact JSON. The compiled skill already
+  showed them.
+- `rote run` on Cloudflare retries `wrangler dev` on a fresh port when
+  another process took the one it picked (#324).
+- **A step that fails without an optional input is flagged (#326).**
+  Verification runs the deterministic steps on the sample input, and the
+  sample always carried the field, so a renderer that raised without a URL
+  the contract made optional passed. Each optional field the sample has and
+  a step reads is now left out in turn, and a step that ran with it and
+  raises an error naming it goes back to the agent: handle the absence, or
+  make the field required. It is a review gap, not a failure, because the IR
+  cannot say "required when X". A probe that times out is reported and ends
+  the probing, and fields past the cap of six are an open question.
+
+## [0.19.2] - 2026-10-29
+
+### Added
+
+- **A judge's list items get their record fields from the input, not the
+  model (#320).** `signature_spec.passthrough` now takes a per-item form,
+  `items[].body: prs[number].body`: the model writes each item's key
+  (`number`) and what it decides, and code fills `body` from the input
+  record with that key. An item whose key matches no record, several, or
+  another item's fails the judge before anything downstream runs. A real
+  compile's judge copied pull requests' original bodies into its output and
+  the next step appended to that copy and wrote it back, so a model that
+  changed a character changed the pull request. It works on every runtime
+  and in the compiled skill, and the compiler is offered these pairs and
+  told to use them for records a later step writes back.
+
+### Fixed
+
+- **Workflow step titles are no longer read as fields a person must send
+  (#319).** A section that mentioned asking the person anywhere made every
+  bold list heading in it a required gate key, so a correct compile failed
+  on keys like `resolve_the_target` and `verify`. A list now counts only
+  when what introduces it asks the person for something and ends in a
+  colon (`ask the duty manager to provide:`). Across the example skills
+  this drops 30 false keys, including a "What not to do" list, and keeps
+  ops-report's three. A procedural list whose own lead-in asks ("Confirm
+  with the user before each step:") can still match, so a gate that misses
+  the skill's names is now a review gap (repaired once, then a warning),
+  never a failed compile.
+
+- **A login requests the OAuth scopes you configured, not the server's wider
+  list (#316).** On a 401 the MCP SDK replaces the requested scopes with the
+  challenge's, or with every scope the server's metadata lists as
+  supported, and never consults the configured ones. A login configured
+  with six read-only Google scopes asked for 26, Gmail send among them,
+  while the registry still showed six. `rote mcp login` now requests
+  exactly the scopes set with `rote mcp add --scope`, plus `offline_access`
+  when the server supports refresh tokens. If the server's challenge
+  requires more, the login stops naming the extra scopes before any consent
+  page opens. With no scopes configured, the server still decides.
+  `--no-wait` output reports the configured and the requested scopes, read
+  from the authorization URL itself.
+
+## [0.19.0] - 2026-10-28
+
+### Added
+
+- **A gate the skill asks only sometimes waits only then (#309).** A
+  `hitl_gate` can carry `when: <node>.output.<field>`, a boolean an earlier
+  node computes. True, the gate waits as before. False, it is skipped and
+  its result is null, so the node after it carries on without asking. Any
+  other value fails the run naming the gate. It works on the five workflow
+  runtimes that run gates and on the compiled skill, and the compile-time prefix run applies
+  the same rule. The structure pass decides it from the skill's words and
+  a verbatim quote; a condition that does not check is dropped, the gate
+  asks every run, and an Open question says so. Before this, both of a
+  meeting-recap skill's conditional questions paused every run.
+
+### Fixed
+
+- **A change the compile agent proposes and rote does not apply is a review
+  gap (#310).** System-1 never applies a proposal from
+  `system1/proposals.yaml`, since that would let a model override a
+  decision. But the proposal reached only the report's Open questions, so a
+  compile that turned a required rendering-tool call into plain text
+  verified with nothing unresolved. Each proposal is now an
+  `unapplied_proposal` finding. One repair turn, once per proposal, asks
+  the agent to meet the skill without the change or keep the proposal for
+  a person. One that survives is listed as a warning in the compile output,
+  compile-report.md, and `--json` and the progress summary, which now carry
+  every review gap (`review_gaps`). Exit stays 0.
+- **A Codex compile repairs what verification finds (#308).** `CodexDriver`
+  took no repair callback, so every `--agent codex` compile ended at "0 repair
+  round(s)" with its findings unfixed. It now resumes the same thread with
+  `codex exec resume <thread id>` for each round, under the same bounded
+  policy as the claude and api drivers, and counts the rounds. A run with a
+  repairer is no longer `--ephemeral`, because resuming needs the session on
+  disk. Usage is the thread's running total, checked to be non-decreasing and
+  summed per round otherwise.
+- **A Codex compile no longer hangs under an agent's shell.** `codex exec`
+  appends a piped stdin to its prompt and waits for it to close. The driver
+  inherited its caller's stdin, so a compile started from a shell whose stdin
+  never closes wrote nothing and never returned. The child's stdin is now
+  `/dev/null`.
+- **Gate keys and input fields read through a helper are checked (#291).**
+  The boundary checks saw only `value["key"]` and `value.get("key")` on the
+  parameter itself. They now follow a call into a function of the same module
+  with the key as a literal argument (`payload(value, "key")`), which is how
+  the 0.18.0 recompile of #291's skill read all three wrong gate keys. The
+  findings also name the System-1 fix: read the gate's declared key, and add
+  a missing input field through `system1/input_fields.yaml`.
+- The structure-pass summary names "the lane's default model" instead of a
+  blank when Codex runs its configured default.
+
+## [0.18.0] - 2026-10-27
+
+### Added
+
+- **`rote run` shows a gate's message while the run waits (#304).** Every
+  workflow runtime now renders a `hitl_gate`'s `notify.message_template` with
+  the run's real values and reports it on the channel `rote run` already
+  watches (a `rote_gate_status` event on DBOS, a query on Temporal, a
+  `rote-gate-park` log line on Cloudflare and Inngest). `rote run` prints it
+  on stderr. Display only: `channel` and `target` are still never sent to.
+- **A node declares the environment variables its code reads (#302).**
+  `env: [NAME, ...]` on pure_function and external_call nodes. Verification
+  finds literal `os.environ` / `os.getenv` reads and sends an undeclared one
+  back for repair. `rote skill install` records each declared variable's
+  value, and a run whose value differs is refused, so a compiled skill no
+  longer silently drops a variable its module reads (expense-audit's report
+  directory). Names rote reserves (`ROTE_*`, vendor keys, proxies, `PATH`,
+  `PYTHON*` and the like) are refused in the IR.
+- **Structure-pass constants are typed, with a unit (#303).** A constant is a
+  number, boolean or string checked against the skill's own words, and a
+  number carries a unit in the new `Node.constant_units` (`percent`, `count`,
+  `days`, `currency:USD`, ...). 75% is `75` with unit `percent`, never `0.75`
+  or the text `'75%'`. A number the skill writes in words is kept and listed
+  for review.
+- **A compile's repair can declare a pipeline input field (#297).** A module
+  that reads a caller-supplied field the skeleton never declared can now add
+  it through `system1/input_fields.yaml` (or the parallel path's
+  `input_fields`), checked against the skill's text and the sample input.
+  Every applied or refused entry is an Open question in compile-report.md.
+
+### Changed
+
+- **Agent-loop tools are pinned to the one grounded server that offers
+  them (#296).** The compile pins a loop tool to its server when exactly one
+  listed server offers it, and leaves it as an Open question when two do.
+  System-1 no longer picks the first of two servers. A loop tool no listed
+  server offers is a review gap (`loop_tool_unserved`), not an error.
+- **The static eval sizes a compiled judge's input along the IR's data flow
+  (#300).** A judge that receives a whole external result used to be priced
+  as its prompt plus a few tokens per field, so compiled cost looked far
+  too small. It now carries the same size the agent side uses, and each
+  judge and loop states its input sizes under Assumptions in the scorecard.
+- **A compile's constants keep the sign the skill writes.** The structure
+  pass compared a number's absolute value to its quote, so `5` passed for
+  "below -5%" and a flipped rule shipped as decided. A number now matches its
+  quote with its sign. A negative value for an unsigned number ("a drop of
+  15%" as `-15`) is still accepted, since that is a real reading, but it is
+  listed for review like a number read from words. A minus that runs into a
+  word or digit ("5-10 days", "COVID-19") is not read as a sign.
+- **A compiled skill's gate message reads as it does on the workflow
+  runtimes.** The HUMAN block filled a gate's placeholders with Python's
+  `str()`, so a boolean read `True`, a whole float `2.0` and a missing owner
+  an empty string, where `rote run` shows `true`, `2` and `null`, and a bidi
+  override in a value reached the agent's terminal raw. The renderer is now
+  one module (`rote.adapters._gate_runtime_helper`): the Python runtimes embed
+  its source and a compiled skill ships it as `scripts/_rote_gate.py` when a
+  gate has a message.
+- **Behavior change: a node with no `retry:` is attempted once on every
+  runtime.** It ran once on dbos, python and temporal, but up to six times on
+  cloudflare (`step.do`'s default of 5 retries) and four on inngest (the
+  SDK's function-level default of 3), so a paid judge or a call that is not
+  idempotent did different things per runtime. Cloudflare now emits
+  `retries: { limit: 0 }` and inngest `retries: 0` when no node declares a
+  retry. A declared `retry:` is unchanged. `tests/test_retry_parity*.py`
+  counts the attempts on all six runtimes.
+
+- **A failing generated test shows its local values to the repair.** The
+  test run passes `--showlocals`, so a failed assertion on an overall
+  outcome now carries the finding that caused it (a $2,500 meals line that
+  also trips the $75 meals cap). pytest shortens each value when not
+  verbose, so the output budget holds.
+- **System-1's test rules name the three mistakes behind most red tests.**
+  GENERATE.md now says to build each case from one clean fixture changing
+  only the field a rule reads, to compute expected numbers in the test
+  instead of by hand, and to pass inputs shaped like the sample (JSON
+  numbers, never `Decimal`).
+
+### Fixed
+
+- **Compile usage that was not measured reads as unknown (#299, #301).**
+  Missing token counts were reported as zeros, so an unmeasured compile looked
+  free. Each stage is now `measured`, `partial` or `unavailable`, in the
+  summary, `--json`, `compile-metrics.json` and the progress file. Codex usage
+  comes from the last `turn.completed`, with cache reads and writes split out
+  once. A deliverable that still fails verification now says `verification
+  FAILED` in the header and prints no `next: rote run` line.
+
+- **A compile checks the boundaries its generated tests cannot see (#291).**
+  A real compile passed 38 generated tests while every MCP call went out with
+  no arguments, two gate consumers read keys their gates never declared, and
+  a renderer required an input field the contract left out. Verification now
+  reads the deliverable for each:
+  - an MCP call whose node holds constants `mcp.args` never sends is an error
+    when the tool's schema names its parameters, and an unresolved call
+    (listed, blocking the run, never guessed) when no schema does;
+  - code that reads a key a gate does not declare is an error;
+  - code that reads a pipeline-input field the contract does not declare is
+    an error.
+  Gates that split one section's items between them are held to what they
+  collect together, not each to the whole section.
+
+- **A compile no longer ships a field read from an MCP result that has no
+  such field.** Verification checks every `<node>.output.<field>` read of an
+  MCP-bound node against the result a recorded run returned, else the
+  outputSchema the server declares. A result that is text or a list, or a
+  closed object without the field, goes back to the agent as an error,
+  because the run would fail at that read. With nothing recorded or
+  declared, it is an Open question in the report.
+
+- **`rote run` on a temporal app names the exception a failed step raised**,
+  not only Temporal's "Activity task failed" wrapper.
+
 ## [0.17.0] - 2026-10-26
 
 ### Added
@@ -2173,7 +2416,12 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.19.4...HEAD
+[0.19.4]: https://github.com/trevhud/rote/compare/v0.19.3...v0.19.4
+[0.19.3]: https://github.com/trevhud/rote/compare/v0.19.2...v0.19.3
+[0.19.2]: https://github.com/trevhud/rote/compare/v0.19.0...v0.19.2
+[0.19.0]: https://github.com/trevhud/rote/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/trevhud/rote/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/trevhud/rote/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/trevhud/rote/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0

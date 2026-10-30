@@ -48,8 +48,8 @@ from rote.extras import dependency_hint, is_installed
 from rote.mcp.parked import (
     DbosAuthChannel,
     ParkWatchFactory,
-    app_parks_on_auth,
     wait_for_exit,
+    watches_park,
 )
 from rote.runners._node import ensure_npm_install, terminate
 
@@ -246,13 +246,13 @@ def run_dbos_ts(
                 env={**os.environ, "DBOS_SYSTEM_DATABASE_URL": url},
             )
             watcher = None
-            if park_watch is not None and app_parks_on_auth(app_dir):
+            if park_watch is not None and watches_park(app_dir):
                 # Reading the park needs the Python DBOS client, the dbos
                 # extra, which a TS-only install may not have. The run
                 # itself does not.
                 if not is_installed("dbos"):
                     print(
-                        "rote run: note: auth parks of this run will not be reported "
+                        "rote run: note: auth parks and gates of this run will not be reported "
                         f"(that needs {dependency_hint('dbos')})",
                         file=sys.stderr,
                     )

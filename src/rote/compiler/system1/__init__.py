@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import Any
 
 from rote.compiler.report import ReportExtras
-from rote.compiler.system1 import checker, decision_model, evidence, structure, tiebreak
+from rote.compiler.system1 import (
+    added_inputs,
+    checker,
+    decision_model,
+    evidence,
+    structure,
+    tiebreak,
+)
 from rote.compiler.system1.checker import CHECKER_NOTE_PREFIX
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan, unit_segments, unsure_units
 from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
@@ -127,6 +134,7 @@ def prepare(
             ),
         )
         p.structure = record
+        p.skill_dir = skill_dir
         evidence.bind_recorded_arguments(p, observations, getattr(sample, "payload", None))
         write(p, work_dir)
         path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
@@ -153,6 +161,7 @@ def prepare(
     evidence.bind_recorded_arguments(p, observations, getattr(sample, "payload", None))
     p.sample = sample
     p.tiebreak = tb
+    p.skill_dir = skill_dir
     write(p, work_dir)
     if verdicts is not None or tb is not None:
         _record_calls(work_dir, verdicts, tb)
@@ -202,7 +211,12 @@ def settle(work_dir: Path, p: Plan, *, final: bool = False) -> list[str]:
 
     Runs before every verification (repair rounds included) and once more
     after the agent's last stop, so what is verified is what ships."""
-    return enforce(work_dir, final=final)
+    return enforce(
+        work_dir,
+        final=final,
+        skill_dir=p.skill_dir,
+        sample_payload=getattr(p.sample, "payload", None),
+    )
 
 
 def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
@@ -232,6 +246,7 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
         )
         questions.append((title, line))
     questions += [("Proposed by the agent, not applied", x) for x in check_proposals(work_dir)]
+    questions += added_inputs.report_questions(work_dir)
     questions += [
         ("The agent edited a decision; rote restored it", c) for c in all_changes(work_dir)
     ]
@@ -253,12 +268,12 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
         cost = tiebreak._cost(st.usage) if st.usage else st.cost_usd
         redecided = f", and re-decided {len(st.redecided)} binding(s)" if st.redecided else ""
         who = (
-            f"a structure pass: {st.model} via {st.lane} read the whole skill and proposed "
+            f"a structure pass: {st.model_label} via {st.lane} read the whole skill and proposed "
             f"every node in {st.rounds} round(s){redecided}, and code checked each one "
             "against the skill's text, its tools' schemas and the sample input"
         )
-        costs: dict[str, float | None] = {f"{st.model}, structure pass": cost}
-        sources = [f"{st.model}'s structure pass"]
+        costs: dict[str, float | None] = {f"{st.model_label}, structure pass": cost}
+        sources = [f"{st.model_label}'s structure pass"]
         model, _, decider_costs = _calls_made(work_dir)
         why = _checker_why(work_dir)
         if model is not None:

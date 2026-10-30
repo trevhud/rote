@@ -77,7 +77,11 @@ The module:
    adapters call it as `fn(**payload)`.
 2. Reads each parameter as its schema in the message says. A parameter
    named after an upstream node is that node's whole return value. On a
-   `fan_out` node, the element parameter is ONE item.
+   `fan_out` node, the element parameter is ONE item. Read a gate's answer
+   only by the keys the gate declares, and a pipeline-input field only when
+   the input contract declares it: rote reads the code for literal keys and
+   sends back any other, and the tests build those fixtures from the
+   declared keys, never from the module's own names.
 3. Returns a value that validates against the node's `output_schema`.
    rote runs the deterministic nodes on the sample input and checks each
    result against its schema, so a set, a tuple, a `Decimal` or a missing
@@ -86,7 +90,10 @@ The module:
    operator the prose implies (`>= 10`, `> 5%`, `below 90%`). Each
    constant arrives as its parameter, and the logic uses the parameter: a
    module-level copy may be its default, never the value the code applies.
-   rote sends a constant the body never reads back as dead config. Import
+   rote sends a constant the body never reads back as dead config. A
+   constant arrives typed, with its unit in the message (`75 (percent)` is
+   75 percent, `2500 (currency:USD)` is $2,500.00): use the number as
+   given, never parse it from text or keep a table of number words. Import
    rule-table values from `extracted.rule_tables` when the message lists
    them. Never retype them.
 5. Python 3.11 syntax, stdlib only, imports at the top. No backslash,
@@ -108,6 +115,15 @@ The module:
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.
 
+When the module reads a pipeline input field (a key of `request`) that the
+input schema in the message does not declare, and the skill says the
+caller supplies that value, declare it in `input_fields`: one entry
+`{name, type, required, description, quote}` each, where `quote` is the
+skill's own words asking for the value, verbatim. rote only adds the
+field to the input schema and lists it for review. It never renames,
+retypes or removes one, and a field the sample input lacks cannot be
+required. Leave `input_fields` empty otherwise.
+
 The test file:
 
 - imports what it tests as `from extracted.<module> import <name>`, and
@@ -116,6 +132,20 @@ The test file:
   90.0 not), the skill's own examples verbatim, the empty input, and a
   malformed input (the `ValueError`).
 - pins every constant with one assertion.
+- builds each rule's cases from one clean fixture that passes every rule
+  (one test asserts it produces no finding), changing only the field the
+  rule reads. Check that the changed value trips no other rule of the
+  step: a $2,500 meals line meant to test a report limit also exceeds a
+  $75 meals cap. Assert on that rule's own finding, not only the overall
+  outcome.
+- never hard-codes a number worked out by hand. Compute an expected
+  amount in the test from the inputs and the skill's table values, or take
+  it from the skill's own example, and compare numbers with
+  `pytest.approx`. Mental arithmetic in a test is the most common reason
+  a correct module fails.
+- passes inputs shaped the way they arrive: JSON values like the sample
+  input or the upstream node's `output_schema` in the message. A number
+  is an `int` or a `float`, never a `Decimal`; a list is a list.
 - uses plain pytest and the stdlib, needs no network, credentials or
   files, and is deterministic.
 
@@ -174,13 +204,25 @@ render them. Leave a field out when the skill has the judge write or change
 it, even when a candidate's shape matches: a summary is not its input. No
 candidates offered means `passthrough` is `[]`.
 
+A candidate like `items[].body` <- `prs[number].body` copies a field into
+every item of an output list from the input record with the same key: the
+model writes each item's `number` and its new fields, and code fills `body`
+from the fetched record. Take these whenever the judge picks or annotates
+fetched records that a later step writes back or acts on (a pull request's
+body, a ticket's id): a record the pipeline writes must be the one it read,
+never the model's retyping of it. Choose the key that identifies a record
+(an id or a number, not a title), the same key for every field of one list.
+
 ## A repair
 
 Asked to repair, you get your earlier answer and what rote found wrong
 with it, verbatim. Fix each problem and change nothing else. For a module
 or test, prefer `edits`: each `old` is copied exactly from the current
 file and appears there once, and `new` replaces it. A whole file in
-`module` or `test` replaces that file. A field left empty keeps its file. When a test and the module disagree, the skill
-decides which one is wrong. Never weaken an assertion that encodes a rule
+`module` or `test` replaces that file. A field left empty keeps its file.
+A failing test's output lists its local values under the assertion. Read
+them before choosing a fix: an outcome other than the one expected often
+comes from a second rule the fixture also trips. When a test and the
+module disagree, the skill decides which one is wrong. Never weaken an assertion that encodes a rule
 from the skill, and never turn a working implementation into a stub to
 silence a failure.

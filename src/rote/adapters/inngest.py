@@ -120,6 +120,7 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     SCHEMA_ERRORS_TS,
+    conditional_gate_ts,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -128,6 +129,9 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    gate_condition_helper_ts,
+    gate_message_helper_ts,
+    gate_report_ts,
     impl_input_type_block,
     judge_env_arg,
     llm_clients,
@@ -137,7 +141,7 @@ from rote.adapters._ts_common import (
     required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
-from rote.mcp.parked import AUTH_PARK_MARKER
+from rote.mcp.parked import AUTH_PARK_MARKER, GATE_PARK_MARKER
 
 _GENERATED_BY = "rote.adapters.inngest"
 
@@ -255,7 +259,6 @@ def auth_event_name(pipeline: Pipeline, server: str) -> str:
 # |                | surfaced as a comment                                 |
 
 _INNGEST_MAX_RETRIES = 20
-_INNGEST_DEFAULT_RETRIES = 3
 
 
 def _function_retries(pipeline: Pipeline) -> int:
@@ -264,14 +267,14 @@ def _function_retries(pipeline: Pipeline) -> int:
     Inngest v4 has no per-step retry configuration (``StepOptions`` is
     ``{ id, name?, parallelMode? }``), so the single function-level
     budget must cover the most retry-hungry node. Nodes that declared a
-    smaller budget get the surplus documented as a comment; when no
-    node declares a retry policy the SDK default (3) is kept rather
-    than forcing 0 — Inngest's platform semantics treat retries as the
-    baseline for transient HTTP failures, not an opt-in.
+    smaller budget get the surplus documented as a comment. When no node
+    declares a retry policy the budget is 0: a node with no ``retry:`` is
+    attempted once on every runtime, and the SDK's default of 3 would run
+    a paid judge or a non-idempotent call four times.
     """
     declared = [n.retry.max for n in pipeline.nodes if n.retry is not None]
     if not declared:
-        return _INNGEST_DEFAULT_RETRIES
+        return 0
     return min(max(declared), _INNGEST_MAX_RETRIES)
 
 
@@ -633,6 +636,11 @@ async function runParkable(
 
 
 def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
+    # NonRetriableError: Inngest's retries are function-level.
+    return conditional_gate_ts(node, _hitl_wait_block(node, pipeline), "NonRetriableError", " " * 8)
+
+
+def _hitl_wait_block(node: Node, pipeline: Pipeline) -> str:
     assert node.signal is not None
     event_name = gate_event_name(pipeline, node)
     timeout = node.timeout or pipeline.config.hitl.default_timeout
@@ -643,7 +651,14 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
         f"        // arrives (inngest.send / POST to the event API). waitForEvent\n"
         f"        // returns null on timeout — and a timed-out wait is memoized, so\n"
         f"        // retrying could never conjure the missing approval. Throw\n"
-        f"        // NonRetriableError: silence is not approval.\n"
+        f"        // NonRetriableError: silence is not approval. First it tells\n"
+        f"        // `rote run` which gate it waits at, and the gate's message (it\n"
+        f"        // prints again on replay; the wait id de-duplicates it). Display\n"
+        f"        // only: nothing is sent anywhere.\n"
+        f"        console.error(\n"
+        f'            "{GATE_PARK_MARKER} " +\n'
+        f"                JSON.stringify({gate_report_ts(node, wait=node.id)}),\n"
+        f"        );\n"
         f"        const {node.id}_event = await step.waitForEvent(\n"
         f"            {json.dumps(node.id)},\n"
         f"            {{ event: {quoted_event}, timeout: {json.dumps(timeout)} }},\n"
@@ -844,6 +859,10 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
     if pipeline.needs_input_check:
         sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
+    if gate_helper := gate_message_helper_ts(pipeline):
+        sections.append(gate_helper.rstrip("\n"))
+    if condition_helper := gate_condition_helper_ts(pipeline):
+        sections.append(condition_helper.rstrip("\n"))
     impl_input = impl_input_type_block(function_block)
     if impl_input:
         sections.append(impl_input.rstrip("\n"))

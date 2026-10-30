@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.contracts import ContractFinding
-from rote.ir import NodeKind, Pipeline, is_field_name, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline, is_field_name, parse_input_ref
 from rote.skill_source import parse_sections
 
 #: Where a skill bundles a sample input, in the order they are tried. A
@@ -322,28 +322,78 @@ _NAMED_ITEM_RE = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+\*\*(?P<term>[^*\n]+?)\*\*
 
 
 def named_human_items(skill_dir: Path) -> dict[str, list[tuple[str, str]]]:
-    """``{section heading: [(term, snake key)]}`` for sections that ask a person.
+    """``{section heading: [(term, snake key)]}`` for lists a person is asked to fill.
 
-    A section qualifies when its text asks a person for something and it
-    lists the items by name: bold text opening a list item. Those names
-    are the skill's nouns for what the person provides.
+    A list counts when what introduces it asks a person for something: its
+    lead-in line (``After pulling the above, ask the duty manager to
+    provide:``), or the section's heading when the list opens the section.
+    Its bold item names are then the skill's nouns for what the person
+    provides. Reading that from words is a guess, so a gate that does not
+    use them is a review gap (:func:`gate_findings`), never an error.
+
+    A section that only *mentions* asking somewhere used to qualify whole, so
+    a workflow whose step 2 said "ask the user whether to move or skip" made
+    its four step titles required answer keys (#319).
     """
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
         return {}
     found: dict[str, list[tuple[str, str]]] = {}
     for heading, text in parse_sections(skill_md.read_text(encoding="utf-8")).items():
-        if not heading or not _HUMAN_ASK_RE.search(text):
+        if not heading:
             continue
-        items = [
-            (m.group("term").strip().rstrip(":"), snake(m.group("term")))
-            for line in text.splitlines()
-            if (m := _NAMED_ITEM_RE.match(line))
-        ]
+        items: list[tuple[str, str]] = []
+        # What introduces the next list: the heading until prose appears.
+        lead: str | None = heading
+        asking = False
+        in_list = False
+        # A list nested under an item ("2. Ask the operator to provide:" and
+        # its sub-bullets) is introduced by that item: (its indent, asking).
+        parent: tuple[int, bool] | None = None
+        previous_item = ""
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            if line.lstrip().startswith("#"):
+                lead, in_list, parent = heading, False, None  # the section's own heading line
+                continue
+            item = _NAMED_ITEM_RE.match(line)
+            listed = item is not None or _LIST_ITEM_RE.match(line) is not None
+            indent = len(line) - len(line.lstrip())
+            if listed and not in_list:
+                asking = lead is not None and _asks_for_what_follows(lead)
+                parent = (indent, False)
+            elif listed and parent is not None and indent > parent[0]:
+                if not parent[1] and _asks_for_what_follows(previous_item):
+                    parent = (parent[0], True)
+            elif listed and parent is not None:
+                parent = (indent, False)
+            in_list = listed
+            if not listed:
+                if not line.startswith((" ", "\t")):
+                    lead = line
+                continue
+            nested = parent is not None and indent > parent[0]
+            if item is not None and (asking or (nested and parent is not None and parent[1])):
+                term = item.group("term")
+                items.append((term.strip().rstrip(":"), snake(term)))
+            if not nested:
+                previous_item = _LIST_ITEM_RE.sub("", line).replace("**", "")
         items = [(t, k) for t, k in items if k and k not in CHOICE_WORDS]
         if items:
             found[heading] = items
     return found
+
+
+#: Any list item, named or not: it continues a list rather than introducing one.
+_LIST_ITEM_RE = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+")
+
+
+def _asks_for_what_follows(lead: str) -> bool:
+    """Whether ``lead`` (a sentence or a heading) introduces a list of things
+    a person is asked for: it asks, and it ends in a colon, the way a lead-in
+    does. A heading such as "Approval gates" names a topic, not a request."""
+    return bool(_HUMAN_ASK_RE.search(lead)) and lead.rstrip().endswith(":")
 
 
 def _input_wording(skill_dir: Path) -> str | None:
@@ -563,6 +613,10 @@ def match_sample_gates(gates: list[GateView], sample: Sample) -> dict[str, str]:
     return matched
 
 
+#: A gate whose payload keys are not the skill's names for what it collects.
+GATE_PAYLOAD_NOT_SKILL_NOUNS = "gate_payload_not_skill_nouns"
+
+
 def gate_findings(
     pipeline: Pipeline, skill_dir: Path | None, sample: Sample | None
 ) -> list[ContractFinding]:
@@ -596,24 +650,41 @@ def gate_findings(
         _heading_key(h): (h, items)
         for h, items in (named_human_items(skill_dir) if skill_dir is not None else {}).items()
     }
+    # Several gates may split one section's items between them (one gate per
+    # item the person supplies, #291), so a section is held to what all of
+    # its gates collect together; each gate need not collect its siblings'.
+    by_section: dict[str, list[Node]] = {}
     for gate in gates:
         cited = gate.source.section if gate.source is not None else None
-        section, items = named.get(_heading_key(cited), (None, None)) if cited else (None, None)
+        if cited:
+            by_section.setdefault(_heading_key(cited), []).append(gate)
+    for key, citing in by_section.items():
+        section, items = named.get(key, (None, None))
         if not items:
             continue
-        have = gate.output_keys
+        gate = citing[0]
+        have = frozenset().union(*(g.output_keys for g in citing))
         absent = [(t, k) for t, k in items if k not in have]
         if absent:
             renames = ", ".join(f"**{t}** -> `{k}`" for t, k in absent)
             declared = ", ".join(sorted(have)) or "none"
+            who = (
+                f"gate {gate.id} collects"
+                if len(citing) == 1
+                else f"gates {', '.join(g.id for g in citing)} together collect"
+            )
             findings.append(
                 ContractFinding(
                     node_id=gate.id,
-                    kind="gate_payload_not_skill_nouns",
-                    severity="error",
+                    kind=GATE_PAYLOAD_NOT_SKILL_NOUNS,
+                    # A guess about meaning, from words (#319): repaired once,
+                    # listed if it survives, never a failed compile. A step
+                    # reading a key the gate lacks is the boundary check's
+                    # error (rote.compiler.boundaries).
+                    severity="warning",
                     message=(
-                        f'gate {gate.id} collects what section "{section}" asks the person '
-                        f"for, but its payload keys ({declared}) do not use "
+                        f'{who} what section "{section}" asks the person '
+                        f"for, but their payload keys ({declared}) do not use "
                         f"the skill's names for those items: {renames}. Name each key after "
                         f"the item, in snake_case, and update the code that reads them"
                     ),

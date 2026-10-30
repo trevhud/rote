@@ -1330,3 +1330,109 @@ def test_only_a_gate_is_held_to_what_it_documents() -> None:
             "input": {"queue": "list[Row]"},
         }
     )
+
+
+# ───────── when: a gate that asks only when its condition holds (#309) ─────────
+
+
+def _conditional(**changes: Any) -> dict[str, Any]:
+    from tests.test_conditional_gate_parity import PIPELINE
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    nodes = {n["id"]: n for n in raw["nodes"]}
+    for path, value in changes.items():
+        node_id, field = path.split("__")
+        if value is None:
+            nodes[node_id].pop(field, None)
+        else:
+            nodes[node_id][field] = value
+    return raw
+
+
+def test_a_conditional_gate_loads_and_is_listed() -> None:
+    pipeline = Pipeline.model_validate(_conditional())
+    assert pipeline.conditional_gates == frozenset({"ask_owner"})
+    assert pipeline.node_by_id("ask_owner").when == "detect_owner.output.ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"ask_owner__when": "pipeline.input.notes"}, "must name one field of an earlier node"),
+        ({"ask_owner__when": "detect_owner.output"}, "must name one field of an earlier node"),
+        ({"recap__when": "detect_owner.output.ambiguous"}, "only allowed on hitl_gate"),
+        ({"ask_owner__when": "nobody.output.ambiguous"}, "there is no node 'nobody'"),
+        ({"ask_owner__when": "detect_owner.output.missing"}, "declares only output keys"),
+        ({"ask_owner__when": "detect_owner.output.candidates"}, "is declared 'list'"),
+        ({"ask_owner__when": "recap.output.asked"}, "does not run before the gate"),
+        # A reader of a field of a gate that may be skipped would fail on every skip.
+        ({"recap__inputs": {"owner": "ask_owner.output.owner"}}, "bind it whole"),
+    ],
+)
+def test_a_gate_condition_that_cannot_work_is_refused(
+    changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        Pipeline.model_validate(_conditional(**changes))
+
+
+def test_a_fan_out_cannot_dispatch_over_a_gate_that_may_be_skipped() -> None:
+    raw = _conditional(recap__fan_out=True)
+    with pytest.raises(ValueError, match="a fan_out cannot dispatch over a gate"):
+        Pipeline.model_validate(raw)
+
+
+def test_a_judge_reading_a_conditional_gate_must_admit_null() -> None:
+    raw = _conditional()
+    judge = {
+        "id": "grade",
+        "kind": "llm_judge",
+        "description": "Grade the recap.",
+        "inputs": {"answer": "ask_owner.output"},
+        "signature_spec": {
+            "input_schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "object"}},
+                "required": ["answer"],
+            },
+            "output_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            "prompt": "Grade {{ answer }}",
+        },
+    }
+    raw["nodes"].append(judge)
+    raw["edges"].append({"from": "ask_owner", "to": "grade"})
+    raw["exit_nodes"].append("grade")
+    with pytest.raises(ValueError, match="does not admit null"):
+        Pipeline.model_validate(raw)
+    judge["signature_spec"]["input_schema"]["properties"]["answer"]["type"] = ["object", "null"]
+    Pipeline.model_validate(raw)
+
+
+def test_a_condition_on_a_node_that_states_no_type_is_left_to_the_run() -> None:
+    """Nothing declared, nothing to check: the run's own rule (exactly true or
+    false) decides, never a guess here."""
+    pipeline = Pipeline.model_validate(_conditional(detect_owner__output=None))
+    assert pipeline.conditional_gates == {"ask_owner"}
+
+
+def test_a_gate_condition_cannot_read_a_fan_out_result() -> None:
+    """A fan_out's result is the list of its per-element results, with no
+    fields, so the condition would fail every run (PR #313 review)."""
+    raw = _conditional(
+        detect_owner__fan_out=True, detect_owner__inputs={"notes": "pipeline.input.notes"}
+    )
+    with pytest.raises(ValueError, match="is a fan_out, so its result is a list"):
+        Pipeline.model_validate(raw)
+
+
+def test_a_fan_out_may_share_a_conditional_gate_across_its_elements() -> None:
+    """Only dispatching over the gate is refused; a fan that reads its answer
+    as a shared value beside the list it fans over is valid (PR #313 review)."""
+    raw = _conditional()
+    raw["nodes"][0]["output"]["items"] = "list"
+    recap = raw["nodes"][2]
+    recap["fan_out"] = True
+    recap["inputs"] = {"item": "detect_owner.output.items", "answer": "ask_owner.output"}
+    raw["edges"].append({"from": "detect_owner", "to": "recap", "fan_out": True})
+    pipeline = Pipeline.model_validate(raw)
+    assert pipeline.node_by_id("recap").fan_out

@@ -634,6 +634,58 @@ def test_cf_run_reports_the_step_error_from_the_wrangler_log(
     )
 
 
+#: What an emitted Cloudflare gate prints just before it waits.
+_APPROVE_GATE_PARKED = (
+    'rote-gate-park {"gate": "review", "signal": "approve", "message": null, "wait": "review"}\n'
+)
+
+
+def test_cf_run_answers_only_a_gate_that_announced_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate with ``when:`` may be skipped and never wait. A park inferred
+    from a slow step after it is not that gate, so its payload is held: sent,
+    it was never consumed and the stuck-gate check failed a good run."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text("[wrangler:info] Ready on http://localhost:1\n", encoding="utf-8")
+    slow = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
+    done = {"status": "complete", "output": {"recap": "ok"}}
+    posted = _scripted_instance(monkeypatch, [slow] * 12 + [done])
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("approve", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 30,
+        log_path=log,
+    )
+    assert run.error is None and run.output == {"recap": "ok"}
+    assert posted == []
+
+
+def test_cf_run_fails_fast_on_a_gate_no_signal_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(_APPROVE_GATE_PARKED, encoding="utf-8")
+    parked = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
+    posted = _scripted_instance(monkeypatch, [parked])
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("aprove", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 5,
+        log_path=log,
+    )
+    assert posted == []
+    assert run.error is not None and "waits for signal(s) approve" in run.error
+
+
 def test_cf_run_waits_out_a_retrying_step_after_the_last_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -642,7 +694,7 @@ def test_cf_run_waits_out_a_retrying_step_after_the_last_gate(
     from rote.runners import cloudflare as cf
 
     log = tmp_path / "wrangler-dev.log"
-    log.write_text(_WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
+    log.write_text(_APPROVE_GATE_PARKED + _WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
     quiet = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": []}
     # Parked-looking long enough for the one gate, then again (retry
     # backoff), and only then the step's retries run out.
@@ -693,7 +745,9 @@ def test_cf_run_fails_fast_on_a_gate_that_never_consumes_its_payload(
     from rote.runners import cloudflare as cf
 
     log = tmp_path / "wrangler-dev.log"
-    log.write_text("[wrangler:info] Ready on http://localhost:1\n", encoding="utf-8")
+    log.write_text(
+        "[wrangler:info] Ready on http://localhost:1\n" + _APPROVE_GATE_PARKED, encoding="utf-8"
+    )
     parked = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
     posted = _scripted_instance(monkeypatch, [parked])
     run = cf._drive_instance(
@@ -882,7 +936,9 @@ def test_run_pipeline_dispatches_temporal(tmp_path: Path, monkeypatch: pytest.Mo
     target = RunTarget(kind="pipeline", path=tmp_path, runtime="temporal")
     outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=5.0)
     assert outcome.run.output == {"temporal": True}
-    assert "park_watch" not in captured["kwargs"]  # temporal never parks on auth
+    # Temporal never parks on auth, but its watcher prints the gates it reaches.
+    watch = captured["kwargs"].pop("park_watch")
+    assert callable(watch)
     assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 5.0}
 
 
@@ -960,3 +1016,90 @@ def test_rote_run_skill_missing_a_named_server_exits_1_unless_accepted(
     assert cli_main(["run", str(skill), "--input", "{}", "--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["missing_mcp_servers"] == missing
+
+
+class _FakeWrangler:
+    """A wrangler dev that loses its port to another process ``lost`` times."""
+
+    def __init__(self, cmd: list[str], *, stdout: Any, lost: list[int], **_kw: Any) -> None:
+        self.port = int(cmd[cmd.index("--port") + 1])
+        self.returncode: int | None = None
+        if lost and lost[0] > 0:
+            lost[0] -= 1
+            stdout.write(
+                '[ERROR] Address already in use (socket "direct:1:default"). Please check '
+                "that you are not already running a server on this address\n"
+            )
+            stdout.flush()
+            self.returncode = 1
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
+@pytest.mark.parametrize(("lost", "starts"), [(1, 2), (2, 3)])
+def test_cf_start_retries_a_port_taken_before_wrangler_binds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost: int, starts: int
+) -> None:
+    """A free port can be taken between choosing it and wrangler binding it;
+    parallel CI workers did, and a release's checks failed on it."""
+    from rote.runners import cloudflare as cf
+
+    counter = [lost]
+    ports = iter(range(41000, 41010))
+    started: list[_FakeWrangler] = []
+
+    def popen(cmd: list[str], **kw: Any) -> _FakeWrangler:
+        proc = _FakeWrangler(cmd, lost=counter, **kw)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(cf.subprocess, "Popen", popen)
+    monkeypatch.setattr(cf, "find_free_port", lambda: next(ports))
+    monkeypatch.setattr(cf, "terminate", lambda proc: None)
+    monkeypatch.setattr(cf, "http_get_json", lambda url, timeout=2.0: {"ok": True})
+    proc, port = cf._start_wrangler(tmp_path, tmp_path / "wrangler-dev.log", None)
+    assert len(started) == starts and port == 41000 + starts - 1 and proc is started[-1]
+
+
+def test_cf_start_gives_up_after_its_attempts_and_reports_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.runners import cloudflare as cf
+
+    counter = [cf.PORT_ATTEMPTS]
+    ports = iter(range(41000, 41010))
+    monkeypatch.setattr(
+        cf.subprocess, "Popen", lambda cmd, **kw: _FakeWrangler(cmd, lost=counter, **kw)
+    )
+    monkeypatch.setattr(cf, "find_free_port", lambda: next(ports))
+    monkeypatch.setattr(cf, "terminate", lambda proc: None)
+    with pytest.raises(cf.EmpiricalError, match="Address already in use"):
+        cf._start_wrangler(tmp_path, tmp_path / "wrangler-dev.log", None)
+
+
+def test_cf_start_does_not_retry_any_other_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a lost port is retried: a broken worker fails at once, as itself."""
+    from rote.runners import cloudflare as cf
+
+    calls: list[int] = []
+
+    class Broken:
+        returncode = 1
+
+        def __init__(self, cmd: list[str], *, stdout: Any, **_kw: Any) -> None:
+            calls.append(1)
+            stdout.write("[ERROR] Could not resolve import\n")
+            stdout.flush()
+
+        def poll(self) -> int:
+            return 1
+
+    monkeypatch.setattr(cf.subprocess, "Popen", Broken)
+    monkeypatch.setattr(cf, "find_free_port", lambda: 41000)
+    monkeypatch.setattr(cf, "terminate", lambda proc: None)
+    with pytest.raises(cf.EmpiricalError, match="Could not resolve import"):
+        cf._start_wrangler(tmp_path, tmp_path / "wrangler-dev.log", None)
+    assert calls == [1]

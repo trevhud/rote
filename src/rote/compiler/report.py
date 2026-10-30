@@ -27,7 +27,7 @@ from pathlib import Path
 from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
 from rote.contracts import NodeImplementation, implementation_status
-from rote.ir import NodeKind, Pipeline
+from rote.ir import NodeKind, Pipeline, constant_text
 from rote.vendor_specs import RequestCheck
 from rote.vendor_specs import report_section as spec_report_section
 
@@ -128,6 +128,13 @@ def _summary(pipeline: Pipeline, impls: list[NodeImplementation]) -> list[str]:
     fanned = [n.id for n in pipeline.nodes if n.fan_out]
     if fanned:
         lines.append(f"- Fan-out: {', '.join(f'`{n}`' for n in fanned)}.")
+    constants = [
+        f"`{n.id}.{k}` = {constant_text(v, (n.constant_units or {}).get(k))}"
+        for n in pipeline.nodes
+        for k, v in (n.constants or {}).items()
+    ]
+    if constants:
+        lines.append(f"- Constants: {_cell(', '.join(constants))}.")
     gates = [n for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE]
     for gate in gates:
         timeout = gate.timeout or pipeline.config.hitl.default_timeout
@@ -211,8 +218,13 @@ def _open_questions(
         if not impl.blocks_run:
             continue
         reason = impl.reason or "no reason given"
+        title = (
+            f"### Unresolved call: {impl.node_id}"
+            if impl.unsent_constants
+            else f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})"
+        )
         lines += [
-            f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})",
+            title,
             "",
             _quoted(reason),
             "",

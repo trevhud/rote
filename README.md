@@ -360,6 +360,9 @@ emitted code + a README on how to run, signal gates, and deploy).
 and the driver's cost estimate before emission starts, so an adapter
 failure does not lose the paid run's metrics. Missing final output stays
 null with `usage_complete: false`; unchanged updates retain prior metrics.
+Its `usage` block says, for each stage that called a model, whether its
+tokens were measured, so a driver that reports none reads as `unavailable`,
+not as a free run.
 
 Local `api` and `openai-api` compilation automatically discovers your
 registered, authenticated MCP servers and exposes their read-only tools.

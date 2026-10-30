@@ -693,7 +693,7 @@ def test_emitted_app_runs_the_agent_written_modules(tmp_path: Path) -> None:
     from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
     from rote.adapters import get_adapter
-    from rote.runners.temporal import _load_app_modules
+    from rote.runners.temporal import _load_app_modules, start_with_retries
 
     source = tmp_path / "compiled"
     (source / "extracted").mkdir(parents=True)
@@ -711,7 +711,7 @@ def test_emitted_app_runs_the_agent_written_modules(tmp_path: Path) -> None:
     workflow_class, activities = _load_app_modules(out)
 
     async def _run() -> dict:
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await start_with_retries(WorkflowEnvironment.start_time_skipping) as env:
             queue = f"chain-{uuid4()}"
             async with Worker(
                 env.client,

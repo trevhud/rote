@@ -67,6 +67,21 @@ _MARKER_RE = re.compile(re.escape(AUTH_PARK_MARKER) + r" (\{.*\})")
 #: The workflow event both DBOS adapters advertise a park through.
 AUTH_STATUS_EVENT = "rote_auth_status"
 
+#: Where a run says which HITL gates it has reached. On DBOS (both SDKs) a
+#: workflow event, and on Temporal a workflow query, of this name, whose
+#: value is ``{"reached": [{"gate", "signal", "message"}, ...]}`` in the
+#: order the gates were reached. The list keeps every gate, so a poll that
+#: comes late (a gate whose payload was already waiting) still sees it.
+GATE_STATUS_EVENT = "rote_gate_status"
+
+#: Prefix of the line the emitted TypeScript gates (Inngest, Cloudflare)
+#: print right before they wait, followed by a JSON object with ``gate``,
+#: ``signal``, ``message`` and ``wait`` (the wait's step id). Replays print
+#: it again; ``wait`` de-duplicates it, as for :data:`AUTH_PARK_MARKER`.
+GATE_PARK_MARKER = "rote-gate-park"
+
+_GATE_MARKER_RE = re.compile(re.escape(GATE_PARK_MARKER) + r" (\{.*\})")
+
 
 def auth_topic(server: str) -> str:
     """The DBOS message topic that releases a park on ``server``."""
@@ -83,6 +98,75 @@ class AuthPark:
     key: str
     """Identifies this park episode; a later park of the same run gets a
     new key, so it is announced again."""
+
+
+@dataclass(frozen=True)
+class GateReached:
+    """A run that reached a HITL gate, and the gate's rendered message.
+
+    The message is display only: rote sends it nowhere (no channel or
+    target in the IR's ``notify`` is ever contacted).
+    """
+
+    gate: str
+    signal: str
+    message: str | None
+    key: str
+    """Identifies this arrival, so it is announced once."""
+    shows: dict[str, Any] | None = None
+    """The gate's other bound inputs by name: the data the person decides on
+    that its message does not name (#325)."""
+
+
+def gates_from_status(status: Any, run_id: str) -> list[GateReached]:
+    """The gates a :data:`GATE_STATUS_EVENT` value says the run reached."""
+    if not isinstance(status, dict) or not isinstance(status.get("reached"), list):
+        return []
+    found: list[GateReached] = []
+    for i, entry in enumerate(status["reached"]):
+        if isinstance(entry, dict) and entry.get("gate"):
+            message = entry.get("message")
+            found.append(
+                GateReached(
+                    gate=str(entry["gate"]),
+                    signal=str(entry.get("signal") or ""),
+                    message=message if isinstance(message, str) else None,
+                    key=f"{run_id}#{i}",
+                    shows=entry["shows"] if isinstance(entry.get("shows"), dict) else None,
+                )
+            )
+    return found
+
+
+def parse_gate_park_markers(text: str) -> list[GateReached]:
+    """Every well-formed :data:`GATE_PARK_MARKER` line in ``text``, in order.
+
+    Lines split on ``\\n`` only: ``JSON.stringify`` leaves U+2028, U+2029 and
+    U+0085 raw, ``str.splitlines`` splits on them, and a gate's shown data
+    (a pasted draft) carries them, which cut the marker in two and left a
+    Cloudflare run waiting for a gate it never saw announced.
+    """
+    found: list[GateReached] = []
+    for line in text.split("\n"):
+        match = _GATE_MARKER_RE.search(line)
+        if match is None:
+            continue
+        try:
+            doc = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(doc, dict) and doc.get("gate") and doc.get("wait"):
+            message = doc.get("message")
+            found.append(
+                GateReached(
+                    gate=str(doc["gate"]),
+                    signal=str(doc.get("signal") or ""),
+                    message=message if isinstance(message, str) else None,
+                    key=str(doc["wait"]),
+                    shows=doc["shows"] if isinstance(doc.get("shows"), dict) else None,
+                )
+            )
+    return found
 
 
 class ParkChannel(Protocol):
@@ -105,6 +189,10 @@ class ParkChannel(Protocol):
 
     def poll(self) -> list[AuthPark]:
         """Parks active right now."""
+        ...
+
+    def poll_gates(self) -> list[GateReached]:
+        """Every HITL gate the run has reached so far, in order."""
         ...
 
     def release(self, park: AuthPark) -> None:
@@ -188,6 +276,16 @@ class DbosAuthChannel:
             )
         ]
 
+    def poll_gates(self) -> list[GateReached]:
+        if self._workflow_id is None:
+            self._workflow_id = _workflow_id_from_stderr(self._stderr_path)
+            if self._workflow_id is None:
+                return []
+        status = self._ensure_client().get_event(
+            self._workflow_id, GATE_STATUS_EVENT, timeout_seconds=0
+        )
+        return gates_from_status(status, self._workflow_id)
+
     def release(self, park: AuthPark) -> None:
         from dbos import WorkflowSerializationFormat
 
@@ -216,7 +314,7 @@ def parse_auth_park_markers(text: str) -> list[dict[str, str]]:
     whose JSON does not parse is not a marker.
     """
     found: list[dict[str, str]] = []
-    for line in text.splitlines():
+    for line in text.split("\n"):  # as parse_gate_park_markers
         match = _MARKER_RE.search(line)
         if match is None:
             continue
@@ -268,6 +366,13 @@ class LogMarkerChannel:
                     server=doc["server"], node=doc.get("node"), run_id=self._run_id, key=key
                 )
         return [p for k, p in self._parks.items() if k not in self._released]
+
+    def poll_gates(self) -> list[GateReached]:
+        try:
+            text = self._log_path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return []
+        return parse_gate_park_markers(text)
 
     def release(self, park: AuthPark) -> None:
         if self._release is None:
@@ -411,8 +516,10 @@ class AuthParkWatcher:
     _released: set[str] = field(default_factory=set, init=False)
     _declined: set[str] = field(default_factory=set, init=False)
     _active: set[str] = field(default_factory=set, init=False)
+    _gates_announced: set[str] = field(default_factory=set, init=False)
 
     def tick(self) -> float:
+        self._announce_gates()
         active = self.channel.poll()
         active_keys = {p.key for p in active}
         for key in list(self._seen):
@@ -447,6 +554,21 @@ class AuthParkWatcher:
 
     def close(self) -> None:
         self.channel.close()
+
+    def drain(self) -> None:
+        """Announce any gate the run reached since the last tick.
+
+        Runners call it once the run has ended: a gate whose payload was
+        already waiting can be reached and passed between two ticks.
+        """
+        self._announce_gates()
+
+    def _announce_gates(self) -> None:
+        for gate in self.channel.poll_gates():
+            if gate.key in self._gates_announced:
+                continue
+            self._gates_announced.add(gate.key)
+            self.echo(gate_announcement(gate))
 
     def _announce(self, park: AuthPark) -> None:
         where = f"node {park.node!r}" if park.node else "a step"
@@ -508,6 +630,37 @@ class AuthParkWatcher:
         self.echo(f"rote run: {reason}, releasing the parked run")
 
 
+def gate_announcement(gate: GateReached) -> str:
+    """What ``rote run`` prints when the run reaches ``gate``: one line, then
+    the message indented (blank lines stay blank, trailing ones go). The
+    message is escaped again here, because the runner prints whatever the
+    app reported; on a message the emitted renderer wrote, that changes
+    nothing."""
+    from rote.adapters._common import escape_invisible
+
+    head = f"rote run: waiting at gate {gate.gate!r} for signal {gate.signal!r}"
+    text = escape_invisible(gate.message or "").rstrip("\n")
+    # By name: Temporal's query result does not keep the emitted key order.
+    for name, value in sorted((gate.shows or {}).items()):
+        # What the gate shows below its message: a string as written (a draft
+        # keeps its lines), anything else as compact JSON.
+        shown = (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        )
+        shown = escape_invisible(shown).rstrip("\n")
+        text += ("\n" if text else "") + (
+            f"{escape_invisible(name)}:\n" + "\n".join(f"  {line}" for line in shown.split("\n"))
+            if "\n" in shown
+            else f"{escape_invisible(name)}: {shown}"
+        )
+    if not text:
+        return head
+    body = "\n".join(f"  {line}" if line else "" for line in text.split("\n"))
+    return f"{head}:\n{body}"
+
+
 #: What runners take: given the run's channel, build its watcher.
 ParkWatchFactory = Callable[[ParkChannel], "AuthParkWatcher"]
 
@@ -521,6 +674,30 @@ def watch_factory(interactive: bool) -> ParkWatchFactory:
     return build
 
 
+#: Where each runtime's emitted workflow lives, for :func:`app_reports_gates`.
+_WORKFLOW_FILES = (
+    "main.py",
+    "workflow.py",
+    "src/main.ts",
+    "src/workflow.ts",
+    "src/inngest/pipeline.ts",
+)
+
+
+def app_reports_gates(app_dir: Path) -> bool:
+    """Whether an emitted app reports the HITL gates it reaches.
+
+    Lets runners build a watcher for a gated app that never touches MCP.
+    """
+    for name in _WORKFLOW_FILES:
+        path = app_dir / name
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if GATE_STATUS_EVENT in text or GATE_PARK_MARKER in text:
+                return True
+    return False
+
+
 def app_parks_on_auth(app_dir: Path) -> bool:
     """Whether an emitted app carries the MCP helper (so it can park).
 
@@ -530,6 +707,12 @@ def app_parks_on_auth(app_dir: Path) -> bool:
     return (app_dir / "extracted" / "_rote_mcp.py").is_file() or (
         app_dir / "src" / "extracted" / "_roteMcp.ts"
     ).is_file()
+
+
+def watches_park(app_dir: Path) -> bool:
+    """Whether a runner needs a watcher for this app: it can park on auth,
+    or it reports the gates it reaches."""
+    return app_parks_on_auth(app_dir) or app_reports_gates(app_dir)
 
 
 # ───────── Listing parked runs across registered apps ─────────
@@ -624,3 +807,4 @@ def wait_for_exit(
             proc.wait(timeout=poll_interval)
         except subprocess.TimeoutExpired:
             continue
+    watcher.drain()

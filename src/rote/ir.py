@@ -33,6 +33,8 @@ from pydantic import (
     model_validator,
 )
 
+from rote.env_vars import ENV_NAME_RE, reserved_reason
+
 # ───────── Data-flow input references ─────────
 #
 # A node declares where its runtime inputs come from via ``inputs:``,
@@ -97,7 +99,9 @@ _PIPELINE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 #: A ``notify.message_template`` placeholder: ``{name}``, one key of the
 #: node's ``inputs:``. The compiled skill's driver fills it with this exact
 #: pattern (``rote.skill_target._driver._GATE_PLACEHOLDER``, pinned by a
-#: parity test). No other runtime sends the message.
+#: parity test), and so does every workflow runtime's emitted renderer
+#: (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY`` and its TS twin).
+#: No runtime sends the message anywhere; see ``NotifyConfig``.
 GATE_MESSAGE_PLACEHOLDER = r"\{([A-Za-z_][A-Za-z0-9_]*)\}"
 _GATE_MESSAGE_PLACEHOLDER_RE = re.compile(GATE_MESSAGE_PLACEHOLDER)
 
@@ -271,22 +275,53 @@ class TerminationConfig(BaseModel):
 
 
 class NotifyConfig(BaseModel):
-    """How a hitl_gate notifies the human reviewer."""
+    """What a hitl_gate tells the person it waits for.
+
+    Display only, on every runtime. ``message_template`` is rendered and
+    shown; ``channel`` and ``target`` are documentation that nothing reads,
+    so no Slack message, email or webhook is ever sent.
+
+    On the workflow runtimes (dbos, dbos-ts, temporal, cloudflare, inngest;
+    python refuses gates) the gate renders ``message_template`` with its
+    actual input values when the run reaches it, and reports
+    ``{gate, signal, message}`` where ``rote run`` watches the run: the
+    ``rote_gate_status`` workflow event on DBOS, the ``rote_gate_status``
+    query on Temporal, and a ``rote-gate-park`` log line on Cloudflare and
+    Inngest (``rote.mcp.parked``). ``rote run`` prints the message on stderr
+    when it says the run waits at that gate. The rule is one rule in both
+    languages (``rote.adapters._py_common.GATE_MESSAGE_HELPER_PY``): a string
+    value as is, any other value as JavaScript's ``JSON.stringify`` writes
+    it, a placeholder whose value the run does not have (an omitted optional
+    input, a key an upstream result lacks) kept as written, and
+    invisible characters spelled ``\\uXXXX``. The compiled skill shows the
+    message in its HUMAN block (``rote.skill_target``) through the same
+    renderer, shipped as ``scripts/_rote_gate.py``; there a list or object
+    stays in the block's JSON instead of inline.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     # Both optional: a skill rarely names where its approval goes, the compile
-    # must not invent one, and no runtime sends to them (the compiled skill
-    # reaches the person through its agent, with the message alone).
-    channel: str | None = Field(default=None, description="slack | email | webhook")
+    # must not invent one, and no runtime sends to them.
+    channel: str | None = Field(
+        default=None,
+        description="slack | email | webhook. Documentation only: no runtime sends to it",
+    )
     target: str | None = Field(
-        default=None, description="Channel name, email address, or webhook URL"
+        default=None,
+        description=(
+            "Channel name, email address, or webhook URL. Documentation only: "
+            "no runtime sends to it"
+        ),
     )
     message_template: str | None = Field(
         default=None,
         description=(
             "Message for the person. Each {name} placeholder is a key of the "
-            "gate's inputs: (validated) and is filled with that input's value."
+            "gate's inputs: (validated) and is filled with that input's value. "
+            "Workflow runtimes render it when the run reaches the gate and "
+            "`rote run` prints it; the compiled skill shows it in its HUMAN "
+            "block. It is never sent to a channel."
         ),
     )
 
@@ -351,7 +386,12 @@ class LLMSignature(BaseModel):
             "request's output schema leaves them out, and code copies each one "
             "from the validated input after the answer arrives, so the judge's "
             "declared output is unchanged and the copy cannot drift. Each source "
-            "must have exactly the target's schema."
+            "must have exactly the target's schema. A field of every item of an "
+            "output list is copied the same way, matched by a key the model "
+            'writes: `{"items[].body": "prs[number].body"}` fills each '
+            "item's `body` from the `prs` record whose `number` equals the "
+            "item's; an item whose key matches no record, or several, fails the "
+            "judge."
         ),
     )
 
@@ -369,11 +409,23 @@ class LLMSignature(BaseModel):
         if v is None:
             return None
         for target, source in v.items():
+            if not isinstance(source, str):
+                raise ValueError(f"passthrough source for {target!r} must be a string")
+            item_target = _ITEM_TARGET_RE.fullmatch(target)
+            if item_target is not None:
+                if _ITEM_SOURCE_RE.fullmatch(source) is None:
+                    raise ValueError(
+                        f"passthrough {target!r} copies into list items, so its source "
+                        f"{source!r} must name the input list, its key and the field: "
+                        "<path>[<key>].<field>, e.g. prs[number].body"
+                    )
+                continue
             if not _IDENTIFIER_RE.fullmatch(target):
-                raise ValueError(f"passthrough target {target!r} must be an identifier")
-            if not isinstance(source, str) or not all(
-                _IDENTIFIER_RE.fullmatch(part) for part in source.split(".")
-            ):
+                raise ValueError(
+                    f"passthrough target {target!r} must be an identifier, or "
+                    "<list>[].<field> for a field of every item of an output list"
+                )
+            if not all(_IDENTIFIER_RE.fullmatch(part) for part in source.split(".")):
                 raise ValueError(
                     f"passthrough source {source!r} (for {target!r}) must be a dotted path "
                     "of identifiers into the judge's input, e.g. thread.account_name"
@@ -403,18 +455,20 @@ class LLMSignature(BaseModel):
                 "(no root $ref)"
             )
         problems: list[str] = []
-        unknown = sorted(t for t in self.passthrough if t not in out_props)
+        top = {t: src for t, src in self.passthrough.items() if t not in _item_entries(self)}
+        unknown = sorted(t for t in top if t not in out_props)
         if unknown:
             problems.append(
                 f"passthrough targets {unknown} are not output_schema properties "
                 f"(properties: {sorted(out_props)})"
             )
-        if not unknown and set(self.passthrough) == set(out_props):
+        if not unknown and set(top) == set(out_props):
             problems.append(
                 "passthrough covers every output property, so the model decides nothing: "
                 "this is not a judge"
             )
-        for target, source in sorted(self.passthrough.items()):
+        problems += _item_passthrough_problems(self, out_props)
+        for target, source in sorted(top.items()):
             if target not in out_props:
                 continue
             found = _schema_at_path(self.input_schema, source)
@@ -609,6 +663,20 @@ class MCPBinding(BaseModel):
 #: and an MCP-bound step forwards one only when ``mcp.args`` names it.
 CONSTANT_ARGUMENT_KINDS = frozenset({NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL})
 
+#: The units a numeric constant may carry (``Node.constant_units``). A closed
+#: set, so a unit is safe to print anywhere. ``percent`` means the number is
+#: the percentage itself: ``75`` with ``percent`` is 75 percent, never 0.75.
+#: ``currency:<ISO 4217 code>`` is an amount in that currency's major unit
+#: (``2500`` with ``currency:USD`` is $2,500.00). ``count`` is a number of
+#: things, and the time units are a length of time in that unit.
+CONSTANT_UNIT_NAMES = ("percent", "count", "seconds", "minutes", "hours", "days", "weeks", "months")
+CONSTANT_UNIT_RE = re.compile(rf"(?:{'|'.join(CONSTANT_UNIT_NAMES)}|currency:[A-Z]{{3}})")
+
+
+def constant_text(value: Any, unit: str | None) -> str:
+    """One constant's value as a reader sees it: ``75 (percent)``, ``'BDR'``."""
+    return f"{value!r} ({unit})" if unit else repr(value)
+
 
 class Node(BaseModel):
     """A single step in the compiled pipeline.
@@ -721,6 +789,28 @@ class Node(BaseModel):
                 raise ValueError(f"constant key {key!r} must be a valid identifier")
         return v
 
+    @field_validator("env")
+    @classmethod
+    def _validate_env(cls, v: list[str] | None) -> list[str] | None:
+        """Each name is passed through into a compiled skill's driver, so it must
+        be a variable name and not one the driver's allowlist exists to keep out
+        or sets itself (:func:`rote.env_vars.reserved_reason`)."""
+        if v is None:
+            return None
+        for name in v:
+            if not ENV_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"env name {name!r} must be a variable name (letters, digits, "
+                    "underscore; not starting with a digit)"
+                )
+            reason = reserved_reason(name)
+            if reason is not None:
+                raise ValueError(f"env cannot declare {name}: {reason}")
+        dupes = sorted({n for n in v if v.count(n) > 1})
+        if dupes:
+            raise ValueError(f"env names {', '.join(dupes)} more than once")
+        return v
+
     @field_validator("phase", mode="before")
     @classmethod
     def _coerce_phase_to_string(cls, v: Any) -> str | None:
@@ -782,6 +872,27 @@ class Node(BaseModel):
     constants: dict[str, Any] | None = Field(
         default=None,
         description="Hard-coded constants extracted from the source skill",
+    )
+    constant_units: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Constant name -> the unit of its numeric value (CONSTANT_UNIT_RE): "
+            "'percent' (75 is 75 percent), 'currency:USD', 'days', 'count'... "
+            "Documentation for the module's author and the reviewer; the impl "
+            "still receives the bare number as its keyword argument."
+        ),
+    )
+    env: list[str] | None = Field(
+        default=None,
+        description=(
+            "pure_function / external_call only: the environment variables "
+            "this node's code reads (os.environ / os.getenv), by name. Every "
+            "workflow runtime runs code in the full process environment; a "
+            "compiled skill's driver gets an allowlisted one, so it passes "
+            "exactly these, with the values recorded at install "
+            "(rote.skill_target.trust, launch). "
+            "Verification refuses a literal read a node does not declare."
+        ),
     )
     cache: CacheConfig | None = None
     fan_out: bool = Field(
@@ -855,6 +966,59 @@ class Node(BaseModel):
         description="Signal name the workflow waits for (resume on signal)",
     )
     notify: NotifyConfig | None = None
+    when: str | None = Field(
+        default=None,
+        description=(
+            "hitl_gate only: `<node_id>.output.<field>`, a true-or-false value an "
+            "earlier node computes. The gate waits for the person only when it is "
+            "true. When it is false the gate is skipped and its result is null, so "
+            "a node that reads the gate binds it whole (`<gate>.output`) and "
+            "handles null. Any other value fails the run naming the gate."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_when(self) -> Self:
+        """``when`` is a gate's, and names one field of an earlier node's result.
+
+        A skill that asks the person only when something holds ("ask who
+        owns the meeting if that is ambiguous") compiled to a gate that
+        waited on every run (#309). The field is emitted as an expression
+        on every runtime, so its grammar is the ``inputs:`` one (invariant
+        #7), narrowed to a node's field: the pipeline input is not a
+        condition a step computes."""
+        if self.when is None:
+            return self
+        if self.kind is not NodeKind.HITL_GATE:
+            raise ValueError(f"Node {self.id!r}: when is only allowed on hitl_gate nodes")
+        ref = parse_input_ref(self.when)
+        if ref.node_id is None or ref.field is None:
+            raise ValueError(
+                f"hitl_gate {self.id!r}: when {self.when!r} must name one field of an "
+                f"earlier node's result, `<node_id>.output.<field>`, holding true or false"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_constant_units(self) -> Self:
+        """Each unit names a numeric constant of this node and is one of the
+        closed set, so it can be printed into a card, a report or a comment
+        as is (invariant #7)."""
+        constants = self.constants or {}
+        for name, unit in (self.constant_units or {}).items():
+            if name not in constants:
+                raise ValueError(f"node {self.id!r}: constant_units names {name!r}, not a constant")
+            value = constants[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"node {self.id!r}: constant {name!r} has unit {unit!r} but is not a number"
+                )
+            if not isinstance(unit, str) or not CONSTANT_UNIT_RE.fullmatch(unit):
+                raise ValueError(
+                    f"node {self.id!r}: constant {name!r} unit {unit!r} must be one of "
+                    f"{', '.join(CONSTANT_UNIT_NAMES)} or currency:<ISO code>"
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_constants_do_not_shadow_inputs(self) -> Self:
@@ -932,6 +1096,12 @@ class Node(BaseModel):
         # agent loop "mandatory" — that's a no-op)
         if self.mandatory and kind is NodeKind.AGENT_LOOP:
             raise ValueError(f"Node {self.id!r}: mandatory=true is not allowed on agent_loop nodes")
+
+        # Only an impl reads the environment: other kinds run no node code.
+        if self.env and kind not in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
+            raise ValueError(
+                f"Node {self.id!r}: env is only allowed on pure_function and external_call nodes"
+            )
 
         # An MCP binding is only meaningful on an external_call (it's how that
         # node reaches a vendor). Reject it elsewhere so the field can't drift.
@@ -1346,6 +1516,101 @@ class Pipeline(BaseModel):
             raise ValueError("\n".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_gate_conditions(self) -> Self:
+        """A gate's ``when`` reads a boolean that exists before the gate runs,
+        and nothing reads a field of a gate that may be skipped.
+
+        The condition is evaluated where the gate would wait, so its node must
+        finish in an earlier wave (the reachability rule for ``inputs:``). Its
+        field must be one the node declares, and a declared type must be a
+        boolean: a count or a list would be "truthy" in one language and an
+        error in another. A skipped gate's result is null, so a reader of one
+        of its fields would fail on every run that skipped it; readers bind the
+        gate whole, a judge's schema must admit null for it, and a fan_out
+        cannot dispatch over it."""
+        waves = self.execution_waves()
+        wave_of = {n.id: i for i, wave in enumerate(waves) for n in wave}
+        by_id = {n.id: n for n in self.nodes}
+        owned = {sub for n in self.nodes for sub in n.loop_body or ()}
+        conditional = {n.id for n in self.nodes if n.when is not None}
+        errors: list[str] = []
+        for gate in self.nodes:
+            if gate.when is None:
+                continue
+            ref = parse_input_ref(gate.when)
+            assert ref.node_id is not None and ref.field is not None
+            head = f"hitl_gate {gate.id!r} when {gate.when!r}"
+            source = by_id.get(ref.node_id)
+            if source is None:
+                errors.append(f"{head}: there is no node {ref.node_id!r}")
+                continue
+            if source.id in owned or gate.id in owned:
+                errors.append(
+                    f"{head}: a loop_body sub-node binds no top-level result, so a gate "
+                    "condition cannot be read from one or set on one"
+                )
+                continue
+            if wave_of[source.id] >= wave_of[gate.id]:
+                errors.append(
+                    f"{head}: {source.id!r} does not run before the gate. Add an edge from "
+                    f"{source.id!r} to {gate.id!r} (directly or through other nodes)"
+                )
+            if source.id in conditional:
+                errors.append(f"{head}: {source.id!r} is a gate that may be skipped")
+                continue
+            if source.fan_out:
+                errors.append(
+                    f"{head}: {source.id!r} is a fan_out, so its result is a list of "
+                    "per-element results with no fields. Compute the condition in a "
+                    "node that reads that list"
+                )
+                continue
+            declared_type = _declared_field_type(source, ref.field)
+            if declared_type is _UNDECLARED:
+                errors.append(
+                    f"{head}: {source.id!r} declares only output keys "
+                    f"{sorted(source.output_keys)}. Read one of those, or add "
+                    f"{ref.field!r} (true or false) to its output"
+                )
+            elif declared_type is not None and declared_type != "boolean":
+                errors.append(
+                    f"{head}: {source.id}.{ref.field} is declared {declared_type!r}. A gate "
+                    "condition must be true or false; compute a boolean field for it"
+                )
+        for node in self.nodes:
+            if node.id in owned:
+                continue
+            for param, raw in (node.inputs or {}).items():
+                ref = parse_input_ref(raw)
+                if ref.node_id not in conditional:
+                    continue
+                where = f"Node {node.id!r} input {param!r} reads {raw!r}"
+                if ref.field is not None:
+                    errors.append(
+                        f"{where}, a field of a gate that may be skipped (it has when:). "
+                        f"A skipped gate's result is null, so bind it whole "
+                        f"(`{ref.node_id}.output`) and handle null"
+                    )
+                elif node.fan_out and param == _fan_element_or_none(node, self):
+                    errors.append(
+                        f"{where}: a fan_out cannot dispatch over a gate that may be "
+                        "skipped, since a skipped gate's result is null"
+                    )
+                elif not _judge_property_admits_null(node, param):
+                    errors.append(
+                        f"{where}, a gate that may be skipped, but its input schema "
+                        f"property {param!r} does not admit null. Add null to its type"
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
+    @property
+    def conditional_gates(self) -> frozenset[str]:
+        """The ids of the gates with a ``when``: each may be skipped, with a null result."""
+        return frozenset(n.id for n in self.nodes if n.when is not None)
+
     def execution_waves(self) -> list[list[Node]]:
         """Topologically sort the top-level nodes into parallel waves.
 
@@ -1551,17 +1816,24 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
     edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
     fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
 
-    # The tiers are tried narrowest-first, but the ORDER is provably
-    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
-    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
-    # singles out exactly one param. If the broader tier singles one out,
-    # it is necessarily the same one. (Mutation testing flags swapping
-    # these as a surviving mutant — it is equivalent, not a test gap.)
-    # The tiers still earn their place: they express which signal the
-    # author gave, and tier 2 is what handles a marker pointing at a node
-    # no input references.
+    # The tiers are tried narrowest-first: fan_edge_sources ⊆ edge_sources
+    # by construction, so matching(fan) ⊆ matching(edge). A tier is
+    # accepted when it singles out one param, directly or, when several
+    # params read the same source, by the producer declaring one of them a
+    # list. That narrowing can resolve tier 1 where tier 2 alone would not
+    # (a shared field of the list's producer beside an unrelated edge), so
+    # the order matters now. Tier 2 handles a marker pointing at a node no
+    # input references.
     for sources in (fan_edge_sources, edge_sources):
         matching = sorted(p for p, src in node_bound.items() if src in sources)
+        if len(matching) > 1:
+            # Several params read the list's producer: the list plus a shared
+            # field of the same result (#329's items and the signed-in account
+            # beside them). The one whose value the producer's own schema types
+            # as a list is the element param; anything less is still an error.
+            lists = [p for p in matching if _binds_a_declared_list(node.inputs[p], pipeline)]
+            if len(lists) == 1:
+                return lists[0]
         if len(matching) == 1:
             return matching[0]
     if not node_bound:
@@ -1588,6 +1860,37 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
             f"with `fan_out: true`"
         )
     return next(iter(node_bound))
+
+
+def _binds_a_declared_list(ref: str, pipeline: Pipeline) -> bool:
+    """Whether ``ref`` names a field its producer declares as a list.
+
+    Read from the producer's own declaration only: a judge's output schema,
+    a node's ``output_schema``, or a ``list`` type name in ``output``. A
+    producer that declares nothing rules nothing in.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None or parsed.field is None:
+        return False
+    producer = next((n for n in pipeline.nodes if n.id == parsed.node_id), None)
+    if producer is None:
+        return False
+    spec = producer.signature_spec
+    schemas = [
+        s
+        for s in (spec.output_schema if spec is not None else None, producer.output_schema)
+        if isinstance(s, dict)
+    ]
+    for schema in schemas:
+        props = schema.get("properties")
+        field = props.get(parsed.field) if isinstance(props, dict) else None
+        if isinstance(field, dict) and field.get("type") == "array":
+            return True
+    if isinstance(producer.output, dict):
+        declared = producer.output.get(parsed.field)
+        if isinstance(declared, str) and declared.split("[", 1)[0].strip().lower() == "list":
+            return True
+    return False
 
 
 def _pipeline_input_field_may_be_list(ref: InputRef, pipeline: Pipeline) -> bool:
@@ -1633,6 +1936,142 @@ def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"root $ref {ref!r} names no definition in this schema's $defs")
         root = defs[name]
     return root
+
+
+#: ``<list>[].<field>``: a passthrough target inside every item of an output list.
+_ITEM_TARGET_RE = re.compile(
+    r"(?P<array>[A-Za-z_][A-Za-z0-9_]*)\[\]\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)"
+)
+#: ``<path>[<key>].<field>``: its source, a field of the input record matched by key.
+_ITEM_SOURCE_RE = re.compile(
+    r"(?P<path>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\[(?P<key>[A-Za-z_][A-Za-z0-9_]*)\]\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+@dataclass(frozen=True)
+class ItemPassthrough:
+    """One per-item passthrough entry, parsed: copy ``record_field`` of the
+    record in input list ``path`` whose ``key`` equals the item's into the
+    item's ``field``, for every item of output list ``array``."""
+
+    array: str
+    field: str
+    path: str
+    key: str
+    record_field: str
+
+
+def item_passthrough(target: str, source: str) -> ItemPassthrough | None:
+    """The per-item entry ``target: source`` names, or None for a top-level one.
+    The runtime helpers parse the same grammar (``rote.inference._runtime_helper``)."""
+    t = _ITEM_TARGET_RE.fullmatch(target)
+    src = _ITEM_SOURCE_RE.fullmatch(source)
+    if t is None or src is None:
+        return None
+    return ItemPassthrough(t["array"], t["field"], src["path"], src["key"], src["field"])
+
+
+def _item_entries(spec: LLMSignature) -> dict[str, ItemPassthrough]:
+    return {
+        target: entry
+        for target, source in (spec.passthrough or {}).items()
+        if (entry := item_passthrough(target, source)) is not None
+    }
+
+
+#: Key types a per-item match compares the same way in Python and JavaScript.
+_ITEM_KEY_TYPES = frozenset({"string", "integer"})
+
+
+def _item_passthrough_problems(spec: LLMSignature, out_props: dict[str, Any]) -> list[str]:
+    """Why the per-item entries cannot work, if they cannot.
+
+    The output list holds objects that declare the field and the key; the
+    input path is a list of objects that declare the key and the source
+    field; the two fields and the two keys have the same schema; the key is
+    a string or an integer (compared the same way in both languages) and
+    stays the model's; and every entry for one list matches by one key
+    against one input list, so each item is matched once."""
+    problems: list[str] = []
+    by_array: dict[str, list[ItemPassthrough]] = {}
+    for target, entry in sorted(_item_entries(spec).items()):
+        by_array.setdefault(entry.array, []).append(entry)
+        where = f"passthrough {target}"
+        if entry.array not in out_props:
+            problems.append(f"{where}: {entry.array!r} is not an output_schema property")
+            continue
+        item = _list_items(out_props[entry.array], spec.output_schema)
+        if isinstance(item, str):
+            problems.append(f"{where}: output {entry.array!r} {item}")
+            continue
+        record = _list_items(_schema_at_path(spec.input_schema, entry.path), spec.input_schema)
+        if isinstance(record, str):
+            problems.append(f"{where}: input {entry.path!r} {record}")
+            continue
+        item_props, record_props = item["properties"], record["properties"]
+        missing = [
+            f"{where}: {side} declare no property {name!r}"
+            for name, props, side in (
+                (entry.field, item_props, f"output {entry.array!r} items"),
+                (entry.key, item_props, f"output {entry.array!r} items"),
+                (entry.key, record_props, f"input {entry.path!r} records"),
+                (entry.record_field, record_props, f"input {entry.path!r} records"),
+            )
+            if name not in props
+        ]
+        if missing:
+            problems += missing
+            continue
+        if entry.field == entry.key:
+            problems.append(f"{where}: the key {entry.key!r} is what the model writes to match")
+            continue
+        # The model must write the key, and every record must have one: an
+        # optional key lets a schema-locked answer leave it out, and that
+        # item then fails on every run.
+        for side, schema_node, name in (
+            (f"output {entry.array!r} items", item, entry.key),
+            (f"input {entry.path!r} records", record, entry.key),
+        ):
+            if name not in (schema_node.get("required") or []):
+                problems.append(f"{where}: {side} must list the key {name!r} in required")
+        if _comparable_schema(item_props[entry.field], spec.output_schema) != _comparable_schema(
+            record_props[entry.record_field], spec.input_schema
+        ):
+            problems.append(
+                f"{where}: the records' {entry.record_field!r} has a different schema from the "
+                f"items' {entry.field!r}; a field copied unchanged declares the same schema"
+            )
+        item_key = _comparable_schema(item_props[entry.key], spec.output_schema)
+        if item_key != _comparable_schema(record_props[entry.key], spec.input_schema):
+            problems.append(f"{where}: the key {entry.key!r} has different schemas on each side")
+        elif not (isinstance(item_key, dict) and item_key.get("type") in _ITEM_KEY_TYPES):
+            problems.append(f"{where}: the key {entry.key!r} must be a string or an integer")
+    for array, entries in by_array.items():
+        if len({(e.path, e.key) for e in entries}) > 1:
+            problems.append(
+                f"passthrough into {array!r} items matches by more than one input list or key; "
+                "every entry for one list uses the same <path>[<key>]"
+            )
+        if any(e.key == other.field for e in entries for other in entries):
+            problems.append(f"passthrough into {array!r} items copies over its own key")
+    return problems
+
+
+def _list_items(node: Any, root: dict[str, Any]) -> dict[str, Any] | str:
+    """The object schema of a list's items, or why ``node`` is not such a list."""
+    if isinstance(node, str):
+        return node
+    try:
+        node = _resolve_ref(node, root)
+        items = _resolve_ref(node.get("items"), root) if isinstance(node, dict) else None
+    except ValueError as e:
+        return str(e)
+    if not isinstance(node, dict) or node.get("type") != "array" or not isinstance(items, dict):
+        return "is not a list (type array with items)"
+    if not isinstance(items.get("properties"), dict):
+        return "is not a list of objects that declare their properties"
+    return items
 
 
 def _schema_at_path(schema: dict[str, Any], path: str) -> dict[str, Any] | str:
@@ -1706,6 +2145,53 @@ def passthrough_candidates(
         matches = [path for path, candidate in paths if candidate == wanted]
         if matches and _IDENTIFIER_RE.fullmatch(target):
             found[target] = matches
+    found.update(_item_candidates(input_schema, output_schema, out_props, paths))
+    return found
+
+
+def _item_candidates(
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+    out_props: dict[str, Any],
+    paths: list[tuple[str, Any]],
+) -> dict[str, list[str]]:
+    """Per-item pairs (``items[].body`` <- ``prs[number].body``) by shape: an
+    output list of objects and an input list of objects that share a string or
+    integer key, and a field of the same name and schema on both sides (#320).
+    Which key identifies a record is the compiler's reading, checked by the IR
+    once it is chosen."""
+    found: dict[str, list[str]] = {}
+    lists = [(path, schema) for path, schema in paths if isinstance(schema, dict)]
+    for array, schema in out_props.items():
+        item = _list_items(schema, output_schema)
+        if isinstance(item, str) or not _IDENTIFIER_RE.fullmatch(array):
+            continue
+        try:
+            item_fields = {
+                name: _comparable_schema(sub, output_schema)
+                for name, sub in item["properties"].items()
+                if _IDENTIFIER_RE.fullmatch(name)
+            }
+        except ValueError:
+            continue
+        for path, compared in lists:
+            records = compared.get("items") if compared.get("type") == "array" else None
+            record_fields = records.get("properties") if isinstance(records, dict) else None
+            if not isinstance(record_fields, dict):
+                continue
+            keys = [
+                k
+                for k, sub in item_fields.items()
+                if record_fields.get(k) == sub
+                and isinstance(sub, dict)
+                and sub.get("type") in _ITEM_KEY_TYPES
+            ]
+            for key in keys:
+                # A field returned unchanged keeps its name: the record's
+                # `body` fills the item's `body`, never its `summary`.
+                for field, sub in item_fields.items():
+                    if field != key and record_fields.get(field) == sub:
+                        found.setdefault(f"{array}[].{field}", []).append(f"{path}[{key}].{field}")
     return found
 
 
@@ -1789,7 +2275,7 @@ def _passthrough_binding_error(node: Node) -> str | None:
     unbound = sorted(
         f"{target} <- {source}"
         for target, source in (node.signature_spec.passthrough or {}).items()
-        if source.split(".", 1)[0] not in (node.inputs or {})
+        if source.split(".", 1)[0].split("[", 1)[0] not in (node.inputs or {})
     )
     if not unbound:
         return None
@@ -1859,6 +2345,79 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
                 f"beside it."
             )
     return message
+
+
+def _fan_element_or_none(node: Node, pipeline: Pipeline) -> str | None:
+    """The fanned param, or None when emission would refuse the fan anyway."""
+    try:
+        return fan_out_element_param(node, pipeline)
+    except ValueError:
+        return None
+
+
+#: :func:`_declared_field_type` for a node that lists its keys without this one.
+_UNDECLARED = object()
+
+_BOOLEAN_TYPE_NAMES = frozenset({"bool", "boolean"})
+
+
+def _declared_field_type(node: Node, field: str) -> object:
+    """The type ``node`` declares for its result's ``field``: ``"boolean"``,
+    another type's name, None when nothing states a type (or the node lists
+    no keys, or its keys are an MCP tool's guess), or :data:`_UNDECLARED`
+    when the node lists its keys and this is not one."""
+    props = (node.output_schema or {}).get("properties")
+    if isinstance(props, dict) and field in props:
+        stated = props[field].get("type") if isinstance(props[field], dict) else None
+        if isinstance(stated, str):
+            return "boolean" if stated == "boolean" else stated
+        return None
+    if isinstance(node.output, dict) and field in node.output:
+        stated = node.output[field]
+        if isinstance(stated, str) and stated.strip():
+            name = stated.strip()
+            return "boolean" if name.lower() in _BOOLEAN_TYPE_NAMES else name
+        return None
+    if node.mcp is not None and _closed_object_properties(node.output_schema) is None:
+        return None
+    return _UNDECLARED if node.output_keys else None
+
+
+def _judge_property_admits_null(node: Node, param: str) -> bool:
+    """Whether a judge's input schema lets ``param`` be null. Other kinds
+    validate no payload, so their code is what has to handle null."""
+    if node.kind is not NodeKind.LLM_JUDGE or node.signature_spec is None:
+        return True
+    try:
+        root = _schema_root(node.signature_spec.input_schema)
+    except ValueError:
+        return True  # the binding check reports the schema itself
+    props = root.get("properties")
+    prop = props.get(param) if isinstance(props, dict) else None
+    if not isinstance(prop, dict):
+        return True  # an undeclared binding is the binding check's error
+    return _admits_null(prop)
+
+
+def _admits_null(schema: dict[str, Any]) -> bool:
+    """Whether a JSON Schema accepts null. Unknown (a ``$ref`` this does not
+    follow) counts as yes: a false error would have the agent rewrite a
+    correct schema."""
+    if "$ref" in schema:
+        return True
+    if "enum" in schema:
+        return isinstance(schema["enum"], list) and None in schema["enum"]
+    if "const" in schema:
+        return schema["const"] is None
+    branches = [
+        b for key in ("anyOf", "oneOf") for b in schema.get(key) or [] if isinstance(b, dict)
+    ]
+    if branches:
+        return any(_admits_null(b) for b in branches)
+    stated = schema.get("type")
+    if stated is None:
+        return True
+    return stated == "null" or (isinstance(stated, list) and "null" in stated)
 
 
 def load_pipeline(path: str | Path) -> Pipeline:

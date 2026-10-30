@@ -74,6 +74,27 @@ class BindingError(Exception):
     """An ``inputs:`` reference that the upstream result cannot satisfy."""
 
 
+def _gate_waits(step: dict[str, Any], results: dict[str, Any]) -> bool:
+    """Whether a gate with a ``when`` asks, by every runtime's rule: the field
+    must be exactly true or false (``_gate_condition_error`` in the emitted
+    Python, ``gateConditionError`` in TS, ``_gate_waits`` in the skill driver)."""
+    when = step["when"]
+    ref = f"{when['node']}.output.{when['field']}"
+    result = results.get(when["node"])
+    if not isinstance(result, dict) or when["field"] not in result:
+        raise BindingError(
+            f"hitl_gate {step['id']!r} waits only when {ref} is true, "
+            f"but that result has no {when['field']!r}"
+        )
+    value = result[when["field"]]
+    if not isinstance(value, bool):
+        raise BindingError(
+            f"hitl_gate {step['id']!r} waits only when {ref} is true, and it is "
+            f"{type(value).__name__}, not true or false"
+        )
+    return value
+
+
 def _keys(value: Any) -> str:
     if isinstance(value, dict):
         return "keys " + (", ".join(sorted(map(str, value))) or "none")
@@ -227,6 +248,9 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             report[node_id] = {"status": "not_deterministic", "reason": step["reason"]}
             continue
         not_run = [b[2] for b in step["bindings"] if b[1] == "node" and b[2] not in results]
+        when = step.get("when") if step["kind"] == "gate" else None
+        if when is not None and when["node"] not in results:
+            not_run.append(when["node"])
         if not_run:
             report[node_id] = _probe_shapes(step, sample, results, unrecorded, root) or {
                 "status": "not_reached",
@@ -240,6 +264,17 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 if value is not _MISSING:
                     payload[binding[0]] = value
             if step["kind"] == "gate":
+                if when is not None and not _gate_waits(step, results):
+                    # Skipped, as every runtime skips it: its result is null.
+                    results[node_id] = None
+                    report[node_id] = {"status": "ok", "skipped": True, "output": None}
+                    continue
+                if "payload" not in step:
+                    report[node_id] = {
+                        "status": "not_deterministic",
+                        "reason": "a person answers this gate, and the sample has no answer",
+                    }
+                    continue
                 results[node_id] = step["payload"]
                 report[node_id] = {"status": "ok", "given": True, "output": step["payload"]}
                 continue

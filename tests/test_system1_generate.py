@@ -37,7 +37,7 @@ from rote.compiler.system1.generate import (
     module_request,
 )
 from rote.contracts import ContractFinding
-from rote.ir import NodeKind, load_pipeline
+from rote.ir import NodeKind, Pipeline, load_pipeline
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -1484,3 +1484,44 @@ async def test_a_skill_compile_that_would_not_pay_off_stops_before_generating(
     assert fake.requests == []
     await compiler(anyway=True).compile(skill, tmp_path / "out2")
     assert fake.requests
+
+
+def test_a_reader_of_a_gate_that_may_be_skipped_is_told_it_gets_none(tmp_path: Path) -> None:
+    """A skipped gate's result is None (#309): its reader's card says so and
+    types it nullable, and a reader of an always-asked gate is told neither."""
+    from dataclasses import replace
+
+    from tests.test_conditional_gate_parity import PIPELINE
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    ctx, _ = _context(tmp_path)
+    # Any skill's node plan stands in for the cards' unit text.
+    stand_in = next(iter(ctx.plan.values()))
+    plans = {n.id: replace(stand_in, id=n.id, kind=n.kind.value) for n in PIPELINE.nodes}
+    ctx = Context(
+        work_dir=ctx.work_dir,
+        doc=raw,
+        pipeline=PIPELINE,
+        plan=plans,
+        grounding=Grounding(),
+        tables=[],
+    )
+    recap = ctx.node("recap")
+    note = generate.SKIPPABLE_GATE.format(gate="ask_owner", when="detect_owner.output.ambiguous")
+    assert note in "\n".join(generate._node_card(ctx, recap))
+    schema = ctx.param_schema(recap, "answer")
+    assert schema["anyOf"][1] == {"type": "null"}
+    assert schema["anyOf"][0]["properties"] == {"owner": {}}
+
+    raw["nodes"][1].pop("when")
+    always = Context(
+        work_dir=ctx.work_dir,
+        doc=raw,
+        pipeline=Pipeline.model_validate(raw),
+        plan=plans,
+        grounding=Grounding(),
+        tables=[],
+    )
+    card = "\n".join(generate._node_card(always, always.node("recap")))
+    assert "is skipped and this value is None" not in card
+    assert "anyOf" not in always.param_schema(always.node("recap"), "answer")

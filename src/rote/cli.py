@@ -55,6 +55,7 @@ from rote.compiler.system1 import DECIDERS, TIEBREAKS
 from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
 from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
+from rote.compiler.usage import UNAVAILABLE, CompileUsage, StageUsage
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import (
@@ -174,12 +175,17 @@ def _print_stub_todo(
     indent: str = "  ",
     stream: Any = None,
     run_command: str | None = None,
+    suggest_next: bool = True,
 ) -> None:
     """Tell a human which emitted modules they still have to fill in.
 
     ``tracked`` is :func:`rote.adapters._common.stubs_tracked`: when the
     emitted code imports its implementations from outside the directory,
     an empty list proves nothing, so this says so instead of "none".
+
+    ``suggest_next`` False (a compile whose deliverable failed
+    verification) leaves out the ``next:`` run command: the run is not
+    the next step, the fix is.
     """
     out = stream if stream is not None else sys.stdout
     run = run_command or f"rote run {runtime_dir}"
@@ -193,7 +199,8 @@ def _print_stub_todo(
         return
     if not stubs:
         print(f"{indent}stubs: none, every extracted module is implemented", file=out)
-        print(f"{indent}next: {run}", file=out)
+        if suggest_next:
+            print(f"{indent}next: {run}", file=out)
         return
     print(
         f"{indent}stubs: {len(stubs)} module(s) still raise until you implement them:",
@@ -201,7 +208,8 @@ def _print_stub_todo(
     )
     for stub in stubs:
         print(f"{indent}  {stub}", file=out)
-    print(f"{indent}next: fill those in, then {run}", file=out)
+    if suggest_next:
+        print(f"{indent}next: fill those in, then {run}", file=out)
 
 
 def _add_skill_runtime_args(parser: argparse.ArgumentParser, *, with_skill_dir: bool) -> None:
@@ -428,6 +436,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 #: The rote-compile skill runs seven numbered phases; used to render
 #: ``[phase N/7]`` progress lines. Kept in sync with skills/rote-compile.
 _COMPILE_TOTAL_PHASES = 7
+
+#: A compile result that carries no usage report (a compiler built before
+#: one existed) is unknown usage, said as such, never zero.
+_UNREPORTED_USAGE = CompileUsage(
+    [StageUsage("agent", UNAVAILABLE, None, "the compiler reported no usage")]
+)
 
 
 def _format_token_note(tokens: dict[str, int] | None) -> str:
@@ -680,11 +694,16 @@ class _JsonlProgressSink:
         reported_cost: float | None = None,
         calls: list[dict[str, Any]] | None = None,
         system1_cost: float | None = 0.0,
+        priced_tokens: dict[str, Any] | None = None,
     ) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
-        Prices the run's ``total_tokens`` into a ``cost_usd`` field the
-        same way per-event lines are priced. Never raises.
+        Prices ``priced_tokens`` (the agent's measured usage,
+        :attr:`rote.compiler.usage.CompileUsage.agent_tokens`) into a
+        ``cost_usd`` field the same way per-event lines are priced, when
+        nothing below outranks it. Not ``total_tokens``: that includes
+        System-1's calls, which ``system1_cost`` already counts, and is
+        None when nothing was measured. Never raises.
 
         ``reported_cost`` is the agent runtime's whole-query estimate
         (e.g. from ``claude -p``), not authoritative billing data. It wins
@@ -708,10 +727,8 @@ class _JsonlProgressSink:
                 priced = [self._call_cost(c) for c in calls]
                 if all(x is not None for x in priced):
                     agent = sum(x or 0.0 for x in priced)
-            else:
-                total = summary.get("total_tokens")
-                if isinstance(total, dict):
-                    agent = self._cost_usd(total)
+            elif priced_tokens is not None:
+                agent = self._cost_usd(priced_tokens)
             summary = {**summary, "system1_cost_usd": system1_cost}
             if agent is not None and system1_cost is not None:
                 summary["cost_usd"] = round(agent + system1_cost, 6)
@@ -1384,14 +1401,30 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # ── Summary ── (human text to stderr under --json, so stdout is the
     # JSON object only — the same stdout-contract split as `rote mcp headers`)
     summary_stream = sys.stderr if args.json else sys.stdout
-    print(
-        f"rote compile: ✓ {pipeline.name} v{pipeline.version}",
-        file=summary_stream,
-    )
+    # One verdict for every report below: the header, --json and the
+    # progress summary. A deliverable that failed verification is kept but
+    # is not ready to run, so nothing here says it is (#291).
+    verdict = _verification_verdict(deliverable, tests_run, args.no_verify_tests)
+    failed = verdict["status"] == "failed"
+    usage = result.usage if result.usage is not None else _UNREPORTED_USAGE
+    if failed:
+        print(
+            f"rote compile: ✗ {pipeline.name} v{pipeline.version}: verification FAILED "
+            f"({verdict['error_count']} unresolved problem(s)"
+            f"{', generated tests failing' if verdict['tests'] == 'failed' else ''}); "
+            "the artifacts are kept but are not ready to run",
+            file=summary_stream,
+        )
+    else:
+        print(
+            f"rote compile: ✓ {pipeline.name} v{pipeline.version}",
+            file=summary_stream,
+        )
     print(f"  driver: {result.driver_name}", file=summary_stream)
     if result.driver_metadata:
         meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}", file=summary_stream)
+    print(f"  usage: {usage.summary_line()}", file=summary_stream)
     print(f"  compiled artifacts: {compiled_dir}", file=summary_stream)
     if scorecard_path is not None:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
@@ -1400,7 +1433,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     from rote.skill_target.next_steps import compiled_skill_next_steps
 
     skill_next = (
-        compiled_skill_next_steps(runtime_dir, skill_path) if args.runtime == "skill" else None
+        compiled_skill_next_steps(runtime_dir, skill_path)
+        if args.runtime == "skill" and not failed
+        else None
     )
     _print_stub_todo(
         _unimplemented_stubs(runtime_dir),
@@ -1408,6 +1443,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         tracked=stubs_tracked(runtime_dir, pipeline),
         stream=summary_stream,
         run_command=skill_next.install if skill_next else None,
+        suggest_next=not failed,
     )
     if skill_next:
         first, *rest = skill_next.swap
@@ -1450,6 +1486,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             f"`rote emit {compiled_dir / 'pipeline.yaml'}`",
             file=summary_stream,
         )
+    # The errors this check found plus those final verification left, each
+    # once: verification runs the same contract check, and the progress
+    # summary used to count only this one's (0 beside a failed verification).
+    contract_errors = _distinct_error_count(
+        contract_findings, deliverable.errors if deliverable is not None else []
+    )
 
     # ── Static vs observed cross-check ── runs whenever baseline
     # observations exist for this out dir (from --baseline just now, or a
@@ -1508,7 +1550,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # A deliverable that still fails verification after the repair rounds
     # is kept (it is the output of a paid run, usually a small fix away)
     # but is not a success: exit non-zero, and don't ship it to the cloud.
-    if deliverable is not None and not deliverable.ok:
+    if failed:
         exit_code = 1
         rounds = result.driver_metadata.get("repair_rounds", 0)
         print(
@@ -1585,12 +1627,18 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         if verification is not None:
             payload["generated_tests"] = verification
         payload["contract_findings"] = [f.as_dict() for f in contract_findings]
+        payload["contract_errors"] = contract_errors
+        payload["usage"] = usage.as_dict()
+        payload["verification"] = {
+            **verdict,
+            "errors": [f.as_dict() for f in deliverable.errors] if deliverable else [],
+            # Repaired like errors but not failures; listed for a person.
+            "review_gaps": [f.as_dict() for f in deliverable.review_gaps] if deliverable else [],
+            "implementations": (
+                [i.as_dict() for i in deliverable.implementations] if deliverable else []
+            ),
+        }
         if deliverable is not None:
-            payload["verification"] = {
-                "ok": deliverable.ok,
-                "errors": [f.as_dict() for f in deliverable.errors],
-                "implementations": [i.as_dict() for i in deliverable.implementations],
-            }
             payload["provenance"] = deliverable.provenance_report()
             payload["grounding"] = {
                 "prefix": deliverable.prefix.as_dict() if deliverable.prefix else None,
@@ -1611,14 +1659,6 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         analysis_nodes = analysis["nodes"]
         assert isinstance(analysis_nodes, dict)
         meta = result.driver_metadata
-        total_tokens = {
-            "input": int(meta.get("input_tokens") or 0),
-            "output": (
-                None if meta.get("usage_complete") is False else int(meta.get("output_tokens") or 0)
-            ),
-            "cache_write": int(meta.get("cache_write_tokens") or 0),
-            "cache_read": int(meta.get("cache_read_tokens") or 0),
-        }
         progress_sink.write_summary(
             {
                 "type": "summary",
@@ -1629,15 +1669,24 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "runtime_dir": str(runtime_dir.resolve()),
                 "unimplemented_stubs": _unimplemented_stubs(runtime_dir),
                 "mcp_servers": analysis["mcp_servers"],
-                "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
+                "contract_errors": contract_errors,
+                "verification": verdict,
                 **(
-                    {"provenance": result.verification.provenance_report()}
+                    {
+                        "provenance": result.verification.provenance_report(),
+                        "review_gaps": [f.as_dict() for f in result.verification.review_gaps],
+                    }
                     if result.verification is not None
                     else {}
                 ),
-                "total_tokens": total_tokens,
-                "usage_complete": meta.get("usage_complete", True),
+                # None, never zeros, when nothing was measured (#295).
+                "total_tokens": usage.tokens,
+                "usage_complete": usage.complete,
+                "usage_status": usage.status,
+                "usage_missing": usage.missing,
+                "usage_stages": [s.as_dict() for s in usage.stages],
             },
+            priced_tokens=usage.agent_tokens,
             reported_cost=meta.get("cost_usd"),
             # Failed calls were billed too: a parallel compile's cost is
             # every call it sent, answered or not.
@@ -1646,6 +1695,39 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         )
         progress_sink.close()
     return exit_code
+
+
+def _verification_verdict(
+    deliverable: Any, tests_run: Any, no_verify_tests: bool
+) -> dict[str, Any]:
+    """The compile's verification outcome, as the header, ``--json`` and the
+    progress summary all report it.
+
+    ``status`` is ``failed`` exactly when the compile exits 1 for it (the
+    deliverable still fails after the repair rounds), ``unverified`` when
+    the generated tests did not run, ``passed`` otherwise, and ``not_run``
+    when this compile ran no verification (an update that changed
+    nothing). ``error_count`` counts the unresolved problems, an invalid
+    pipeline.yaml included; ``tests`` is the generated tests' own status.
+    """
+    tests = "not_run" if tests_run is None else tests_run.status
+    if deliverable is None:
+        return {"status": "not_run", "ok": None, "error_count": 0, "tests": tests}
+    errors = len(deliverable.errors) + (1 if deliverable.pipeline_error is not None else 0)
+    if not deliverable.ok:
+        status = "failed"
+    elif no_verify_tests or tests == "unverified":
+        status = "unverified"
+    else:
+        status = "passed"
+    return {"status": status, "ok": deliverable.ok, "error_count": errors, "tests": tests}
+
+
+def _distinct_error_count(*groups: list[Any]) -> int:
+    """Error-severity findings across ``groups``, each counted once."""
+    return len(
+        {(f.node_id, f.kind, f.message) for group in groups for f in group if f.severity == "error"}
+    )
 
 
 def _assumptions_by_node(found: list[Any]) -> list[tuple[str, list[Any]]]:
@@ -2090,8 +2172,20 @@ def _cmd_compile_cloud(args: argparse.Namespace) -> int:
                 "compiled_dir": str(compiled_dir.resolve()),
                 "runtime_dir": str(runtime_dir.resolve()),
                 "cloud": cloud_entry,
-                "total_tokens": tokens or {"input": 0, "output": 0},
-            }
+                # The server's figure as given; none reported is unknown,
+                # never zero (#295).
+                "total_tokens": tokens,
+                **(
+                    {
+                        "usage_complete": False,
+                        "usage_status": "unavailable",
+                        "usage_missing": ["rote cloud reported no token usage"],
+                    }
+                    if tokens is None
+                    else {}
+                ),
+            },
+            priced_tokens=tokens,
         )
         progress_sink.close()
     return 0
@@ -2729,10 +2823,14 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
     pending = begun.pending
     url = begun.authorization_url or ""
     opened = any(o.action_id.startswith("open-browser") and o.result is True for o in outcomes)
+    scopes = _requested_scopes(url, config)
     out.say(f"Authorize {server!r} in a browser on this machine:")
     out.say("")
     out.say(f"  {url}")
     out.say("")
+    out.say(
+        "It asks for scope(s): " + (" ".join(scopes["requested"]) or "none (the server's default)")
+    )
     if opened:
         out.say("(opened in your browser)")
     out.say(f"Then run: rote mcp login --complete {pending.id}")
@@ -2751,12 +2849,24 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
                 expires_at=pending.expires_at,
             ),
             "browser_opened": opened,
+            "scopes": scopes,
             "applied": True,
             "plan": plan.to_dict(),
             "outcomes": [o.to_dict() for o in outcomes],
         }
     )
     return 0
+
+
+def _requested_scopes(authorization_url: str, config: Any) -> dict[str, Any]:
+    """The scopes the user configured and the ones the authorization URL
+    asks for, read from the URL itself (#316): the registry alone cannot show
+    what a login really requests. Only the scope parameter is read; the
+    URL's state and PKCE challenge are not repeated."""
+    from urllib.parse import parse_qs, urlparse
+
+    requested = parse_qs(urlparse(authorization_url).query).get("scope", [""])[0].split()
+    return {"configured": list(config.scopes) if config.scopes else None, "requested": requested}
 
 
 def _mcp_login_complete(args: argparse.Namespace, out: Any) -> int:
@@ -6406,7 +6516,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scope",
         action="append",
         default=None,
-        help="OAuth scope to request (repeatable)",
+        help=(
+            "OAuth scope to request (repeatable). The login asks for exactly these "
+            "(plus offline_access when the server supports refresh tokens), never the "
+            "server's wider list, and stops if the server requires more. Omit to let "
+            "the server decide"
+        ),
     )
     mcp_add.add_argument(
         "--header",

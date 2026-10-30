@@ -19,11 +19,11 @@
     "src/extracted/taxonomy_lookup.ts": "48ce7f78764fa710febb7cc0a64df3dfc1f151a8d62c299cd12116a02605f5bd",
     "src/index.ts": "e8160b22e60d5bf6bd17d1d2bad56bedddd36e71c6a66159c492e5184d781114",
     "src/signatures/_roteInference.ts": "790f29b716d13edce912be92bc3f5bcfa42560408ee49dbff83c2e182aa8811e",
-    "src/signatures/_roteSchema.ts": "50cdcec431d0e0cfb74503a9cfecb92fe5c2ddbcea06cd5c7fa976e1021bd49d",
+    "src/signatures/_roteSchema.ts": "06006104beefd187e06fb80110525732ea12dc41066e056002ca57868c0bef35",
     "src/signatures/personalize_email.ts": "eebe99c646e1b46e01d05e77bcbc2b49f7a3ae514468ee3155ac3cb9fba7043c",
     "src/signatures/vet_contact.ts": "13d5cebf1be307b8d306b0dac37235c5032b865f2c2b0fdbbf146165f01474a7",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
-    "src/workflow.ts": "6012d03aeaf9a65f40129ad499e0b0bcf1c877f807e42fa8ca1fec728ea8a765",
+    "src/workflow.ts": "15b6c0f684cea0abaca792aab6eeb5c31a9d54c6997f1a1709f1a90efc1daab0",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "fa4f9733ea58ffeaa4e9ab94812ccd7b89f361ca4b7e68929fe8c1cd8b8f2ca2"
   }

@@ -44,8 +44,12 @@ from rote.adapters._py_common import (
     _signature_path_parts,
     agent_loop_call,
     call_impl_helper,
+    conditional_gate_py,
     fan_out_binding,
     fan_out_list_helper,
+    gate_condition_helper,
+    gate_message_helper,
+    gate_report_py,
     impl_kwargs_expr,
     missing_inputs_helper,
     require_constant_parameters,
@@ -55,6 +59,7 @@ from rote.adapters._py_common import (
     write_signature_package,
 )
 from rote.ir import Node, NodeKind, Pipeline
+from rote.mcp.parked import GATE_STATUS_EVENT
 
 # ───────── Adapter configuration ─────────
 
@@ -381,7 +386,24 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
     init_lines = ["    def __init__(self) -> None:"]
     for gate in gates:
         init_lines.append(f"        self._{gate.signal}_payload: dict | None = None")
+    init_lines.append("        # Every gate this run has reached, for the rote_gate_status query.")
+    init_lines.append("        self._rote_gates: list[dict] = []")
     init_block = "\n".join(init_lines) + "\n\n"
+    query_block = textwrap.indent(
+        textwrap.dedent(
+            f'''
+            @workflow.query(name="{GATE_STATUS_EVENT}")
+            def _rote_gate_status(self) -> dict:
+                """Every gate this run has reached, with its rendered message.
+
+                What `rote run` shows while the run waits at a gate. Display
+                only: nothing is sent to a person or a channel.
+                """
+                return {{"reached": list(self._rote_gates)}}
+            '''
+        ).lstrip("\n"),
+        prefix="    ",
+    )
 
     handler_blocks: list[str] = []
     for gate in gates:
@@ -396,7 +418,7 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
             '''
         ).lstrip("\n")
         handler_blocks.append(textwrap.indent(raw, prefix="    "))
-    return init_block + "\n".join(handler_blocks)
+    return init_block + "\n".join(handler_blocks) + "\n" + query_block
 
 
 def _execute_activity_expr(
@@ -473,7 +495,9 @@ def _emit_hitl_block(node: Node) -> str:
         f"        # ─── HITL gate: {node.id} ───\n"
         f"        # Workflow suspends here until the {node.signal!r} signal\n"
         f"        # arrives. Survives worker restarts; resumes immediately\n"
-        f"        # when the signal fires.\n"
+        f"        # when the signal fires. First it says which gate it waits at,\n"
+        f"        # and the gate's message, for the rote_gate_status query.\n"
+        f"        self._rote_gates.append({gate_report_py(node)})\n"
         f"        await workflow.wait_condition(\n"
         f"            lambda: self._{node.signal}_payload is not None\n"
         f"        )\n"
@@ -529,7 +553,15 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
             body_lines.append(_emit_fan_out_call(n, pipeline, cfg))
 
         for h in hitl:
-            body_lines.append(_emit_hitl_block(h).rstrip("\n"))
+            # Non-retryable, as for missing inputs: a plain exception in
+            # workflow code fails the workflow task, retried forever.
+            block = conditional_gate_py(
+                h,
+                _emit_hitl_block(h),
+                "raise ApplicationError(_when_error, non_retryable=True)",
+                " " * 8,
+            )
+            body_lines.append(block.rstrip("\n"))
 
     body_lines.append("")
     body_lines.append("        return {")
@@ -600,8 +632,13 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
 
     if any(n.fan_out for n in pipeline.nodes):
         parts.append("\n" + fan_out_list_helper() + "\n")
+    if gate_helper := gate_message_helper(pipeline):
+        parts.append("\n" + gate_helper + "\n")
+    if condition_helper := gate_condition_helper(pipeline):
+        parts.append("\n" + condition_helper + "\n")
     if pipeline.needs_input_check:
         parts.append("\n" + missing_inputs_helper(pipeline) + "\n")
+    if pipeline.needs_input_check or pipeline.conditional_gates:
         parts[0] = parts[0].replace(
             "from temporalio.common import RetryPolicy\n",
             "from temporalio.common import RetryPolicy\n"

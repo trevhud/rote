@@ -1538,3 +1538,338 @@ def test_recorded_fanned_results_bind_as_the_list_not_element_zero(tmp_path: Pat
     )
     assert run.steps["search"]["status"] == "ok"
     assert run.steps["count"]["status"] == "ok", run.steps["count"]
+
+
+def _split_gates(outputs: list[str]) -> str:
+    nodes = "".join(
+        f"""  - id: ask_{i}
+    kind: hitl_gate
+    description: ask for one item
+    source:
+      section: Manual data to request from user
+    output: {{{key}: dict}}
+    signal: manual_{i}
+"""
+        for i, key in enumerate(outputs)
+    )
+    ids = ", ".join(f"ask_{i}" for i in range(len(outputs)))
+    return (
+        "name: ops\ninput:\n  type: Day\n  required: [report_date]\nnodes:\n"
+        + nodes
+        + f"edges: []\nentry_nodes: [{ids}]\nexit_nodes: [{ids}]\n"
+    )
+
+
+def test_gates_that_split_a_section_are_held_to_what_they_collect_together(
+    tmp_path: Path,
+) -> None:
+    """#291: three gates, one item each, from one section. Each used to be
+    flagged for lacking its siblings' keys."""
+    keys = ["dock_appointment_completion", "sorter_metrics", "current_dwell"]
+    root = _write(tmp_path, {"pipeline.yaml": _split_gates(keys)})
+    assert gate_findings(_pipeline(root), OPS / "skill", None) == []
+    # Two gates that together miss an item still fail, naming the missing one.
+    short = _write(tmp_path / "short", {"pipeline.yaml": _split_gates(keys[:2])})
+    [finding] = gate_findings(_pipeline(short), OPS / "skill", None)
+    assert "gates ask_0, ask_1 together collect" in finding.message
+    assert "**Current Dwell** -> `current_dwell`" in finding.message
+    assert "Sorter Metrics" not in finding.message
+
+
+@pytest.mark.parametrize(
+    ("flag", "gate", "recap"),
+    [
+        (False, {"status": "ok", "skipped": True}, "ok"),
+        (True, {"status": "not_deterministic"}, "not_reached"),
+    ],
+)
+def test_the_prefix_skips_a_gate_whose_condition_is_false(
+    tmp_path: Path, flag: bool, gate: dict, recap: str
+) -> None:
+    """The prefix applies every runtime's rule for a gate with ``when:``
+    (#309): false, it is skipped with a null result and the run goes on; true
+    and the sample has no answer, it ends the prefix on its branch."""
+    import yaml
+
+    from tests.test_conditional_gate_parity import PIPELINE, STEPS
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    root = _write(tmp_path, {"pipeline.yaml": yaml.safe_dump(raw), "extracted/steps.py": STEPS})
+    run = _run(root, {"notes": "kickoff", "flag": flag})
+    assert run.findings == []
+    assert {k: v for k, v in run.steps["ask_owner"].items() if k != "reason"} == gate
+    # The step after a skipped gate runs on its null result.
+    assert run.steps["recap"]["status"] == recap
+
+
+def test_a_gate_condition_that_is_not_a_boolean_fails_the_prefix(tmp_path: Path) -> None:
+    import yaml
+
+    from tests.test_conditional_gate_parity import PIPELINE, STEPS
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    root = _write(tmp_path, {"pipeline.yaml": yaml.safe_dump(raw), "extracted/steps.py": STEPS})
+    run = _run(root, {"notes": "kickoff", "flag": "yes"})
+    [finding] = run.findings
+    assert finding.node_id == "ask_owner" and finding.kind == "prefix_binding_failed"
+    assert "is str, not true or false" in finding.message
+
+
+_WORKFLOW = (
+    "# s\n\n## Workflow\n"
+    "1. **Resolve the target.** Look up the destination.\n"
+    "2. **Classify records.** For conflicts, ask the user whether to move or skip.\n"
+    "3. **Apply changes.** Apply only approved moves.\n"
+    "4. **Verify.** Read back affected records.\n"
+)
+
+
+def test_procedural_step_titles_are_not_what_a_person_provides(tmp_path: Path) -> None:
+    """#319: one step saying to ask the user made the section qualify whole,
+    and the four step titles became required gate keys."""
+    skill = _write(tmp_path / "skill", {"SKILL.md": _WORKFLOW})
+    assert named_human_items(skill) == {}
+    ir = _GATE_IR.format(output="{decisions: list}").replace(
+        "section: Manual data to request from user", "section: Workflow"
+    )
+    root = _write(tmp_path, {"pipeline.yaml": ir})
+    assert gate_findings(_pipeline(root), skill, None) == []
+
+
+def test_a_list_the_lead_in_asks_for_counts_beside_procedural_steps(tmp_path: Path) -> None:
+    """A section holding both: only the list its own lead-in asks for names
+    what the person provides."""
+    text = _WORKFLOW + (
+        "\nWhen the target is ambiguous, ask the operator to provide:\n"
+        "- **Destination Folder**: where the records go\n"
+        "- **Owner Email**: who approves\n"
+    )
+    skill = _write(tmp_path / "skill", {"SKILL.md": text})
+    [(heading, items)] = named_human_items(skill).items()
+    assert heading == "Workflow"
+    assert [k for _, k in items] == ["destination_folder", "owner_email"]
+
+
+def test_a_heading_that_asks_introduces_the_list_under_it(tmp_path: Path) -> None:
+    skill = _write(
+        tmp_path / "skill",
+        {"SKILL.md": "# s\n\n## Data to request from the user:\n\n1. **Site Code**\n2. **Week**\n"},
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["site_code", "week"]
+
+
+def test_a_heading_naming_a_topic_does_not_introduce_its_list(tmp_path: Path) -> None:
+    """ "Approval gates" names a topic: its list is rules, not what a person sends."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Approval gates\n\n- **Never send without approval.**\n"
+                "- **One approval covers one batch.**\n"
+            )
+        },
+    )
+    assert named_human_items(skill) == {}
+
+
+def test_a_gate_that_skips_the_skills_nouns_is_a_review_gap(tmp_path: Path) -> None:
+    """A guess from words never fails a compile (#319): it is repaired once and
+    listed. A consumer reading a key the gate lacks is the boundary error."""
+    from rote.compiler.verify import REVIEW_GAP_KINDS
+
+    output = "{dock_appointments: dict, sorter_metrics: list, current_dwell: list}"
+    root = _write(tmp_path, {"pipeline.yaml": _GATE_IR.format(output=output)})
+    [finding] = gate_findings(_pipeline(root), OPS / "skill", None)
+    assert finding.severity == "warning" and finding.kind in REVIEW_GAP_KINDS
+
+
+def test_an_ask_that_does_not_introduce_the_list_does_not_name_its_items(tmp_path: Path) -> None:
+    """A sentence that asks, then a list it does not lead into (no colon):
+    the list is the workflow's steps, not what the person provides."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Move records\n\nAsk the user to confirm before applying.\n\n"
+                "1. **Resolve the target.** Look it up.\n2. **Apply changes.** Move them.\n"
+            )
+        },
+    )
+    assert named_human_items(skill) == {}
+
+
+def test_a_list_nested_under_a_step_that_asks_counts(tmp_path: Path) -> None:
+    """ "2. Ask the operator to provide:" with sub-bullets: the step item is
+    the lead-in (PR #321 review). The step titles still do not count."""
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Collect\n"
+                "1. **Step one.** Do it.\n"
+                "2. **Ask the user.** Ask the operator to provide:\n"
+                "   - **Site Code**\n"
+                "   - **Week**\n"
+                "3. **Step three.** Finish.\n"
+                "   - **Not asked**\n"
+            )
+        },
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["site_code", "week"]
+
+
+#: A test naming the function, so the prefix counts it as implemented.
+_RENDER_TEST = (
+    "from extracted.render import render_report\n\ndef test_it():\n    assert render_report\n"
+)
+
+_OMIT_IR = """\
+name: omit
+version: "0.1.0"
+input:
+  type: In
+  input_schema:
+    type: object
+    additionalProperties: false
+    properties:
+      title: {type: string}
+      dashboard_url: {type: string}
+    required: [title]
+nodes:
+  - id: render_report
+    kind: pure_function
+    description: Render the report.
+    impl: extracted/render.py:render_report
+    inputs: {request: pipeline.input}
+edges: []
+entry_nodes: [render_report]
+exit_nodes: [render_report]
+"""
+
+
+def _omit_root(tmp_path: Path, body: str, ir: str = _OMIT_IR) -> Path:
+    return _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/render.py": "def render_report(request):\n" + body,
+            "tests/test_render.py": _RENDER_TEST,
+        },
+    )
+
+
+def _probe(root: Path, payload: dict) -> tuple[list, list]:
+    from rote.compiler.prefix import omission_findings
+
+    pipeline = _pipeline(root)
+    sample = _sample(payload)
+    implementations = implementation_status(pipeline, root)
+    base = run_prefix(pipeline, root, sample, implementations, trust_skill=True)
+    assert base.findings == [] and base.steps["render_report"]["status"] == "ok"
+    return omission_findings(pipeline, root, sample, implementations, base, trust_skill=True)
+
+
+_SAMPLE = {"title": "t", "dashboard_url": "https://d"}
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        # #326's shape: the field is declared optional, the code requires it.
+        (
+            "    url = request.get('dashboard_url')\n"
+            "    if not isinstance(url, str) or not url:\n"
+            "        raise ValueError('dashboard_url is required')\n"
+            "    return {'report': url}\n",
+            True,
+        ),
+        ("    return {'report': request['dashboard_url']}\n", True),
+        # Genuinely optional: absence handled.
+        ("    return {'report': request.get('dashboard_url') or 'no dashboard'}\n", False),
+        # Fails, but not on the field: a replayed gate answer naming an item
+        # the trimmed run never produced looks like this.
+        (
+            "    if 'dashboard_url' not in request:\n"
+            "        raise KeyError('A-7')\n"
+            "    return {'report': 1}\n",
+            False,
+        ),
+    ],
+)
+def test_a_step_that_fails_without_an_optional_input_is_a_review_gap(
+    tmp_path: Path, body: str, flagged: bool
+) -> None:
+    """The sample carries the field, so the prefix passes; leaving it out, as
+    the contract allows, makes the step raise (#326)."""
+    from rote.compiler.prefix import OPTIONAL_INPUT_REQUIRED
+
+    found, questions = _probe(_omit_root(tmp_path, body), _SAMPLE)
+    assert questions == []
+    if not flagged:
+        assert found == []
+        return
+    [finding] = found
+    assert (finding.kind, finding.node_id, finding.severity) == (
+        OPTIONAL_INPUT_REQUIRED,
+        "render_report",
+        "warning",
+    )
+    assert "when the run's input leaves out `dashboard_url`" in finding.message
+    assert "system1/input_fields.yaml with required: true" in finding.message
+
+
+def test_a_required_field_is_never_left_out(tmp_path: Path) -> None:
+    root = _omit_root(tmp_path, "    return {'r': request['title']}\n")
+    assert _probe(root, _SAMPLE) == ([], [])
+
+
+def test_verification_lists_the_omission_as_a_review_gap(tmp_path: Path) -> None:
+    """Through verify_deliverable: repaired like an error, never a failure."""
+    from rote.compiler.prefix import OPTIONAL_INPUT_REQUIRED
+
+    root = _omit_root(tmp_path, "    return {'report': request['dashboard_url']}\n")
+    v = verify_deliverable(
+        root, grounding=Grounding(sample=_sample(_SAMPLE)), trust_skill=True, run_tests=True
+    )
+    assert [f.kind for f in v.review_gaps] == [OPTIONAL_INPUT_REQUIRED]
+    assert OPTIONAL_INPUT_REQUIRED not in {f.kind for f in v.errors}
+    instruction = v.repair_instruction(root)
+    assert instruction is not None and "leaves out `dashboard_url`" in instruction
+
+
+def test_a_probe_that_times_out_is_reported_and_ends_the_probing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.compiler.prefix as prefix
+
+    ir = _OMIT_IR.replace(
+        "      dashboard_url: {type: string}\n",
+        "      dashboard_url: {type: string}\n      zone: {type: string}\n",
+    )
+    root = _omit_root(
+        tmp_path,
+        "    while len(request) < 3:\n        pass\n    return {'r': 1}\n",
+        ir,
+    )
+    monkeypatch.setattr(prefix, "PREFIX_TIMEOUT_SECONDS", 3.0)
+    found, _ = _probe(root, {**_SAMPLE, "zone": "z"})
+    # Any omission loops. dashboard_url (first, sorted) timed out, and zone
+    # was never probed, so one finding, not two.
+    [finding] = found
+    assert finding.kind == prefix.OPTIONAL_INPUT_REQUIRED
+    assert finding.message.startswith("with `dashboard_url` left out of the input:")
+    assert "did not finish" in finding.message or "timed out" in finding.message
+
+
+def test_fields_past_the_cap_are_an_open_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.compiler.prefix as prefix
+
+    monkeypatch.setattr(prefix, "MAX_OMISSION_PROBES", 0)
+    root = _omit_root(tmp_path, "    return {'report': request['dashboard_url']}\n")
+    found, [question] = _probe(root, _SAMPLE)
+    assert found == []
+    assert question.text.endswith("not checked: `dashboard_url`")

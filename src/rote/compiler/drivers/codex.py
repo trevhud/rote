@@ -52,11 +52,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import os
 import re
 import tempfile
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
 from typing import Any
@@ -145,6 +148,115 @@ def web_events(stdout: str) -> list[CompilationEvent]:
     return events
 
 
+def turn_usage(stdout: str) -> dict[str, int] | None:
+    """The run's token usage from a ``codex exec --json`` event stream, or None.
+
+    Each ``turn.completed`` carries the thread's running total, not the
+    turn's own: codex-rs's JSONL processor fills it from the last
+    ``ThreadTokenUsageUpdated`` notification's ``total`` (rust-v0.164.0,
+    ``event_processor_with_jsonl_output.rs``). So the last one is the run,
+    and summing them would count every earlier turn again.
+
+    Its ``input_tokens`` is the Responses API's, which already holds the
+    cached reads and the cache writes (``input_tokens_details``); both are
+    split out so no token sits in two buckets. ``output_tokens`` already
+    holds the reasoning tokens. A stream with no ``turn.completed`` (a
+    failed turn, a crash) reported nothing, and that is None, never zero.
+    """
+    usage: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "turn.completed":
+            reported = obj.get("usage")
+            usage = reported if isinstance(reported, dict) else None
+    return split_usage(usage) if usage is not None else None
+
+
+def split_usage(usage: dict[str, Any]) -> dict[str, int] | None:
+    """One Codex usage object in rote's four buckets, each token in one of them.
+
+    Its ``input_tokens`` already holds the cached reads and the cache writes,
+    so both are taken out of it; ``output_tokens`` already holds reasoning.
+    None when input or output was not reported. The driver's run
+    (:func:`turn_usage`) and System-1's codex calls
+    (:func:`rote.compiler.system1.lane_call.usage_row`) both read usage here.
+    """
+
+    def count(key: str) -> int | None:
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    total, output = count("input_tokens"), count("output_tokens")
+    if total is None or output is None:
+        return None
+    cache_read = count("cached_input_tokens") or 0
+    cache_write = count("cache_write_input_tokens") or 0
+    return {
+        "input_tokens": max(0, total - cache_read - cache_write),
+        "output_tokens": output,
+        "cache_write_tokens": cache_write,
+        "cache_read_tokens": cache_read,
+    }
+
+
+@dataclass(frozen=True)
+class _Invocation:
+    """One ``codex exec`` subprocess: the first run or a resumed repair round."""
+
+    stdout: str
+    stderr: str
+    returncode: int
+    thread_id: str | None
+    usage: dict[str, int] | None
+
+
+def started_thread(stdout: str) -> str | None:
+    """The session id a ``codex exec --json`` stream's ``thread.started`` names."""
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "thread.started":
+            thread_id = obj.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                return thread_id
+    return None
+
+
+def session_usage(invocations: list[_Invocation]) -> dict[str, Any]:
+    """Usage for the whole session, across the first run and its repair rounds.
+
+    A resumed round's ``turn.completed`` carries the thread's running total,
+    earlier rounds included (measured on codex-cli 0.164.0: 58k, then 117k,
+    then 154k input tokens over three rounds of one thread), so the last
+    report is the session. That is observed, not documented, so it is
+    checked: totals that ever go down are summed per round instead, and
+    ``usage_basis`` says which. A round that reported nothing makes the
+    figure incomplete, and a session where no round reported is no figure
+    at all, never zero.
+    """
+    reported = [inv.usage for inv in invocations if inv.usage is not None]
+    if not reported:
+        return {}
+    keys = ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens")
+
+    def total(usage: dict[str, int]) -> int:
+        return sum(usage[k] for k in keys)
+
+    cumulative = all(total(a) <= total(b) for a, b in itertools.pairwise(reported))
+    usage = dict(reported[-1]) if cumulative else {k: sum(u[k] for u in reported) for k in keys}
+    return {
+        **usage,
+        "usage_source": "turn.completed",
+        "usage_basis": "cumulative" if cumulative else "summed",
+        "usage_complete": len(reported) == len(invocations),
+    }
+
+
 #: Most of a failed run's stdout an error carries. With ``--json`` stdout is
 #: the whole event stream, search results included: megabytes, of which the
 #: last lines say why the run ended.
@@ -231,15 +343,24 @@ class CodexDriver(CompilerDriver):
         work_dir: Path,
         extra_instructions: str | None = None,
         on_event: EventCallback | None = None,
+        repair: Callable[[Path], str | None] | None = None,
     ) -> DriverResult:
         """Spawn ``codex exec`` and wait for it to produce pipeline.yaml.
 
-        Codex's stdout is not stream-parsed for turn/tool events — the
-        ``codex exec`` output format isn't a stable machine contract we
-        want to depend on. Phase events still flow: a
-        :class:`~rote.compiler.events.ProgressFileWatcher` polls the
-        ``progress.ndjson`` the agent writes, exactly as it does for the
-        claude driver.
+        ``repair`` is the orchestrator's verification callback. Once the
+        agent has produced pipeline.yaml, it is called with that path; a
+        string return is sent back into the same conversation with
+        ``codex exec resume <thread_id>`` and the loop repeats until it
+        returns ``None``, as on the claude driver. Resuming needs the
+        session on disk, so a run with a repairer is not ``--ephemeral``:
+        Codex keeps it in its own session store, like any ``codex exec``.
+
+        Codex's stdout is read once each invocation ends, not streamed: for
+        its thread id, its token usage (:func:`turn_usage`) and, under
+        ``web_tools``, its web research (:func:`web_events`). Phase events
+        still flow: one :class:`~rote.compiler.events.ProgressFileWatcher`
+        for the whole session polls the ``progress.ndjson`` the agent
+        writes, exactly as it does for the claude driver.
         """
         skill_dir = skill_dir.resolve()
         compiler_skill_dir = compiler_skill_dir.resolve()
@@ -269,7 +390,7 @@ class CodexDriver(CompilerDriver):
         )
         os.close(last_message_fd)
 
-        try:
+        def args_for(text: str, thread_id: str | None) -> list[str]:
             args = [
                 self.codex_executable,
                 "exec",
@@ -278,55 +399,111 @@ class CodexDriver(CompilerDriver):
                 "--sandbox",
                 self.sandbox,
                 "--skip-git-repo-check",
-                "--ephemeral",
                 "--color",
                 "never",
                 "--output-last-message",
                 last_message_path,
             ]
+            if repair is None:
+                # Nothing will resume this session, so nothing keeps it.
+                args.append("--ephemeral")
             if self.model:
                 args += ["--model", self.model]
+            # --json always: its thread.started event names the session to
+            # resume, its turn.completed events are the only usage report
+            # codex exec makes (turn_usage), and web research is read from
+            # the same stream.
+            args.append("--json")
             if self.web_tools:
-                args += ["-c", WEB_SEARCH_CONFIG, "--json"]
-            args.append(prompt)
+                args += ["-c", WEB_SEARCH_CONFIG]
+            # exec's options go before the subcommand, so a resumed round
+            # keeps the sandbox, model and output flags of the first run
+            # (measured on codex-cli 0.164.0: the resumed round wrote in the
+            # work dir and remembered the first round's conversation).
+            if thread_id is not None:
+                args += ["resume", thread_id]
+            args.append(text)
+            return args
 
+        async def invoke(text: str, thread_id: str | None) -> _Invocation:
             proc = await asyncio.create_subprocess_exec(
-                *args,
+                *args_for(text, thread_id),
+                # The prompt is the argument. codex exec also reads a piped
+                # stdin and appends it to the prompt, so an inherited one
+                # that never closes (an agent's shell tool runs rote that
+                # way) left the run waiting on it forever, writing nothing.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=os.environ.copy(),
+                # Where `codex exec resume` looks the session up.
+                cwd=work_dir,
             )
-            async with ProgressFileWatcher(work_dir, on_event):
-                stdout_bytes, stderr_bytes = await proc.communicate()
-
+            stdout_bytes, stderr_bytes = await proc.communicate()
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             if self.web_tools:
                 # Reported once the run ends: stdout is read whole, not streamed.
                 for event in web_events(stdout):
                     emit_safely(on_event, event)
+            return _Invocation(
+                stdout=stdout,
+                stderr=stderr,
+                returncode=proc.returncode if proc.returncode is not None else -1,
+                thread_id=started_thread(stdout) or thread_id,
+                usage=turn_usage(stdout),
+            )
 
+        try:
             pipeline_yaml = work_dir / "pipeline.yaml"
+            invocations: list[_Invocation] = []
+            repair_warning: str | None = None
+            async with ProgressFileWatcher(work_dir, on_event):
+                first = await invoke(prompt, None)
+                invocations.append(first)
+                while repair is not None and pipeline_yaml.is_file():
+                    instruction = repair(pipeline_yaml)
+                    if instruction is None:
+                        break
+                    last = invocations[-1]
+                    if last.thread_id is None:
+                        repair_warning = (
+                            "the deliverable needed repair but the codex CLI reported no "
+                            "thread id to resume, so it was left as the agent wrote it"
+                        )
+                        break
+                    repaired = await invoke(instruction, last.thread_id)
+                    invocations.append(repaired)
+                    if repaired.returncode != 0:
+                        repair_warning = (
+                            f"a repair round exited with code {repaired.returncode}; the "
+                            f"deliverable is whatever it had written by then"
+                        )
+                        break
 
             # The deliverable is a file on disk, not a clean exit code.
             # Mirror ClaudeDriver: check for pipeline.yaml FIRST so a
             # nonzero exit *after* the file was written (a transient error
             # on a final self-check turn) doesn't discard a real run.
             if not pipeline_yaml.is_file():
-                if proc.returncode != 0:
+                if first.returncode != 0:
                     raise DriverError(
-                        f"codex CLI exited with code {proc.returncode}",
-                        details=stderr or _clip(stdout) or "(no output)",
+                        f"codex CLI exited with code {first.returncode}",
+                        details=first.stderr or _clip(first.stdout) or "(no output)",
                     )
                 raise DriverError(
                     f"codex CLI finished successfully but did not produce {pipeline_yaml}.",
-                    details=_clip(stdout),
+                    details=_clip(first.stdout),
                 )
 
             metadata = self._build_metadata(last_message_path)
-            if proc.returncode != 0:
+            metadata.update(session_usage(invocations))
+            metadata["repair_rounds"] = len(invocations) - 1
+            if repair_warning is not None:
+                metadata["repair_warning"] = repair_warning
+            if first.returncode != 0:
                 metadata["subprocess_warning"] = (
-                    f"codex CLI exited with code {proc.returncode} but "
+                    f"codex CLI exited with code {first.returncode} but "
                     f"pipeline.yaml was produced. Treating as success."
                 )
 

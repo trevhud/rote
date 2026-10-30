@@ -53,13 +53,21 @@ from pathlib import Path
 from typing import Literal
 
 from rote.compiler.api_docs import WebResearch, api_view, docs_findings
+from rote.compiler.boundaries import PASSTHROUGH_UNREAD, boundary_findings
+from rote.compiler.env_reads import env_findings
 from rote.compiler.grounding import (
+    GATE_PAYLOAD_NOT_SKILL_NOUNS,
     ContractQuestion,
     Grounding,
     contract_questions,
     grounding_findings,
 )
-from rote.compiler.prefix import PrefixRun, run_prefix
+from rote.compiler.prefix import (
+    OPTIONAL_INPUT_REQUIRED,
+    PrefixRun,
+    omission_findings,
+    run_prefix,
+)
 from rote.compiler.provenance import (
     PROVENANCE_NODE,
     REPORT_FILENAME,
@@ -69,12 +77,17 @@ from rote.compiler.provenance import (
 )
 from rote.compiler.tool_grounding import (
     DECLARED_TOOL_UNBOUND,
+    LOOP_TOOL_UNSERVED,
+    MCP_ARGS_UNGROUNDED,
+    result_field_checks,
     schema_sources,
     stale_bundled,
     tool_findings,
     tool_questions,
     unbound_tool_findings,
     unchecked_tools,
+    unsent_constant_findings,
+    unserved_loop_tool_findings,
 )
 from rote.contracts import (
     ContractFinding,
@@ -225,6 +238,13 @@ def run_generated_tests(
             "-p",
             "no:cacheprovider",
             "--tb=short",
+            # A failed assertion on an overall outcome hides the finding that
+            # caused it; the locals show it to the repair. pytest shortens
+            # each local's repr when not verbose (-q), so the output budget
+            # holds. Locals come from this confined run only: the env is the
+            # allowlist above, and anything else a test can reach it could
+            # already print.
+            "--showlocals",
         ]
 
     run = run_confined(
@@ -607,10 +627,67 @@ def unused_input_questions(
 
 #: A constant the impl takes as a parameter and never reads.
 UNUSED_CONSTANT = "unused_constant"
+#: A System-1 decision the agent says is wrong, which rote did not apply.
+UNAPPLIED_PROPOSAL = "unapplied_proposal"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
-REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT, DECLARED_TOOL_UNBOUND})
+REVIEW_GAP_KINDS = frozenset(
+    {
+        UNUSED_CONSTANT,
+        DECLARED_TOOL_UNBOUND,
+        MCP_ARGS_UNGROUNDED,
+        LOOP_TOOL_UNSERVED,
+        UNAPPLIED_PROPOSAL,
+        GATE_PAYLOAD_NOT_SKILL_NOUNS,
+        OPTIONAL_INPUT_REQUIRED,
+        PASSTHROUGH_UNREAD,
+    }
+)
+
+
+def unapplied_proposal_findings(root: Path) -> list[ContractFinding]:
+    """Each proposal in ``system1/proposals.yaml``, as a review gap.
+
+    A proposal is the agent saying the pipeline rote decided differs from the
+    skill: a real compile proposed turning a renderer into the tool call the
+    skill requires (#310), another a condition on two questions the skill
+    asks only sometimes (#309). rote never applies one, since that would be a
+    model overriding a decision, so the pipeline ships without it. It used to
+    reach only the report's Open questions, and the compile said it
+    verified with nothing unresolved. It is a review gap, not an error (the
+    user's rule): the agent is asked once to meet the skill without the
+    change and withdraw it, and one that survives is listed for a person."""
+    from rote.compiler.system1.enforce import PROPOSALS_FILENAME, proposals
+    from rote.compiler.system1.skeleton import BRIEF_DIRNAME
+
+    found, unreadable = proposals(root)
+    where = f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME}"
+    if unreadable is not None:
+        return [
+            ContractFinding(
+                node_id="(pipeline)",
+                kind=UNAPPLIED_PROPOSAL,
+                severity="warning",
+                message=f"{unreadable}; fix or delete it",
+                path=where,
+            )
+        ]
+    return [
+        ContractFinding(
+            node_id=str(p.node),
+            kind=UNAPPLIED_PROPOSAL,
+            severity="warning",
+            message=(
+                f"the agent proposes {p.field} -> {p.value!r} on `{p.node}` ({p.verdict}), "
+                f"because: {p.reason or 'no reason given'}. rote does not apply proposals, "
+                f"so the compiled pipeline does not do this. A person decides whether the "
+                f"skill needs it"
+            ),
+            path=where,
+        )
+        for p in found
+    ]
 
 
 def unused_constant_findings(
@@ -966,7 +1043,20 @@ class Verification:
                 "Provenance gaps (a reviewer needs these declared; close each one):\n"
                 + "\n".join(f"- {f.message}" for f in self.provenance_gaps)
             )
-        dead = [f for f in self.review_gaps if f.node_id != PROVENANCE_NODE]
+        proposed = [f for f in self.review_gaps if f.kind == UNAPPLIED_PROPOSAL]
+        if proposed:
+            parts.append(
+                "Proposals rote will not apply, so the pipeline differs from the skill "
+                "where each says. Where your code can meet the skill without the change, "
+                "do so and delete the entry from system1/proposals.yaml; where "
+                "it cannot, keep the entry and a person decides:\n"
+                + "\n".join(f"- {f.node_id}: {f.message}" for f in proposed)
+            )
+        dead = [
+            f
+            for f in self.review_gaps
+            if f.node_id != PROVENANCE_NODE and f.kind != UNAPPLIED_PROPOSAL
+        ]
         if dead:
             parts.append(
                 "Dead configuration (close each one):\n"
@@ -1186,15 +1276,23 @@ def _verify(
         called = api_view(pipeline) if api_backend else pipeline
         findings += grounding_findings(called, skill_dir, grounding.sample)
         findings += tool_findings(called, grounding.tools)
+        findings += unsent_constant_findings(called, grounding.tools)
         unchecked = unchecked_tools(called, grounding.tools)
         tool_sources = schema_sources(called, grounding.tools)
         stale = stale_bundled(called, grounding.tools, grounding.bundled)
         # The full pipeline: on the api backend a binding stays declared
         # even though its impl is what runs.
         findings += unbound_tool_findings(pipeline, skill_dir, grounding.tools)
+        field_findings, field_questions = result_field_checks(
+            called, grounding.tools, grounding.observations
+        )
+        findings += field_findings
+        findings += unserved_loop_tool_findings(
+            pipeline, skill_dir, grounding.tools, grounding.unlisted
+        )
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
-            for node_id, text in tool_questions(called, grounding.tools)
+            for node_id, text in [*tool_questions(called, grounding.tools), *field_questions]
         ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(
@@ -1207,8 +1305,25 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
+            omitted, omission_questions = omission_findings(
+                called,
+                root,
+                grounding.sample,
+                implementations,
+                prefix,
+                observations=grounding.observations,
+                trust_skill=trust_skill,
+                tools=grounding.tools,
+            )
+            findings += omitted
+            questions += omission_questions
+    findings += boundary_findings(pipeline, root)
+    env_errors, env_questions = env_findings(pipeline, root)
+    findings += env_errors
+    questions += env_questions
     questions += unused_input_questions(pipeline, root, implementations)
     findings += unused_constant_findings(pipeline, root, implementations)
+    findings += unapplied_proposal_findings(root)
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not

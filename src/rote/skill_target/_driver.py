@@ -292,6 +292,28 @@ def _resolve(binding: list[Any], run_input: dict[str, Any], results: dict[str, A
     return upstream[fld]
 
 
+def _gate_waits(step: dict[str, Any], results: dict[str, Any]) -> bool | str:
+    """Whether a gate with a ``when`` asks the person, or why it cannot tell.
+
+    The same rule as every workflow runtime's (``_gate_condition_error``):
+    the field must be exactly true or false."""
+    when = step["when"]
+    gate, ref = step["id"], f"{when['node']}.output.{when['field']}"
+    result = results.get(when["node"])
+    if not isinstance(result, dict) or when["field"] not in result:
+        return (
+            f"hitl_gate {gate!r} waits only when {ref} is true, "
+            f"but that result has no {when['field']!r}"
+        )
+    value = result[when["field"]]
+    if isinstance(value, bool):
+        return value
+    return (
+        f"hitl_gate {gate!r} waits only when {ref} is true, and it is "
+        f"{type(value).__name__}, not true or false"
+    )
+
+
 def _payload(
     step: dict[str, Any], run_input: dict[str, Any], results: dict[str, Any]
 ) -> dict[str, Any]:
@@ -912,10 +934,14 @@ class Driver:
         passthrough = (step.get("passthrough") or {}) if step["kind"] == "judge" else {}
         attempts = state["attempts"][step["id"]]
         if step.get("fan_param") is None:
-            if passthrough:
+            if passthrough and not errors:
                 # The copies are the input's, merged in before the whole
-                # output schema checks the answer, as every runtime does.
-                value = schema.with_passthrough(value, pending.get("copied"), passthrough)
+                # output schema checks the answer, as every runtime does. An
+                # item that names no input record (#320) is asked again.
+                try:
+                    value = schema.with_passthrough(value, pending.get("copied"), passthrough)
+                except ValueError as exc:
+                    errors = [str(exc)]
             if not errors:
                 errors = schema.schema_errors(output, value)
             if errors:
@@ -943,9 +969,13 @@ class Driver:
                     errors.append(f"answer: {item_id!r} is not an item of this batch")
                     continue
                 if passthrough:
-                    item = schema.with_passthrough(
-                        item, pending["copied"][int(item_id)], passthrough
-                    )
+                    try:
+                        item = schema.with_passthrough(
+                            item, pending["copied"][int(item_id)], passthrough
+                        )
+                    except ValueError as exc:
+                        errors.append(f"answer.{item_id}: {exc}")
+                        continue
                 found = schema.schema_errors(output, item, f"answer.{item_id}")
                 if found:
                     errors.extend(found)
@@ -1073,6 +1103,26 @@ class Driver:
             for step in in_wave:
                 if step["id"] in results:
                     continue
+                if step["kind"] == "gate" and step.get("when"):
+                    waits = _gate_waits(step, results)
+                    if isinstance(waits, str):
+                        with self._locked(path):
+                            state = self._read(path)
+                            state["state"] = "error"
+                            state["error"] = waits
+                            self._write(path, state)
+                        return self._error(
+                            path.name,
+                            f"{waits}.",
+                            "recompile the skill (rote compile)",
+                            step=step["id"],
+                        )
+                    if not waits:
+                        # Skipped: its result is null. Nothing is written, so
+                        # a resumed run derives the skip again from the
+                        # result it depends on, and no file can stand in for it.
+                        results[step["id"]] = None
+                        continue
                 if step["kind"] == "loop":
                     return self._ask_loop(path, step, results)
                 if step["kind"] in ("judge", "gate", "do"):
@@ -1371,7 +1421,8 @@ class Driver:
         refs = [r.split(".") for r in step["references"]]
         # The input each answer's passthrough fields are copied from, cut to
         # their source paths: kept in the journal, never shown to the agent.
-        sources = [p.split(".") for p in (step.get("passthrough") or {}).values()]
+        # A per-item source (``prs[number].body``) keeps its whole input list.
+        sources = [p.split("[", 1)[0].split(".") for p in (step.get("passthrough") or {}).values()]
         if fan is None:
             errors = schema.schema_errors(spec_in, payload, "input")
             if errors:
@@ -2174,18 +2225,16 @@ def _location(exc: BaseException, root: Path) -> str:
 def _render_message(template: str, payload: dict[str, Any]) -> tuple[str, set[str]]:
     """A gate's ``{name}`` placeholders filled from its bound scalar inputs,
     and the names it filled (the block does not show those values twice).
-    A list or object stays in the JSON below; so does an optional input the
-    run left out, whose placeholder is kept as written."""
-    used: set[str] = set()
 
-    def _sub(match: re.Match[str]) -> str:
-        value = payload.get(match.group(1), _MISSING)
-        if value is _MISSING or isinstance(value, (dict, list)):
-            return match.group(0)
-        used.add(match.group(1))
-        return "" if value is None else str(value)
-
-    return _GATE_PLACEHOLDER.sub(_sub, template), used
+    The workflow runtimes' renderer does the filling (``_rote_gate``), so a
+    value reads the same here as under ``rote run``: ``true``, not ``True``,
+    and invisible characters spelled ``\\uXXXX``. A list or object stays in
+    the JSON below instead of inline; so does an optional input the run left
+    out, whose placeholder is kept as written."""
+    scalars = {k: v for k, v in payload.items() if not isinstance(v, (dict, list))}
+    used = {m.group(1) for m in _GATE_PLACEHOLDER.finditer(template) if m.group(1) in scalars}
+    rendered = importlib.import_module("_rote_gate")._render_gate_message(template, scalars)
+    return rendered, used
 
 
 def _answer_tokens(schema: Any, depth: int = 0) -> float:

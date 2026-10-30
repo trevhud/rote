@@ -117,6 +117,23 @@ comes from keeping them clean.
   every gate bound `request` plus whole upstream results, so the compiled
   skill's HUMAN block showed expense-audit's whole input (3.9 KB) and an
   eval's agent spent 5-9 turns finding the review queue in it.
+- **A value that never reaches the step needing it goes back to the
+  structure pass** (#329, `structure.rebind`). Two static checks find it
+  (`compiler/boundaries.py`): a step's code reads a key the value bound to it
+  cannot hold (`result_key_undelivered`, an error, checked only against a
+  closed schema: a judge's output, or `additionalProperties: false`), and a
+  judge's top-level passthrough no later step reads (`passthrough_unread`, a
+  review gap). Both, plus a single-session agent's `field: inputs` proposals,
+  go to one schema-locked call on the compile's lane, once each, on both the
+  parallel and the single-session repair loop. Code applies a proposed
+  binding only as an addition that resolves (a new param, a field the
+  producer declares, the ordering edge it needs) and validates, writing it to
+  the skeleton the settle restores. The text then follows on the next round.
+  A proposal is still never applied as written: the pass that read the whole
+  skill decides. Fanning over one field of a result while sharing another
+  field of the same result is legal now: `fan_out_element_param` picks the
+  param the producer's own schema declares as a list (it was an ambiguity
+  error, so the binding #329 needed could not be written).
 - **The decider double-checks the structure pass, never overrides it**
   (`system1/checker.py`). Its confident disagreements go back to the pass as
   one more repair round; what the pass keeps is an Open question. Keep it a
@@ -901,6 +918,25 @@ schemas to `compiled/declared-tools.json` itself, after the agent's work
 dir is moved, because the post-compile enrichment and cross-check run in
 the CLI and must not read an agent-written file.
 
+`tool_grounding.result_schema` is that one rule (recorded, then declared),
+shared by System-1's `Context.known_result_schema` and verification's
+`result_field_checks` (#253). An `inputs:` read of `<mcp node>.output.<field>`
+is an error (`result_field_missing`) when the known result is a string or a
+list, or a closed object without the field, and an Open question when
+nothing is known. An object that admits other keys proves nothing.
+
+The same rule holds at the other boundaries a generated test cannot see,
+because the model that wrote the module wrote its fixtures too (#291).
+`rote.compiler.boundaries` reads each module for literal keys
+(`p["k"]`, `p.get("k")`, `p.pop("k")`) on the parameter bound to a gate's
+answer or the pipeline input, and refuses one the other side does not
+declare. `tool_grounding.unsent_constant_findings` refuses an MCP node whose
+constants `mcp.args` never names (`adapters._common.unsent_constants`): an
+error when the tool's schema names its parameters, else an unresolved call
+that blocks the run (`NodeImplementation.blocks_run`) and asks for the
+server's registration. Never guess the parameter names. `mcp.args: {}` on a
+node with no constants stays a zero-argument call.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,
@@ -1160,7 +1196,17 @@ Two behaviors to preserve:
   from what the baseline actually *called* (`cross_check`'s
   `resolved_agent_tools`), and leaves a tool served by two servers in one
   trial unresolved — pinning either would silently send the loop to the
-  wrong endpoint. An authored value always beats inference.
+  wrong endpoint. An authored value always beats inference. The compile
+  pins the same way from tool grounding, on every path, after the agent's
+  last stop (`tool_grounding.loop_tool_pins`, written as a line edit so
+  the agent's YAML comments survive): one grounded server offering the
+  tool pins it, two leave it unpinned as an Open question. A loop tool no
+  grounded server offers is `loop_tool_unserved`, only when a live
+  tools/list answered for every server the skill names (no listing proves
+  nothing). It is a review gap, never an error: rote does not contact a
+  registered server the skill never names, which may offer the tool. The
+  structure pass's own `<loop id>_tool` placeholder is exempt by that exact
+  name.
 - **Discovery is best-effort, binding is not.** A server that is down may
   not be one this loop needed, so it is recorded and skipped; a declared
   tool no reachable server provides is fatal. When an auth failure
@@ -1202,6 +1248,25 @@ waits on. Traps, all found by running it:
   not spend a gate payload on it.
 - Non-TTY never prompts and never opens a browser. The browser login is
   offered only when stdin and stderr are both terminals.
+- **Gates ride the same channel.** Each emitted gate renders its
+  `notify.message_template` and reports `{gate, signal, message}` before it
+  waits: the `rote_gate_status` event (DBOS, both SDKs), the
+  `rote_gate_status` query (Temporal), or a `rote-gate-park` log line
+  (Inngest, Cloudflare, deduped on `wait`). The event and the query list
+  every gate reached, because the payload is often already waiting and the
+  gate passes between two polls.
+  The watcher prints each once, and on DBOS and Temporal it drains after the
+  run ends for the same reason (the log-marker runtimes tick before they
+  read a terminal status, and park at each gate until it is answered). Rendering is `GATE_MESSAGE_HELPER_PY` and its TS twin: a string
+  as is, anything else as `JSON.stringify` writes it (Python reproduces
+  JS number layout and key order), a value the run lacks kept as `{name}`,
+  invisible characters escaped. Display only: `notify.channel`/`target`
+  are never sent to (`tests/test_gate_message*.py`). The report also carries
+  `shows`: every bound input the message does not name, which the watcher
+  prints under the message (a string as written, else compact JSON), the
+  compiled skill's THEY SEE rule. A gate binds what the person decides on,
+  so a draft the message only calls "below" must reach them (#325,
+  `tests/test_gate_shows_parity*.py`).
 
 ### An agent loop returns its declared output, through a submit tool
 
@@ -1810,7 +1875,10 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    to a single function-level `retries` (max across nodes, clamped 0–20);
    per-node deltas, `backoff`, `retry_on`, and per-node `timeout` are
    emitted as comments. Don't "fix" the adapter to pass per-step retry
-   options — there's nowhere to put them.
+   options — there's nowhere to put them. When no node declares a
+   `retry:`, the budget is 0, not the SDK's default of 3: an absent
+   `retry:` means one attempt on every runtime (Cloudflare emits
+   `retries: { limit: 0 }` for the same reason; `tests/test_retry_parity*.py`).
 3. **`GET /v1/events/{id}/runs` lies while a run is parked.** During
    probing it reported `status: "Completed"` while the run was parked on
    `step.waitForEvent`. Use it only to discover the `run_id`, then poll
@@ -1999,6 +2067,45 @@ values; touch either converter and run it.
 `tests/test_ir.py::test_every_committed_pipeline_validates` sweeps every
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
+
+### A gate with `when:` is skipped with a null result, on every runtime
+
+A skill that asks the person only when something holds compiled to a gate
+that waited on every run (#309). `Node.when` (hitl_gate only) names
+`<node>.output.<field>`, a boolean an earlier node computes. Rules to keep:
+
+- **Exactly true or false.** Every runtime refuses any other value naming
+  the gate (`_gate_condition_error` in `_py_common`, `gateConditionError`
+  in `_ts_common`, `_gate_waits` in the skill driver and the prefix
+  runner). Truthiness differs between Python and JS, so never "simplify"
+  to `if value:`. Temporal raises it non-retryable and Inngest as
+  `NonRetriableError`, like the missing-input check.
+- **A skipped gate's result is null, so readers bind it whole.** The IR
+  refuses a read of `<gate>.output.<field>` on a conditional gate, a
+  fan_out over one, and a judge input schema that does not admit null for
+  it (`Pipeline._validate_gate_conditions`). That is what lets every
+  emitter leave reference rendering alone: only the wait is wrapped
+  (`conditional_gate_py`, `conditional_gate_ts`, which declares the
+  result `let <id>_result: Record<string, unknown> | null` before the
+  branch).
+- **The compiled skill writes nothing for a skip.** The driver derives it
+  again from the result it depends on, so no file can stand in for a gate
+  a person never answered.
+- **The structure pass decides it from evidence** (`gate.when` and a
+  verbatim `when_quote`, `_check_gate_when`). One that still fails after
+  the repairs is dropped, so the gate asks every run, and an Open question
+  says so: never a guessed condition. The skeleton types the key `bool`.
+
+- **The Cloudflare runner answers only a gate that announced itself.** It
+  infers a park from step-output stability, so a slow step after a skipped
+  gate looked like a park; the payload it then sent was never consumed, and
+  the stuck-gate check failed a good run. A payload now goes out once its
+  gate's `rote-gate-park` line is in the log.
+- **Index the condition plainly in TS.** `(x as Record<string, unknown>)[f]`
+  fails tsc when the step returns an interface (the `step.do` cast trap).
+
+`tests/test_conditional_gate_parity*.py` runs all five workflow runtimes
+live (true, false, and a string), plus tsc on interface-typed steps.
 
 ### Optional pipeline inputs are left out; required ones fail on entry
 
@@ -2724,7 +2831,16 @@ command must approve exactly the files the user vouched for
   Endpoint overrides, `ROTE_MCP_READ_ONLY*`, `ROTE_SKILL_COMMAND` (the
   next command every block prints), base URLs, `XDG_*`, proxies and CA
   bundles are dropped. Header-template variables pass only when the bound
-  registry names them for this plan's servers.
+  registry names them for this plan's servers. A module's own variable
+  passes only when its node declares it (`Node.env`), with the value the
+  install recorded (unset stays unset), never the caller's: a different
+  value refuses the run like a moved proxy, naming the variable but not the
+  value, until a person runs `rote skill trust`. `rote.env_vars` is the
+  one copy of these sets, and the IR refuses a declaration of any of them.
+  Verification (`rote.compiler.env_reads`) refuses a literal
+  `os.environ` / `os.getenv` read a node does not declare, because the
+  workflow runtimes see the full environment and the skill would silently
+  differ (#267: expense-audit's report landed in another folder).
 - **State paths are bound to the install, not merely read.** The MCP
   registry, login store and run dir each widen trust when forged (a server
   declared read-only, someone else's login, a gate nobody answered).

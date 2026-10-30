@@ -550,6 +550,54 @@ def test_a_gate_answer_needs_the_persons_words_and_records_them(gate_skill: Path
     assert (node["answered_by"], node["said"]) == ("human", "yes, ship it")
 
 
+CONDITIONAL = """\
+def table(notes, review):
+    return {"table": "| " + " | ".join(notes) + " |", "rows": len(notes), "needs_review": review}
+
+
+def finish(approval):
+    if approval is None:
+        return {"approved": None, "asked": False}
+    return {"approved": approval["approved"], "asked": True}
+"""
+
+
+def _conditional_skill(tmp_path: Path) -> Path:
+    pipeline = _gated({"table": "tabled.output.table"})
+    tabled, gate, _ = pipeline["nodes"]
+    tabled["inputs"]["review"] = "pipeline.input.review"
+    tabled["output"] = {"table": "str", "rows": "int", "needs_review": "bool"}
+    gate["when"] = "tabled.output.needs_review"
+    pipeline["input"]["required"] = ["notes", "review"]
+    return make_skill(tmp_path, pipeline, {"gate.py": CONDITIONAL})
+
+
+def test_a_gate_whose_condition_is_false_is_skipped_with_a_null_result(tmp_path: Path) -> None:
+    """A skill that asks only when something holds asked on every run (#309)."""
+    scripts = _conditional_skill(tmp_path)
+    status, done = drive(scripts, "start", '{"notes": ["a"], "review": false}')
+    assert status == 0 and header(done)["kind"] == "DONE"
+    assert result_of(done) == {"finished": {"approved": None, "asked": False}}
+    # Nothing stands in for the skipped gate on disk: a resume derives it again.
+    assert not (run_dir(done) / "nodes" / "approve.json").exists()
+
+
+def test_a_gate_whose_condition_is_true_asks_the_person(tmp_path: Path) -> None:
+    scripts = _conditional_skill(tmp_path)
+    _, out = drive(scripts, "start", '{"notes": ["a"], "review": true}')
+    assert (header(out)["kind"], header(out)["step"]) == ("HUMAN", "approve")
+    answer = '{"approved": true, "approver": "Dana"}'
+    _, done = drive(scripts, "answer", header(out)["run"], "approve", answer, "--said", "ok")
+    assert result_of(done) == {"finished": {"approved": True, "asked": True}}
+
+
+def test_a_gate_condition_that_is_not_a_boolean_ends_the_run(tmp_path: Path) -> None:
+    scripts = _conditional_skill(tmp_path)
+    status, out = drive(scripts, "start", '{"notes": ["a"], "review": "yes"}')
+    assert header(out)["kind"] == "ERROR", out
+    assert "waits only when tabled.output.needs_review is true, and it is str" in out
+
+
 def test_a_gate_answer_that_does_not_fit_asks_the_person_again(gate_skill: Path) -> None:
     _, out = drive(gate_skill, "start", '{"notes": ["a"]}')
     run = header(out)["run"]
@@ -1282,16 +1330,53 @@ def test_the_drivers_placeholder_is_the_shared_one() -> None:
 
 
 def test_the_drivers_gate_placeholder_is_the_irs() -> None:
-    """What the IR checks a gate binds is exactly what the driver fills."""
+    """What the IR checks a gate binds is exactly what the driver and the
+    shared renderer fill."""
+    from rote.adapters._py_common import GATE_MESSAGE_HELPER_PY
     from rote.ir import GATE_MESSAGE_PLACEHOLDER
-    from rote.skill_target._driver import _GATE_PLACEHOLDER, _render_message
+    from rote.skill_target._driver import _GATE_PLACEHOLDER
 
     assert _GATE_PLACEHOLDER.pattern == GATE_MESSAGE_PLACEHOLDER
-    payload = {"period": "2026-09", "queue": [1]}
-    rendered, shown = _render_message("{period}: {queue} {gone}", payload)
-    # A scalar fills in; a list stays in the JSON block; an omitted optional
-    # input keeps its placeholder rather than reading as an empty string.
-    assert (rendered, shown) == ("2026-09: {queue} {gone}", {"period"})
+    assert f"re.sub({json.dumps(GATE_MESSAGE_PLACEHOLDER)}, fill, template)" in (
+        GATE_MESSAGE_HELPER_PY
+    )
+
+
+SHOWN = """\
+def facts(notes):
+    return {"ok": True, "ratio": 2.0, "owner": None, "name": "a\u202eb", "rows": notes}
+"""
+
+
+def test_a_gate_message_reads_as_it_does_on_the_workflow_runtimes(tmp_path: Path) -> None:
+    """The HUMAN block's message is the workflow runtimes' rendering of the
+    same values, by the one renderer, not ``str()``: ``true`` and ``2``, not
+    ``True`` and ``2.0``, and a bidi override spelled out, never raw."""
+    from rote.adapters._py_common import render_gate_message
+
+    template = "ok={ok} ratio={ratio} owner={owner} name={name} rows={rows}"
+    pipeline = _gated(
+        {f: f"tabled.output.{f}" for f in ("ok", "ratio", "owner", "name", "rows")}, template
+    )
+    pipeline["nodes"][0]["impl"] = "extracted/gate.py:facts"
+    scripts = make_skill(tmp_path, pipeline, {"gate.py": GATED + "\n\n" + SHOWN})
+    assert (scripts / "_rote_gate.py").read_bytes() == HELPER_FILES["_rote_gate.py"].read_bytes()
+    status, out = drive(scripts, "start", '{"notes": ["a"]}')
+    assert status == 0
+    values = {"ok": True, "ratio": 2.0, "owner": None, "name": "a\u202eb"}
+    expected = render_gate_message(template, values)
+    assert expected == "ok=true ratio=2 owner=null name=a\\u202eb rows={rows}"
+    assert expected in out.splitlines()
+    assert "\u202e" not in out
+    # The list stays in the JSON block, shown once; the scalars are not repeated.
+    assert '--- THEY SEE (json) ---\n{"rows":["a"]}' in out
+
+
+def test_a_skill_ships_the_gate_renderer_only_for_a_gate_message(tmp_path: Path) -> None:
+    with_message = make_skill(tmp_path / "m", _gated(None, "Approve."), {"gate.py": GATED})
+    assert (with_message / "_rote_gate.py").exists()
+    silent = make_skill(tmp_path / "s", _gated(None, ""), {"gate.py": GATED})
+    assert not (silent / "_rote_gate.py").exists()
 
 
 def test_the_input_and_fan_messages_match_the_emitted_helpers() -> None:

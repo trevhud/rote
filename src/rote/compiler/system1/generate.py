@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import re
 import sys
@@ -56,9 +57,11 @@ from rote.compiler.drivers import (
     GenerationRequest,
     Generator,
 )
+from rote.compiler.env_reads import declarable_reads
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
 from rote.compiler.grounding import Grounding
 from rote.compiler.provenance import PROVENANCE_NODE
+from rote.compiler.system1 import added_inputs
 from rote.compiler.system1.decide import NodePlan, Plan
 from rote.compiler.system1.enforce import TEXT_FILENAME
 from rote.compiler.system1.skeleton import (
@@ -71,6 +74,7 @@ from rote.contracts import ContractFinding, _prompt_paths_in_schema
 from rote.ir import (
     NodeKind,
     Pipeline,
+    constant_text,
     fan_out_element_param,
     parse_input_ref,
     passthrough_candidates,
@@ -103,6 +107,13 @@ UNVERIFIED_TOOL_RESULT = (
     "collection itself (a list), an object that wraps it under any key, or the same as "
     "JSON text. Text that is not JSON (CSV, markdown) is parsed as the skill describes it. "
     "Test each shape."
+)
+
+#: What a reader of a gate that may be skipped (``when:``) is told.
+SKIPPABLE_GATE = (
+    "  This is the person's answer at gate `{gate}`, which asks only when `{when}` is true. "
+    "When it is false the gate is skipped and this value is None, not an answer. Handle "
+    "None the way the skill says to carry on without asking, and test both cases."
 )
 
 #: Modules a generated module or test may import besides the stdlib.
@@ -262,6 +273,9 @@ class Context:
     tables: list[str]
     #: ``{node id: {"description", "output_schema", "termination"?}}``, once known.
     interface: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The input schema with the fields the module pieces added so far
+    #: (:mod:`rote.compiler.system1.added_inputs`), once one has.
+    added_input_schema: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, work_dir: Path, plan: Plan, grounding: Grounding) -> Context:
@@ -298,6 +312,8 @@ class Context:
     # ── schemas code can state without a model ──
 
     def input_schema(self) -> dict[str, Any]:
+        if self.added_input_schema is not None:
+            return dict(self.added_input_schema)
         return dict(self.pipeline.input.input_schema or {}) if self.pipeline.input else {}
 
     def gate_schema(self, node: Any) -> dict[str, Any]:
@@ -328,26 +344,11 @@ class Context:
             return dict(node.output_schema), "fixed by the skeleton"
         if node.mcp is None:
             return None
-        from rote.mcp._runtime_helper import returned_schema
-        from rote.probe import infer_schema, parse_tool_result
+        from rote.compiler.tool_grounding import result_schema
 
-        key = (node.mcp.server, node.mcp.tool)
-        declared = self.grounding.tools.get(key)
-        output_schema = getattr(declared, "output_schema", None)
-        results = [
-            value
-            for o in self.grounding.observations
-            if (getattr(o, "server", None), getattr(o, "tool", None)) == key
-            and not getattr(o, "is_error", False)
-            and (value := parse_tool_result(getattr(o, "result", None), output_schema)) is not None
-        ]
-        if results:
-            return infer_schema(results), "observed in a recorded run"
-        if getattr(declared, "declared", False):
-            schema = returned_schema(output_schema)
-            if schema:
-                return schema, "declared by the server's tools/list"
-        return None
+        return result_schema(
+            node.mcp.server, node.mcp.tool, self.grounding.tools, self.grounding.observations
+        )
 
     def unverified_tool_result(self, node_id: str) -> bool:
         """An MCP call's result whose shape nothing observed or declared.
@@ -384,6 +385,9 @@ class Context:
             # Gmail's search returns, on every run. Untyped, it takes either.
             return {}
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
+        if ref.node_id is not None and self.node(ref.node_id).when is not None:
+            # A skipped gate's result is null (the IR has its readers bind it whole).
+            return {"anyOf": [schema, {"type": "null"}]}
         if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
             schema = {"type": "array", "items": schema}
         if ref.field is not None:
@@ -455,6 +459,26 @@ def _json(value: Any, limit: int | None = None) -> str:
     return text
 
 
+#: How a module reads a constant's unit (rote.ir.CONSTANT_UNIT_RE's conventions).
+CONSTANT_USE = (
+    "Each value is already what the code applies, of the type shown: use the "
+    "parameter as is and never parse it from text. A number's unit is in "
+    "parentheses: `percent` is the percentage itself (75 means 75 percent, so "
+    "compare a 0.8 rate as 0.8 * 100 >= 75), `currency:<code>` is an amount in "
+    "that currency's major unit, and a time unit is a count of that unit."
+)
+
+
+def _constant_lines(node: Any) -> list[str]:
+    """Each constant with its type and unit, then how a module uses them."""
+    units = node.constant_units or {}
+    lines = [
+        f"- `{k}`: {type(v).__name__} = {constant_text(v, units.get(k))}"
+        for k, v in node.constants.items()
+    ]
+    return [*lines, CONSTANT_USE]
+
+
 def _node_card(ctx: Context, node: Any) -> list[str]:
     """What one node is, for a piece that writes it. Facts from the IR only."""
     np = ctx.plan[node.id]
@@ -488,6 +512,8 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
         lines.append(_json(ctx.param_schema(node, param)))
         if source is not None and ctx.unverified_tool_result(source):
             lines.append(UNVERIFIED_TOOL_RESULT)
+        if source is not None and ctx.node(source).when is not None:
+            lines.append(SKIPPABLE_GATE.format(gate=source, when=ctx.node(source).when))
         sample = ctx.param_sample(node, param)
         if sample is not None:
             lines.append(
@@ -495,7 +521,7 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
             )
     if node.constants:
         lines += ["", "Constants (parameters with these defaults, decided from the skill):"]
-        lines += [f"- `{k}` = {v!r}" for k, v in node.constants.items()]
+        lines += _constant_lines(node)
     lines += ["", "Return value schema (the contract):", _json(ctx.output_schema(node.id))]
     readers = ctx.consumers(node.id)
     if readers:
@@ -714,6 +740,9 @@ ANSWER_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        # Pipeline input fields a module needs and the skeleton lacks
+        # (rote.compiler.system1.added_inputs): added only, checked by code.
+        "input_fields": {"type": "array", "items": added_inputs.ENTRY_SCHEMA},
         "edits": {
             "type": "array",
             "items": {
@@ -737,6 +766,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "prompt",
         "client",
         "passthrough",
+        "input_fields",
         "edits",
     ],
     "additionalProperties": False,
@@ -744,7 +774,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text, [] for output_fields, passthrough and edits, '
+    '"" for text, [] for output_fields, passthrough, input_fields and edits,'
     '{"condition": "", "max_iterations": 0} '
     'for termination, and "anthropic" for client.'
 )
@@ -814,7 +844,7 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         element = node.inputs[fan_out_element_param(node, ctx.pipeline)]
         lines.append(f"It runs once per item of `{element}` and returns one value per item.")
     if node.constants:
-        lines.append(f"Its constants: {node.constants!r}")
+        lines += ["Its constants:", *_constant_lines(node)]
     if node.mcp is not None:
         lines.append(
             f"It is the MCP call `{node.mcp.server}.{node.mcp.tool}`: its output is the "
@@ -1207,6 +1237,23 @@ def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str
                 f"field there with exactly `{target}`'s schema (offered for `{target}`: "
                 f"{offered})"
             )
+    if passthrough and not problems:
+        # Candidates are offered one at a time; together they must still be a
+        # passthrough the IR accepts (one key per list, never copying over the
+        # key), or the refusal comes back only at the whole-deliverable check.
+        from rote.ir import LLMSignature
+
+        try:
+            LLMSignature.model_validate(
+                {
+                    "prompt": prompt,
+                    "input_schema": ctx.judge_input_schema(node),
+                    "output_schema": ctx.output_schema(node.id),
+                    "passthrough": dict(passthrough),
+                }
+            )
+        except ValueError as e:
+            problems.append(f"passthrough {dict(passthrough)} is refused: {e}")
     return problems
 
 
@@ -1344,6 +1391,11 @@ def text_entries(ctx: Context, judges: dict[str, dict[str, Any]]) -> dict[str, d
             entry["input_schema"] = ctx.judge_input_schema(node)
         if "termination" in iface:
             entry["termination"] = iface["termination"]
+        env = declarable_reads(node, ctx.work_dir)
+        if env:
+            # Read from the module the piece wrote: code, not a model, keeps
+            # the declaration complete (rote.compiler.env_reads).
+            entry["env"] = env
         if node.id in judges:
             entry["signature_spec"] = {
                 "input_schema": ctx.judge_input_schema(node),
@@ -1375,6 +1427,24 @@ def binding_findings(verification: Any, writable: Iterable[str]) -> dict[str, li
     out: dict[str, list[str]] = {}
     for f in verification.errors:
         if f.kind in BINDING_FINDINGS and f.node_id not in pieces:
+            out.setdefault(f.node_id, []).append(f.message)
+    return out
+
+
+def dataflow_findings(
+    verification: Any,
+    sent: set[tuple[str, str]] = frozenset(),  # type: ignore[assignment]
+) -> dict[str, list[str]]:
+    """``{node id: messages}`` for each data-flow finding not yet sent.
+
+    A value that does not reach the step needing it is a binding: no text can
+    fix it, so the structure pass re-decides it (:func:`structure.rebind`).
+    """
+    from rote.compiler.system1.structure import DATAFLOW_FINDINGS
+
+    out: dict[str, list[str]] = {}
+    for f in verification.findings:
+        if f.kind in DATAFLOW_FINDINGS and (f.node_id, f.message) not in sent:
             out.setdefault(f.node_id, []).append(f.message)
     return out
 
@@ -1518,9 +1588,18 @@ class TextWriter:
         run_tests: bool = False,
         trust_skill: bool = False,
         redecide: Redecide | None = None,
+        rebind: Redecide | None = None,
+        sample_payload: Any = None,
     ) -> None:
         self.redecide = redecide
+        self.rebind = rebind
+        #: Data-flow findings already sent to the structure pass: each goes once,
+        #: since what it keeps is its decision.
+        self._rebound: set[tuple[str, str]] = set()
         self.skill_dir = skill_dir
+        #: The compile's sample input: a field it lacks cannot be required.
+        self.sample_payload = sample_payload
+        self._skill_text: added_inputs.SkillText | None = None
         self.run_tests = run_tests
         self.trust_skill = trust_skill
         self.driver = driver
@@ -1631,11 +1710,52 @@ class TextWriter:
             _json(self.ctx.interface), encoding="utf-8"
         )
 
+    def _added_inputs(self, entries: list[Any]) -> tuple[dict[str, Any], added_inputs.Outcome]:
+        """The skeleton with ``entries`` laid over its input, the way settle lays them."""
+        doc = copy.deepcopy(self.ctx.doc)
+        if not entries:
+            return doc, added_inputs.Outcome()
+        if self.skill_dir is None:
+            raise ValueError("an input field the agent adds needs the skill dir to check its quote")
+        if self._skill_text is None:
+            self._skill_text = added_inputs.SkillText.read(self.skill_dir)
+        return doc, added_inputs.apply(doc, entries, self._skill_text, self.sample_payload)
+
+    def input_field_entries(self, skip: str | None = None) -> list[Any]:
+        """Every module piece's input_fields, in node order (one file, one order)."""
+        return [
+            e
+            for node_id, answer in sorted(self.modules.items())
+            if node_id != skip
+            for e in answer.get("input_fields") or []
+        ]
+
+    def _input_field_problems(self, node: Any, answer: dict[str, Any]) -> list[str]:
+        """This piece's input_fields that settle would refuse, beside the others' entries."""
+        mine = list(answer.get("input_fields") or [])
+        if not mine:
+            return []
+        _, out = self._added_inputs([*self.input_field_entries(skip=node.id), *mine])
+        return [
+            f"input_fields entry `{e.get('name')}` was not added: {why}"
+            for e, why in out.refused
+            if any(e is m for m in mine)
+        ]
+
+    def _refresh_inputs(self) -> None:
+        """Show every piece written after this the input schema with the added fields."""
+        entries = self.input_field_entries()
+        doc, out = self._added_inputs(entries)
+        self.ctx.added_input_schema = (
+            dict(doc["input"].get("input_schema") or {}) if out.applied else None
+        )
+
     async def _checks(self, node: Any, answer: dict[str, Any]) -> list[str]:
         """Every check one piece can pass alone, cheapest first."""
         if node.kind is NodeKind.LLM_JUDGE:
             return judge_problems(self.ctx, node, answer)
-        problems = module_problems(self.ctx, node, answer)
+        problems = self._input_field_problems(node, answer)
+        problems += module_problems(self.ctx, node, answer)
         if problems:
             return problems
         return await asyncio.to_thread(
@@ -1678,6 +1798,14 @@ class TextWriter:
                 self._emit("warning", f"generate: {node.id} gave no answer ({e})")
                 break
             answer, problems = apply_answer(prior, payload, keys)
+            fields = list(payload.get("input_fields") or [])
+            if is_judge and fields:
+                problems.append(
+                    "a judge cannot add pipeline input fields: leave input_fields empty"
+                )
+            elif not is_judge:
+                # An empty list keeps the prior entries, like a file left empty.
+                answer["input_fields"] = fields or list((prior or {}).get("input_fields") or [])
             if is_judge:
                 # An empty list keeps the prior choice: a repair returns only
                 # what it changes, like a file left empty.
@@ -1706,6 +1834,7 @@ class TextWriter:
         if not problems and answer is not None:
             store[node.id] = answer
             self.unresolved.pop(node.id, None)
+            self._refresh_inputs()
             return
         if current is not None:
             # The repair made things worse: keep the files that passed alone.
@@ -1716,6 +1845,7 @@ class TextWriter:
             return
         if answer is not None:
             store[node.id] = answer
+            self._refresh_inputs()
         self.unresolved[node.id] = problems
         self._emit(
             "warning",
@@ -1759,6 +1889,15 @@ class TextWriter:
         (work / BRIEF_DIRNAME / TEXT_FILENAME).write_text(
             yaml.safe_dump(text, sort_keys=False, allow_unicode=True), encoding="utf-8"
         )
+        fields = work / BRIEF_DIRNAME / added_inputs.FILENAME
+        entries = self.input_field_entries()
+        if entries:
+            # The file the single-session agent writes, so settle applies both alike.
+            fields.write_text(
+                yaml.safe_dump(entries, sort_keys=False, allow_unicode=True), encoding="utf-8"
+            )
+        else:
+            fields.unlink(missing_ok=True)
 
     async def repair(self, verify: Callable[[Path], Any]) -> tuple[Any, int]:
         """Verify, then re-ask only the nodes a finding names. Returns (verdict, rounds)."""
@@ -1790,6 +1929,23 @@ class TextWriter:
                     self._emit("log", f"generate: {change}")
                 if any(": re-bound to " in c for c in changes):
                     self.ctx.reload()
+                    self._refresh_inputs()
+                    rounds += 1
+                    verification = self.verified(verify)
+                    continue
+            flows = dataflow_findings(verification, self._rebound)
+            if flows and self.rebind is not None and rounds + 1 < MAX_REPAIR_ROUNDS:
+                # Only with a round left after it to rewrite the pieces a new
+                # binding changes: otherwise it ships a step its code cannot run.
+                # A value that never reaches the step needing it is a binding,
+                # which the structure pass decides; the pieces then follow it.
+                self._rebound |= {(n, m) for n, msgs in flows.items() for m in msgs}
+                changes = await asyncio.to_thread(self.rebind, flows)
+                for change in changes:
+                    self._emit("log", f"generate: {change}")
+                if any(": bound (" in c for c in changes):
+                    self.ctx.reload()
+                    self._refresh_inputs()
                     rounds += 1
                     verification = self.verified(verify)
                     continue
@@ -1855,6 +2011,7 @@ async def write_text(
     run_tests: bool = False,
     trust_skill: bool = False,
     redecide: Redecide | None = None,
+    rebind: Redecide | None = None,
 ) -> DriverResult:
     """Write a System-1 skeleton's text in ``work_dir``; return it as a DriverResult.
 
@@ -1882,6 +2039,8 @@ async def write_text(
         run_tests=run_tests,
         trust_skill=trust_skill,
         redecide=redecide,
+        rebind=rebind,
+        sample_payload=getattr(plan.sample, "payload", None),
     )
     rounds = 0
     try:
