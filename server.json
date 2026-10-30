@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.trevhud/rote",
+  "title": "Rote",
+  "description": "Trigger compiled agent-skill pipelines (DBOS, Temporal, Cloudflare, Inngest) as MCP tools",
+  "repository": {
+    "url": "https://github.com/trevhud/rote",
+    "source": "github"
+  },
+  "websiteUrl": "https://roteskills.com",
+  "version": "0.19.4",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "rote-cli",
+      "version": "0.19.4",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "rote-cli[serve]"
+        }
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

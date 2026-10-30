@@ -8,6 +8,7 @@ run without an LLM in the loop.**
 [![Downloads](https://img.shields.io/pypi/dm/rote-cli.svg)](https://pypi.org/project/rote-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/rote-cli.svg)](https://pypi.org/project/rote-cli/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+<!-- mcp-name: io.github.trevhud/rote -->
 
 **Your Claude skill works. Running it a thousand times does not.**
 

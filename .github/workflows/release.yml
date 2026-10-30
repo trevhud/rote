@@ -138,6 +138,55 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  publish-mcp-registry:
+    # The official MCP Registry (registry.modelcontextprotocol.io) feeds the
+    # GitHub MCP registry, the VS Code MCP gallery, PulseMCP, mcp.directory
+    # and Glama. Ownership of io.github.trevhud/* is proven by GitHub OIDC;
+    # the registry then checks that this version's README on PyPI carries
+    # the `mcp-name:` marker (README.md, under the badges).
+    name: Publish to the MCP Registry
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.6
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          base="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl -fsSLo "$archive" "$base/$archive"
+          curl -fsSLo "$archive.sigstore.json" "$base/$archive.sigstore.json"
+          cosign verify-blob --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+
+      - name: Stamp the released version into server.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg v "$version" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          ./mcp-publisher validate
+
+      - name: Publish (retries while PyPI's JSON for the new version propagates)
+        run: |
+          ./mcp-publisher login github-oidc
+          for attempt in 1 2 3 4 5; do
+            if ./mcp-publisher publish; then exit 0; fi
+            echo "publish attempt $attempt failed; retrying in 60s" >&2
+            sleep 60
+          done
+          exit 1
+
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
