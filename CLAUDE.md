@@ -2464,6 +2464,61 @@ Claude Code 2.1.308, each with a real run:
   `category_caps` server. The empty-registry docs-digest run that "worked"
   wrote its digest from memory.
 
+### A skill run on Codex: the same gate, in Codex's terms (#334)
+
+`rote baseline`, `rote eval --run` and the paired A/B take `--agent codex`
+(`rote.eval.codex_lane`): `codex exec` on the user's Codex login (their
+plan), with the Claude lane's allowlist translated, not rebuilt. Every rule
+here was a real failure on codex-cli 0.165.0:
+
+- **A throwaway `CODEX_HOME` and `HOME`.** `--ignore-user-config` still
+  loads the global `AGENTS.md`, `~/.agents/skills` and plugin skills (a
+  probe listed 80 of the user's skills). The login is a link to the real
+  `auth.json`, never a copy: a refreshed copy can leave the user's file
+  holding a rotated-out token, so a refresh that replaced the link is
+  written back (`_write_back_login`). `CODEX_API_KEY` / `OPENAI_API_KEY` are
+  scrubbed.
+- **Launch the binary by its real path.** With a throwaway home, Codex's
+  sandboxed `AGENTS.md` helper re-executes the path it started from, and
+  the sandbox refuses `~/.local/bin/codex`.
+- **Reads come from a custom permissions profile**: `:minimal`, the binary's
+  dir, each `Read(/<dir>/**)` rule; the temp roots denied (`:minimal` reads
+  them); the workspace written. Checked with `codex sandbox`, not the model,
+  which refuses on its own when told the policy.
+- **That profile disables every escalation**, so a `prefix_rule` with
+  `decision="allow"` lets nothing out (it does under `sandbox_mode`, which
+  then ignores the read rules). `Bash(rote skill run <name> *)` therefore
+  becomes `rote.eval.skill_run_server`, a stdio MCP server whose one tool
+  runs the driver with the name fixed, and the prompt says to call it. MCP
+  servers run outside the sandbox and `enabled_tools` gates them.
+- **Server names go into `-c` keys bare.** Codex splits a `-c` key on dots
+  and keeps TOML quotes, so `mcp_servers."x".command` defines a server named
+  `"x"` that never loads (the first live A/B ran its original side with no
+  tools and reported ok). A name outside `[A-Za-z0-9_-]` is refused.
+- **stdin is the prompt or closed.** `codex exec` waits on an open stdin.
+- **Only a ChatGPT login runs.** `login_file` refuses an `auth.json` whose
+  `auth_mode` is not `chatgpt` or that stores a key: `codex login
+  --with-api-key` writes the key there, and env scrubbing cannot reach it.
+  `--budget` is refused with `--agent codex`, since nothing dollar-priced
+  runs, and the A/B checks the login before its compile spends anything.
+- **No credential on the command line or in the shell.** argv is readable
+  by every local user. Static headers go by name (`env_http_headers`) with
+  their values in Codex's own env, a stdio server's `env` may hold only
+  rote's state paths, PATH and HOME, and the agent's shell inherits core
+  variables only (`shell_environment_policy.inherit="core"`; an allowlist).
+  Measured inside the profile: the Keychain calls fail, DNS fails, and
+  `/Users` cannot be listed.
+- **The driver tool's timeout outlasts the driver's.** Codex's own
+  `tool_timeout_sec` is set above `skill_run_server.TIMEOUT_SECONDS`, or
+  Codex would report a failed call while the block runs on, and the model
+  would run it again, writes included.
+- **What Codex does not report is None**: request count, per-request input,
+  turns, warm or cold start, and dollars on a plan. No ledger dollars are
+  recorded for a Codex run, K is n/a, and the A/B runs no control runs
+  (they exist only to measure B). A run with no usage report fails its
+  trial rather than entering the medians as zero. Codex's own resource
+  listing arrives as server `codex` and is not observed traffic.
+
 ### A failed `claude -p` compile is still a paid one, and the output cap resumes
 
 A real invoice-push compile died after 28 minutes and 8 turns with

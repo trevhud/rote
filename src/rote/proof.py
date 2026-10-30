@@ -333,13 +333,20 @@ def pinned_settings() -> tuple[PinnedSetting, ...]:
 
 
 def compile_command(
-    skill_dir: Path, input_path: Path, out_dir: Path, *, runtime: str, model: str | None = None
+    skill_dir: Path,
+    input_path: Path,
+    out_dir: Path,
+    *,
+    runtime: str,
+    model: str | None = None,
+    agent: str = "claude",
 ) -> list[str]:
     """The ``rote compile`` argv (without ``rote``) a measurement compiles with.
 
     Every choice that rote would otherwise resolve from the user's setup is
     on the argv: ``--local`` (a logged-in user's default compiles in the
-    cloud), ``--agent claude``, the runtime, ``--no-eval``, and the
+    cloud), ``--agent`` (claude unless the measurement runs on codex), the
+    runtime, ``--no-eval``, and the
     :func:`pinned_settings`. The caller prints and records it, so what was
     measured can be rerun exactly."""
     argv = [
@@ -352,7 +359,7 @@ def compile_command(
         "--out",
         str(out_dir),
         "--agent",
-        "claude",
+        agent,
         "--local",
         "--no-eval",
     ]
