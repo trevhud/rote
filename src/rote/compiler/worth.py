@@ -15,6 +15,15 @@ ops-report                  1-2          a little faster, even cost
 search-company-knowledge    4            4x slower, 3x costlier
 ==========================  ===========  ===========================
 
+A run of decisions with nothing between them is asked in one DECIDE block
+(#344), but each judge still counts here. Measured 2026-10-31 (Sonnet 4.6,
+2 trials a side) on contact-note-triage, three judges and one small pure
+function: batching cut the compiled side from 6 requests and 72.5k input
+tokens to 5 and 60.6k, and the original still did the work in 2 requests and
+22.5k, so the compiled skill cost 2.7x the tokens. Counting a batch as one
+stop would have let that skill compile: the line moves only on a measured
+eval that says so.
+
 A human gate is not counted: the original skill stops for the person too.
 Judges answered by the inference helper (``--judges helper``) are API calls,
 not round trips, so they are not counted either.

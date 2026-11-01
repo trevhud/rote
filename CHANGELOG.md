@@ -9,6 +9,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **A compiled skill asks a run of decisions in one stop (#344).** Decisions
+  with no code step, tool call, gate or DO step between them share one DECIDE
+  block: independent ones side by side, and one that reads another's answer
+  after it, with that value shown as a marker. One answer covers them all,
+  each checked as if asked alone. Measured on a three-judge skill: 17% fewer
+  compiled-side input tokens and one fewer round trip.
+
 ## [0.20.0] - 2026-10-29
 
 ### Added
