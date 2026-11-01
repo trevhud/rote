@@ -1002,6 +1002,23 @@ change, same API version). Regression, the floor and the newest release
 against a stub that refuses sampling under 2026-10-21:
 `tests/test_judge_sampling_sdk.py`.
 
+### A run of decisions is one DECIDE block (#344)
+
+Each block a compiled skill prints is a round trip that re-reads the agent's
+whole conversation, so the driver asks a run of decisions together
+(`_driver.decision_run`), found from the plan's graph alone. A judge that fans
+over nothing joins when every step of every earlier wave is done or already in
+the run (waves carry every edge, so nothing joins ahead of a step it waits on;
+a code step, tool call, gate, loop or DO step ends the run), up to
+`MAX_BATCHED_DECISIONS`. A value one decision reads from another's answer is
+shown as a marker («`field` of your answer to X»), never guessed. The answer
+is one object keyed by decision id; each is then bound from the real answers
+before it and checked as if asked alone, and one that fails is re-asked by
+itself with the ones before it kept. Measured: −17% compiled-side input tokens
+and one fewer request on a three-judge skill, same wall time. It does not move
+the compile-worthiness line (see below): that skill still cost 2.7x its
+original compiled.
+
 ### Not every skill should become a compiled skill
 
 A compiled skill stops for the agent at each judge and agent loop, and every
