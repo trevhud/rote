@@ -1644,7 +1644,7 @@ class Driver:
             return self._reask(path.name, first, state["attempts"][first] + 1, errors, [], {})
         for step_id in ids:
             step = self.by_id[step_id]
-            results = self._results(path, state)
+            results = self._with_skips(self._results(path, state))
             try:
                 payload = _payload(step, state["input"], results)
             except BindingError as exc:
@@ -1668,9 +1668,35 @@ class Driver:
             state["pending"] = {"step": step_id, "kind": "decide", **prepared}
             state["attempts"][step_id] = 1
             block = self._take_decision(path, state, step, value[step_id], [])
-            if block is not None:
-                return block
+            if block is None:
+                continue
+            if block.kind == "DECIDE":
+                # Re-asked alone: the agent last answered an object keyed by
+                # decision id, so say the shape changed, and show the task
+                # with the real values the earlier answers now supply.
+                errors = [line for line in block.lines if line.startswith("- ")]
+                note = "\n".join(
+                    [
+                        f"Your answer to {step_id} did not validate. The decisions before it "
+                        f"are recorded. Answer {step_id} alone now: only its own answer, not "
+                        "an object keyed by decision id. Fix:",
+                        *errors,
+                    ]
+                )
+                again = self._decide_block(path.name, step, state["pending"], note)
+                again.header = block.header
+                return again
+            return block
         return None
+
+    def _with_skips(self, results: dict[str, Any]) -> dict[str, Any]:
+        """``results`` with each skipped conditional gate as null, derived
+        again as :meth:`_run_forward` derives it: a skip writes no file."""
+        for step in self.steps:
+            conditional = step["kind"] == "gate" and step.get("when")
+            if conditional and step["id"] not in results and _gate_waits(step, results) is False:
+                results[step["id"]] = None
+        return results
 
     def _judge_items(self, step: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | Block:
         """The judge's input as its emitted model would see it, cut to what the prompt reads."""

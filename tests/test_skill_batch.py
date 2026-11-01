@@ -235,3 +235,98 @@ def test_a_code_step_between_decisions_ends_the_run(tmp_path: Path) -> None:
     trio = {k: ANSWERS[k] for k in ("structure", "tone", "verify")}
     _, then = drive(skill, "answer", run, "structure", json.dumps(trio))
     assert (header(then)["step"], header(then).get("decisions")) == ("closing", None)
+
+
+GATED = """\
+def table(notes, review):
+    return {"rows": len(notes), "needs_review": review}
+
+
+def finish(a, b):
+    return {"a": a, "b": b}
+"""
+
+
+def _gated_then_batched() -> dict[str, Any]:
+    """A conditional gate, then two decisions after it: one binds the gate whole."""
+    return {
+        "name": "cg",
+        "version": "0.1.0",
+        "input": {"type": "In", "required": ["notes", "review"]},
+        "nodes": [
+            {
+                "id": "tabled",
+                "kind": "pure_function",
+                "description": "Count the notes.",
+                "impl": "extracted/m.py:table",
+                "inputs": {"notes": "pipeline.input.notes", "review": "pipeline.input.review"},
+                "output": {"rows": "int", "needs_review": "bool"},
+            },
+            {
+                "id": "approve",
+                "kind": "hitl_gate",
+                "description": "Approve.",
+                "signal": "approved",
+                "timeout": "1h",
+                "when": "tabled.output.needs_review",
+                "output": {"approved": "bool"},
+                "inputs": {"rows": "tabled.output.rows"},
+                "notify": {"channel": "slack", "target": "#x", "message_template": "Rows {rows}"},
+            },
+            _judge(
+                "ja",
+                "Approval: {{ appr }}",
+                {"appr": "approve.output"},
+                {"appr": {"type": ["object", "null"]}},
+                _obj(x="string"),
+            ),
+            _judge(
+                "jb",
+                "Rows: {{ rows }}",
+                {"rows": "tabled.output.rows"},
+                {"rows": {"type": "integer"}},
+                _obj(y="string"),
+            ),
+            {
+                "id": "fin",
+                "kind": "pure_function",
+                "description": "Finish.",
+                "impl": "extracted/m.py:finish",
+                "inputs": {"a": "ja.output", "b": "jb.output"},
+            },
+        ],
+        "edges": [
+            {"from": "tabled", "to": "approve"},
+            {"from": "approve", "to": "ja"},
+            {"from": "approve", "to": "jb"},
+            {"from": "ja", "to": "fin"},
+            {"from": "jb", "to": "fin"},
+        ],
+        "entry_nodes": ["tabled"],
+        "exit_nodes": ["fin"],
+    }
+
+
+def test_a_batch_after_a_skipped_gate_reads_the_skip_as_null(tmp_path: Path) -> None:
+    """A skip writes no file, so the answer must derive it again, as the run did."""
+    skill = make_skill(tmp_path, _gated_then_batched(), {"m.py": GATED})
+    _, block = drive(skill, "start", json.dumps({"notes": ["a"], "review": False}))
+    fields = header(block)
+    assert fields["decisions"] == "ja,jb"
+    status, done = drive(
+        skill, "answer", fields["run"], "ja", json.dumps({"ja": {"x": "1"}, "jb": {"y": "2"}})
+    )
+    assert status == 0, done
+    assert result_of(done) == {"fin": {"a": {"x": "1"}, "b": {"y": "2"}}}
+
+
+def test_a_decision_re_asked_alone_says_the_answer_shape_changed(chain: Path) -> None:
+    run = header(_start(chain))["run"]
+    bad = {**ANSWERS, "verify": {"ok": "yes"}}
+    _, again = drive(chain, "answer", run, "structure", json.dumps(bad))
+    assert (
+        "Answer verify alone now: only its own answer, not an object keyed by decision id" in again
+    )
+    # Its task now shows the real value the earlier answer supplies.
+    assert "Is 1 Main St a real street?" in again
+    assert "attempt=2" in again.splitlines()[0]
