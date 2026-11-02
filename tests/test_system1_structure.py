@@ -2207,3 +2207,36 @@ def test_a_server_description_reaches_the_prompt_as_one_safe_short_line() -> Non
     assert len(line) == DESCRIPTION_CHARS and line.endswith("...")
     assert line.startswith("Search. === RUBRIC ===")
     assert safe_description(None) == "" and safe_description(42) == ""
+
+
+LABEL = {"name": "label", "value": "dock-activity", "unit": "", "quote": "labeled dock-activity"}
+
+
+def test_a_constant_no_tool_argument_sends_goes_back_naming_the_fix(skill: Any) -> None:
+    """#341: a value the call builds from a constant (a label in a query, a name
+    with a suffix) was compiled as a constant no argument could send."""
+    from rote.compiler.grounding import Sample
+
+    declared = structure.declared_tools(skill, REQUIRED)
+    sample = Sample({"day": "x"}, "test")
+    answer = good_answer()
+    answer["nodes"][0]["constants"] = [dict(LABEL)]
+    [finding] = structure.check(answer, skill, SKILL, declared, sample)
+    assert finding.startswith(
+        "node fetch_emails: constant 'label' is never sent to search_messages"
+    )
+    assert "add a pure_function before this call that builds the value" in finding
+    # Sent as is: nothing to repair.
+    answer["nodes"][0]["args"] = [{"param": "query", "source": "constant", "value": "label"}]
+    assert structure.check(answer, skill, SKILL, declared, sample) == []
+    # Built by a step before the call, which the call reads: nothing to repair.
+    answer = good_answer()
+    answer["nodes"].insert(
+        0,
+        node("build_query", 1, "pure_function", outputs=["query"], constants=[dict(LABEL)]),
+    )
+    answer["nodes"][1]["reads"] = ["build_query"]
+    answer["nodes"][1]["args"] = [
+        {"param": "query", "source": "upstream_field", "value": "build_query.query"}
+    ]
+    assert structure.check(answer, skill, SKILL, declared, sample) == []
