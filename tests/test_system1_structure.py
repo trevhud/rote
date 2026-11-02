@@ -2226,6 +2226,9 @@ def test_a_constant_no_tool_argument_sends_goes_back_naming_the_fix(skill: Any) 
         "node fetch_emails: constant 'label' is never sent to search_messages"
     )
     assert "add a pure_function before this call that builds the value" in finding
+    # No schema: any fix would name a parameter nothing can check, so it is
+    # left to verification's ungrounded-args gap, which blocks the run.
+    assert structure.check(answer, skill, SKILL, {("gmail", "search_messages"): None}, sample) == []
     # Sent as is: nothing to repair.
     answer["nodes"][0]["args"] = [{"param": "query", "source": "constant", "value": "label"}]
     assert structure.check(answer, skill, SKILL, declared, sample) == []
