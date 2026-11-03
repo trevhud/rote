@@ -18,6 +18,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   each checked as if asked alone. Measured on a three-judge skill: 17% fewer
   compiled-side input tokens and one fewer round trip.
 
+### Fixed
+
+- **A tool argument built from a stated value compiles (#341).** The
+  structure pass now refuses a constant on a tool call that no argument sends
+  (a `-summary` suffix for a note's name), and its repair says to build the
+  value in a step before the call. Before, the constant reached verification
+  as an unsendable value and the compile exited 1. On the issue's skill, 4 of
+  12 structure passes proposed that shape, and all 4 were repaired.
+
 ## [0.20.0] - 2026-10-29
 
 ### Added

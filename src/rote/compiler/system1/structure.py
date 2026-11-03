@@ -1305,6 +1305,21 @@ def _check_call(
             )
             if problem:
                 out.append(f"{where}: {problem}")
+        # A constant reaches a tool only through an argument that names it
+        # (adapters._common.unsent_constants), so one no argument sends is a
+        # value the skill states that the call never gets (#341). Only with a
+        # schema: without one, any fix names a parameter rote cannot check, and
+        # verification's ungrounded-args gap already blocks the run.
+        sent = {str(a.get("value")) for a in n.get("args") or [] if a.get("source") == "constant"}
+        for name in sorted(constants - sent) if params is not None else ():
+            out.append(
+                f"{where}: constant {name!r} is never sent to {tool}: no argument has source "
+                f"constant and value {name!r}. Bind it to the parameter that takes it as is. If "
+                "a parameter's value is built from it and other data (a name with a suffix, a "
+                "path, a formatted id), add a pure_function before this call that builds the "
+                "value and returns it as an output, move the constant to that step, and bind "
+                "the parameter with upstream_field"
+            )
         if params is not None:
             bound = {a.get("param") for a in n.get("args") or []}
             missing = sorted(p["name"] for p in params if p["required"] and p["name"] not in bound)
