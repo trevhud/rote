@@ -1017,7 +1017,11 @@ before it and checked as if asked alone, and one that fails is re-asked by
 itself with the ones before it kept. Measured: −17% compiled-side input tokens
 and one fewer request on a three-judge skill, same wall time. It does not move
 the compile-worthiness line (see below): that skill still cost 2.7x its
-original compiled.
+original compiled. `_driver.stops` walks a plan the way a run does and lists
+every block it stops at; compile-report.md's Stops section prints it for a
+`--runtime skill` compile, so the extra stop a code step between two decisions
+costs is visible (each stop re-reads the conversation, about 11k tokens a
+request measured, while a block's own text is under 1k).
 
 ### Not every skill should become a compiled skill
 

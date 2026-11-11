@@ -985,6 +985,7 @@ class Compiler:
                 questions=[*mode.questions, *contract_questions],
                 api_backend=self.api_backend,
                 runtime=self.emit_target.runtime if self.emit_target is not None else "dbos",
+                judges=self.emit_target.judges if self.emit_target is not None else None,
                 web_research=research,
                 spec_checks=verification.spec_checks,
             )

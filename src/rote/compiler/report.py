@@ -23,6 +23,7 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
@@ -67,6 +68,8 @@ class ReportExtras:
     #: The runtime the compile emits for: python and temporal call a bound
     #: node's module, so its stub is an open question there too.
     runtime: str = "dbos"
+    #: ``--runtime skill``: who answers its judges (``session`` or ``helper``).
+    judges: str | None = None
     #: The agent's web lookups in this compile (``--backend api``).
     web_research: api_docs.WebResearch | None = None
     #: Every vendor request, checked against its vendor's spec (``--backend api``).
@@ -236,6 +239,62 @@ def _open_questions(
     return lines
 
 
+#: How the report reads each block a compiled skill stops at.
+_BLOCK_WORDS = {
+    "DECIDE": "the agent decides",
+    "HUMAN": "the agent asks the person",
+    "LOOP": "the agent works a loop",
+    "DO": "the agent does the step with its own tools",
+}
+
+
+def _stops(pipeline: Pipeline, root: Path, extras: ReportExtras) -> list[str]:
+    """Each block a compiled skill's run stops at, from the plan its emit builds (#344)."""
+    from rote.adapters.skill import implementations, shipped_module
+    from rote.plan import JudgeMode, PlanError, build_plan
+    from rote.skill_target._driver import stops
+
+    judges: JudgeMode = "helper" if extras.judges == "helper" else "session"
+    backend: Literal["mcp", "api"] = "api" if extras.api_backend else "mcp"
+    try:
+        plan = build_plan(
+            pipeline,
+            mcp="live",
+            backend=backend,
+            judges=judges,
+            implementations=dict(
+                implementations(
+                    pipeline,
+                    backend,
+                    lambda module, nodes: shipped_module(root, module, nodes),
+                )
+            ),
+        )
+    except PlanError as e:
+        return [f"The skill runtime cannot run this pipeline: {_cell(str(e))}"]
+    found = stops(plan["steps"], helper_judges=judges == "helper")
+    if not found:
+        return ["A run never stops for the agent: every step runs as code."]
+    lines = [
+        f"A run stops for the agent {len(found)} time(s) when every step finishes. "
+        "Each stop is a round trip that re-reads the agent's conversation; code and "
+        "tool steps between them run without one.",
+        "",
+    ]
+    for i, stop in enumerate(found, 1):
+        names = ", ".join(f"`{s}`" for s in stop["steps"])
+        notes = []
+        if len(stop["steps"]) > 1:
+            notes.append("asked together")
+        if stop.get("fanned"):
+            notes.append("one block per batch of items")
+        if stop.get("conditional"):
+            notes.append("only when its condition holds")
+        note = f" ({', '.join(notes)})" if notes else ""
+        lines.append(f"{i}. {stop['block']}: {_BLOCK_WORDS[stop['block']]}, {names}{note}.")
+    return lines
+
+
 def render_compile_report(
     pipeline: Pipeline, root: Path, extras: ReportExtras | None = None
 ) -> str:
@@ -284,6 +343,11 @@ def render_compile_report(
                 "",
             ]
             if extras.api_backend
+            else []
+        ),
+        *(
+            ["## Stops", "", *_stops(pipeline, root, extras), ""]
+            if extras.runtime == "skill"
             else []
         ),
         "## Open questions",

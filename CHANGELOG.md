@@ -17,6 +17,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   after it, with that value shown as a marker. One answer covers them all,
   each checked as if asked alone. Measured on a three-judge skill: 17% fewer
   compiled-side input tokens and one fewer round trip.
+- **compile-report.md lists a compiled skill's stops (#344).** A `--runtime
+  skill` compile's report has a Stops section: each block a run stops at for
+  the agent (DECIDE, HUMAN, LOOP, DO), which decisions share one, and which
+  are fanned or conditional. A stop re-reads the agent's conversation, so
+  this is where a compiled skill's cost is.
 
 ### Fixed
 

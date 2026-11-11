@@ -24,6 +24,15 @@ tokens to 5 and 60.6k, and the original still did the work in 2 requests and
 stop would have let that skill compile: the line moves only on a measured
 eval that says so.
 
+Stops after batching (``_driver.stops``, listed in compile-report.md) do
+not predict cost better. Broken down per request (2026-11-03), each request
+re-read about 11k tokens of fixed context and the driver's blocks added
+under 1k, so the compiled side cost about one 11k read per stop. Whether a
+stop pays off depends on how much work the original did between stops,
+which the plan does not show. And in the committed examples a code or tool
+step sits between every two judges (deal-monitor, bdr-outreach), so stops
+equal judges there; the one skill where they differ is the one above.
+
 A human gate is not counted: the original skill stops for the person too.
 Judges answered by the inference helper (``--judges helper``) are API calls,
 not round trips, so they are not counted either.
