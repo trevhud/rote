@@ -196,8 +196,21 @@ def test_a_malformed_batch_answer_is_asked_again_whole(
     assert header(shown)["decisions"] == "structure,tone,verify,closing"
 
 
-def test_a_code_step_between_decisions_ends_the_run(tmp_path: Path) -> None:
-    """closing waits on a code step here, so it is never asked before it runs."""
+def _stops(scripts: Path, helper_judges: bool = False) -> list[dict[str, Any]]:
+    from rote.skill_target._driver import stops
+
+    plan = json.loads((scripts / "plan.json").read_text(encoding="utf-8"))
+    return stops(plan["steps"], helper_judges)
+
+
+def test_stops_name_the_one_block_a_run_of_decisions_takes(chain: Path) -> None:
+    assert _stops(chain) == [
+        {"block": "DECIDE", "steps": ["structure", "tone", "verify", "closing"]}
+    ]
+    assert _stops(chain, helper_judges=True) == []
+
+
+def _with_code_between() -> dict[str, Any]:
     nodes = [dict(n) for n in CHAIN["nodes"]]
     nodes.insert(
         4,
@@ -211,7 +224,7 @@ def test_a_code_step_between_decisions_ends_the_run(tmp_path: Path) -> None:
     )
     closing = next(n for n in nodes if n["id"] == "closing")
     closing["inputs"] = {"ok": "normalize.output.ok", "tone": "tone.output"}
-    gated = {
+    return {
         **CHAIN,
         "nodes": nodes,
         "edges": [
@@ -224,11 +237,19 @@ def test_a_code_step_between_decisions_ends_the_run(tmp_path: Path) -> None:
             {"from": "closing", "to": "report"},
         ],
     }
-    skill = make_skill(
-        tmp_path,
-        gated,
-        {"prep.py": PREP + "\n\ndef normalize(v):\n    return {'ok': bool(v['ok'])}\n"},
-    )
+
+
+NORMALIZE = PREP + "\n\ndef normalize(v):\n    return {'ok': bool(v['ok'])}\n"
+
+
+def test_a_code_step_between_decisions_ends_the_run(tmp_path: Path) -> None:
+    """closing waits on a code step here, so it is never asked before it runs."""
+    skill = make_skill(tmp_path, _with_code_between(), {"prep.py": NORMALIZE})
+    # The stops a run takes, read from the plan, match the blocks it prints.
+    assert _stops(skill) == [
+        {"block": "DECIDE", "steps": ["structure", "tone", "verify"]},
+        {"block": "DECIDE", "steps": ["closing"]},
+    ]
     first = _start(skill)
     assert header(first)["decisions"] == "structure,tone,verify"
     run = header(first)["run"]
@@ -310,6 +331,10 @@ def _gated_then_batched() -> dict[str, Any]:
 def test_a_batch_after_a_skipped_gate_reads_the_skip_as_null(tmp_path: Path) -> None:
     """A skip writes no file, so the answer must derive it again, as the run did."""
     skill = make_skill(tmp_path, _gated_then_batched(), {"m.py": GATED})
+    assert _stops(skill) == [
+        {"block": "HUMAN", "steps": ["approve"], "conditional": True},
+        {"block": "DECIDE", "steps": ["ja", "jb"]},
+    ]
     _, block = drive(skill, "start", json.dumps({"notes": ["a"], "review": False}))
     fields = header(block)
     assert fields["decisions"] == "ja,jb"

@@ -250,3 +250,49 @@ def test_markers_in_signatures_and_pipeline_yaml_reach_the_open_questions(
     assert "### OQ-3: approve" in entries
     assert "### OQ-4: pipeline" in entries
     assert "`pipeline.yaml:" in report and "`signatures/route.py:1`" in report
+
+
+def test_a_compiled_skill_lists_each_stop_its_run_takes(tmp_path: Path) -> None:
+    """#344: a stop re-reads the agent's conversation, so the report names each one."""
+    from rote.compiler.report import ReportExtras
+
+    root = _deliverable(tmp_path)
+    pipeline = load_pipeline(root / "pipeline.yaml")
+    text = render_compile_report(pipeline, root, ReportExtras(runtime="skill"))
+    section = text.split("## Stops\n", 1)[1].split("\n## ", 1)[0]
+    # The router is code; the gate asks the person; the stubbed call is the agent's.
+    assert "A run stops for the agent 2 time(s)" in section
+    assert "1. HUMAN: the agent asks the person, `approve`." in section
+    assert "2. DO: the agent does the step with its own tools, `notify`." in section
+    # Only a compiled skill stops for an agent.
+    assert "## Stops" not in render_compile_report(pipeline, root, ReportExtras(runtime="dbos"))
+
+
+def test_the_stops_show_which_decisions_share_a_block(tmp_path: Path) -> None:
+    import yaml
+
+    from rote.compiler.report import ReportExtras
+    from tests.test_skill_batch import CHAIN, NORMALIZE, _with_code_between
+
+    for name, ir in (("chain", CHAIN), ("split", _with_code_between())):
+        root = tmp_path / name
+        (root / "extracted").mkdir(parents=True)
+        (root / "extracted" / "prep.py").write_text(NORMALIZE, encoding="utf-8")
+        (root / "pipeline.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        text = render_compile_report(
+            load_pipeline(root / "pipeline.yaml"), root, ReportExtras(runtime="skill")
+        )
+        if name == "chain":
+            assert (
+                "1. DECIDE: the agent decides, `structure`, `tone`, `verify`, `closing` "
+                "(asked together)." in text
+            )
+        else:
+            assert "A run stops for the agent 2 time(s)" in text
+            assert "2. DECIDE: the agent decides, `closing`." in text
+        helper = render_compile_report(
+            load_pipeline(root / "pipeline.yaml"),
+            root,
+            ReportExtras(runtime="skill", judges="helper"),
+        )
+        assert "A run never stops for the agent" in helper

@@ -479,6 +479,50 @@ def decision_run(
     return run
 
 
+#: The block a run prints for each kind of step that stops for the agent.
+STOP_BLOCKS = {"judge": "DECIDE", "gate": "HUMAN", "loop": "LOOP", "do": "DO"}
+
+
+def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> list[dict[str, Any]]:
+    """The blocks a run stops at, in order, when every step finishes (#344).
+
+    The forward loop's own order: wave by wave, the code and tool steps run,
+    then the first step left in the wave stops the run, with the decisions
+    :func:`decision_run` asks beside it. Each stop is ``{"block", "steps"}``.
+    A fanned judge's items may take several blocks, and a gate with ``when``
+    may be skipped, so each is marked (``fanned``, ``conditional``) rather
+    than guessed. ``helper_judges``: the inference helper answers judges in
+    code, so they never stop the run.
+    """
+    in_code = {"call", "mcp", "skip"} | ({"judge"} if helper_judges else set())
+    waves = sorted({int(s["wave"]) for s in steps})
+    done: set[str] = set()
+    out: list[dict[str, Any]] = []
+    while True:
+        ask = None
+        for wave in waves:
+            # A wave's code runs only once the run reaches it, so a decision
+            # after it never joins a block asked before it.
+            in_wave = [s for s in steps if int(s["wave"]) == wave]
+            done.update(str(s["id"]) for s in in_wave if s["kind"] in in_code)
+            ask = next((s for s in in_wave if str(s["id"]) not in done), None)
+            if ask is not None:
+                break
+        if ask is None:
+            return out
+        run = decision_run(steps, ask, done) if ask["kind"] == "judge" else [ask]
+        stop: dict[str, Any] = {
+            "block": STOP_BLOCKS[ask["kind"]],
+            "steps": [str(s["id"]) for s in run],
+        }
+        if ask.get("fan_param") is not None:
+            stop["fanned"] = True
+        if ask["kind"] == "gate" and ask.get("when"):
+            stop["conditional"] = True
+        out.append(stop)
+        done.update(stop["steps"])
+
+
 def interpolate(template: str, variables: dict[str, Any]) -> str:
     """The emitted judge's ``_interpolate``: ``{{ dotted.path }}`` against the input."""
 
