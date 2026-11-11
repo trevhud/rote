@@ -296,3 +296,79 @@ def test_the_stops_show_which_decisions_share_a_block(tmp_path: Path) -> None:
             ReportExtras(runtime="skill", judges="helper"),
         )
         assert "A run never stops for the agent" in helper
+
+
+def test_an_unwritten_call_module_is_the_agents_stop(tmp_path: Path) -> None:
+    """The emit ships rote's stub for it, which makes the call a DO step."""
+    from rote.compiler.report import ReportExtras
+
+    root = _deliverable(tmp_path)
+    (root / "extracted" / "notify.py").unlink()
+    text = render_compile_report(
+        load_pipeline(root / "pipeline.yaml"), root, ReportExtras(runtime="skill")
+    )
+    assert "A run stops for the agent 2 time(s)" in text
+    assert "2. DO: the agent does the step with its own tools, `notify`." in text
+
+
+def test_a_conditional_gate_and_an_unrunnable_plan_are_said_plainly(tmp_path: Path) -> None:
+    import yaml
+
+    from rote.compiler.report import ReportExtras
+    from tests.test_skill_batch import GATED, _gated_then_batched
+
+    root = tmp_path / "gated"
+    (root / "extracted").mkdir(parents=True)
+    (root / "extracted" / "m.py").write_text(GATED, encoding="utf-8")
+    (root / "pipeline.yaml").write_text(yaml.safe_dump(_gated_then_batched()), encoding="utf-8")
+    text = render_compile_report(
+        load_pipeline(root / "pipeline.yaml"), root, ReportExtras(runtime="skill")
+    )
+    assert "1. HUMAN: the agent asks the person, `approve` (only when its condition holds)." in text
+    # A plan the skill runtime refuses says why, instead of counting stops.
+    loop = tmp_path / "loop"
+    loop.mkdir()
+    (loop / "pipeline.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "lp",
+                "version": "0.1.0",
+                "input": {"type": "In", "required": ["q"]},
+                "nodes": [
+                    {
+                        "id": "research",
+                        "kind": "agent_loop",
+                        "description": "Research it.",
+                        "tools": ["web_search"],
+                        "mandatory": False,
+                        "inputs": {"q": "pipeline.input.q"},
+                    }
+                ],
+                "edges": [],
+                "entry_nodes": ["research"],
+                "exit_nodes": ["research"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    text = render_compile_report(
+        load_pipeline(loop / "pipeline.yaml"), loop, ReportExtras(runtime="skill")
+    )
+    stops = text.split("## Stops\n", 1)[1].split("\n## ", 1)[0]
+    assert stops.strip().startswith("The skill runtime cannot run this pipeline: research")
+
+
+def test_a_fanned_decision_says_its_items_may_take_several_blocks(tmp_path: Path) -> None:
+    import yaml
+
+    from rote.compiler.report import ReportExtras
+    from tests.test_skill_driver import DECIDE, PREP
+
+    (tmp_path / "extracted").mkdir()
+    (tmp_path / "extracted" / "prep.py").write_text(PREP, encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump(DECIDE), encoding="utf-8")
+    text = render_compile_report(
+        load_pipeline(tmp_path / "pipeline.yaml"), tmp_path, ReportExtras(runtime="skill")
+    )
+    assert "1. DECIDE: the agent decides, `classify` (one block per batch of items)." in text
+    assert "2. DECIDE: the agent decides, `headline`." in text

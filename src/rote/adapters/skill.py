@@ -53,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -253,6 +254,42 @@ def refusal(pipeline: Pipeline, backend: Literal["mcp", "api"] = "mcp") -> str |
     from rote.skill_target._driver import unrunnable_step
 
     return unrunnable_step(plan)
+
+
+def shipped_module(source_dir: Path | None, module: str, nodes: list[Node]) -> str:
+    """``extracted/<module>.py`` as a compile's skill emit ships it: the agent's
+    module beside the pipeline, else the stub rote writes for ``nodes``."""
+    return resolve_extracted_source(source_dir, module) or emit_extracted_module(
+        module, nodes, generated_by=GENERATED_BY, caller_note=_CALLER_NOTE
+    )
+
+
+def implementations(
+    pipeline: Pipeline,
+    backend: Literal["mcp", "api"],
+    module_text: Callable[[str, list[Node]], str],
+) -> dict[str, ImplStatus]:
+    """Each external_call whose impl a step would call, by whether that function,
+    in the module text ``module_text(module, nodes)`` ships, does real work
+    (:mod:`rote.plan` makes a ``stub`` one a ``do`` step; an ``absent`` one is
+    shipped code it cannot read, such as a re-export, and stays a call). The
+    emit and compile-report.md's Stops both decide which steps are the agent's
+    here, so the report cannot count a stop the run does not take."""
+    found: dict[str, ImplStatus] = {}
+    for module, nodes in _extracted_layout(pipeline).items():
+        calls = [
+            n
+            for n in nodes
+            if n.kind is NodeKind.EXTERNAL_CALL
+            and n.impl is not None
+            and not mcp_backed(n, "skill", backend)
+        ]
+        if calls:
+            text = module_text(module, nodes)
+            for n in calls:
+                assert n.impl is not None
+                found[n.id] = impl_status(text, _impl_path_parts(n.impl)[1])
+    return found
 
 
 @dataclass(frozen=True)
@@ -762,34 +799,15 @@ class SkillAdapter:
     def _landed(self, module: str, nodes: list[Node], scripts: EmitWriter) -> str:
         """``extracted/<module>.py`` as ``write_extracted_package`` would write it: the
         agent's module, a user edit the writer keeps, or a stub."""
-        fresh = resolve_extracted_source(self.config.extracted_source_dir, module) or (
-            emit_extracted_module(
-                module, nodes, generated_by=GENERATED_BY, caller_note=_CALLER_NOTE
-            )
-        )
+        fresh = shipped_module(self.config.extracted_source_dir, module, nodes)
         return scripts.landed_content("extracted", f"{module}.py", content=fresh)
 
     def _implementations(self, pipeline: Pipeline, scripts: EmitWriter) -> dict[str, ImplStatus]:
-        """Each external_call whose impl a step would call, by whether that function,
-        in the module this emit ships, does real work (:mod:`rote.plan` makes a
-        ``stub`` one a ``do`` step; an ``absent`` one is shipped code
-        it cannot read, such as a re-export, and stays a call)."""
-        backend = self.config.external_backend
-        found: dict[str, ImplStatus] = {}
-        for module, nodes in _extracted_layout(pipeline).items():
-            calls = [
-                n
-                for n in nodes
-                if n.kind is NodeKind.EXTERNAL_CALL
-                and n.impl is not None
-                and not mcp_backed(n, "skill", backend)
-            ]
-            if calls:
-                text = self._landed(module, nodes, scripts)
-                for n in calls:
-                    assert n.impl is not None
-                    found[n.id] = impl_status(text, _impl_path_parts(n.impl)[1])
-        return found
+        return implementations(
+            pipeline,
+            self.config.external_backend,
+            lambda module, nodes: self._landed(module, nodes, scripts),
+        )
 
     def _uncalled(self, nodes: list[Node], agent: set[str]) -> frozenset[str]:
         """The functions in a module no step calls: each one only nodes that call

@@ -355,3 +355,17 @@ def test_a_decision_re_asked_alone_says_the_answer_shape_changed(chain: Path) ->
     # Its task now shows the real value the earlier answer supplies.
     assert "Is 1 Main St a real street?" in again
     assert "attempt=2" in again.splitlines()[0]
+
+
+def test_a_fanned_decision_stops_alone_and_is_marked(tmp_path: Path) -> None:
+    """Its items may take several blocks, so the count says so instead of guessing."""
+    from tests.test_skill_driver import DECIDE
+    from tests.test_skill_driver import PREP as DRIVER_PREP
+
+    skill = make_skill(tmp_path, DECIDE, {"prep.py": DRIVER_PREP})
+    assert _stops(skill) == [
+        {"block": "DECIDE", "steps": ["classify"], "fanned": True},
+        {"block": "DECIDE", "steps": ["headline"]},
+    ]
+    _, first = drive(skill, "start", json.dumps({"notes": ["a", "b"], "topic": "t"}))
+    assert header(first)["step"] == "classify"

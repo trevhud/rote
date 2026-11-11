@@ -23,6 +23,7 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
@@ -247,23 +248,27 @@ _BLOCK_WORDS = {
 }
 
 
-def _stops(pipeline: Pipeline, impls: list[NodeImplementation], extras: ReportExtras) -> list[str]:
+def _stops(pipeline: Pipeline, root: Path, extras: ReportExtras) -> list[str]:
     """Each block a compiled skill's run stops at, from the plan its emit builds (#344)."""
+    from rote.adapters.skill import implementations, shipped_module
     from rote.plan import JudgeMode, PlanError, build_plan
     from rote.skill_target._driver import stops
 
     judges: JudgeMode = "helper" if extras.judges == "helper" else "session"
+    backend: Literal["mcp", "api"] = "api" if extras.api_backend else "mcp"
     try:
         plan = build_plan(
             pipeline,
             mcp="live",
-            backend="api" if extras.api_backend else "mcp",
+            backend=backend,
             judges=judges,
-            implementations={
-                i.node_id: i.status
-                for i in impls
-                if i.kind == NodeKind.EXTERNAL_CALL.value and not i.mcp_backed
-            },
+            implementations=dict(
+                implementations(
+                    pipeline,
+                    backend,
+                    lambda module, nodes: shipped_module(root, module, nodes),
+                )
+            ),
         )
     except PlanError as e:
         return [f"The skill runtime cannot run this pipeline: {_cell(str(e))}"]
@@ -341,7 +346,7 @@ def render_compile_report(
             else []
         ),
         *(
-            ["## Stops", "", *_stops(pipeline, impls, extras), ""]
+            ["## Stops", "", *_stops(pipeline, root, extras), ""]
             if extras.runtime == "skill"
             else []
         ),
