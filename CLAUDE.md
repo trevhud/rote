@@ -1017,7 +1017,12 @@ before it and checked as if asked alone, and one that fails is re-asked by
 itself with the ones before it kept. Measured: −17% compiled-side input tokens
 and one fewer request on a three-judge skill, same wall time. It does not move
 the compile-worthiness line (see below): that skill still cost 2.7x its
-original compiled. `_driver.stops` walks a plan the way a run does and lists
+original compiled. DO steps batch the same way (`_driver.do_run`), more simply: a DO step that
+fans over nothing joins the first one's block when it is in the same wave,
+so none reads another's answer and no marker is needed. It does not move the
+worthiness line either: DO steps are not counted there until an eval measures
+what a DO stop costs against the original's own tool calls.
+`_driver.stops` walks a plan the way a run does and lists
 every block it stops at; compile-report.md's Stops section prints it for a
 `--runtime skill` compile, so the extra stop a code step between two decisions
 costs is visible (each stop re-reads the conversation, about 11k tokens a

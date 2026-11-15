@@ -17,6 +17,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   after it, with that value shown as a marker. One answer covers them all,
   each checked as if asked alone. Measured on a three-judge skill: 17% fewer
   compiled-side input tokens and one fewer round trip.
+- **A compiled skill hands a wave's DO steps over in one stop.** DO steps
+  that fan over nothing and sit in one wave read none of each other's
+  results, so they share one DO block; one answer covers them all, each
+  checked as if asked alone. On the connector-style corpus skills this cut
+  business-pulse from 26 stops to 9, invoice-chase from 14 to 8 and
+  payroll-prep from 22 to 15.
 - **compile-report.md lists a compiled skill's stops (#344).** A `--runtime
   skill` compile's report has a Stops section: each block a run stops at for
   the agent (DECIDE, HUMAN, LOOP, DO), which decisions share one, and which
