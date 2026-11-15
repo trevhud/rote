@@ -331,8 +331,13 @@ Per node:
   a browser, at a URL the skill gives: navigate, click, read the screen),
   local_path (the skill gives a path),
   public_api (a product the skill names, with a public API), or unspecified
-  (the skill says to deliver or fetch somewhere it never identifies). Use
-  io "none" and how "none" for every node that is not an external_call.
+  (a system the skill names only by its kind, such as "the CRM", "your
+  accounting tool" or "~~crm", or never identifies). A read or write of a
+  system is an external_call however the skill names it, even when no
+  declared tool reaches it: the agent running the compiled skill makes the
+  call with its own tools. Never turn it into a pure_function, and never
+  take the data it reads from pipeline.input. Use io "none" and how "none"
+  for every node that is not an external_call.
 - args: for a declared_tool call, where each tool parameter's value comes
   from. Bind every required parameter. Sources: input_field (value = a field
   of the pipeline input, such as "topic"), upstream_field (value =
@@ -385,7 +390,10 @@ Per node:
   Both empty when the skill always asks. A skipped gate's result is null,
   so a node that reads it handles a null answer.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
-  and its iteration bound, as the skill states them. Else empty.
+  and its iteration bound, as the skill states them. Else empty. An
+  agent_loop calls declared tools only. Work on a system no declared tool
+  reaches (checking each deal's notes in the CRM) is one external_call with
+  how public_api or unspecified, not an agent_loop.
 - confidence: how sure you are of this node, 0 to 1. why: one short clause.
 
 Not outside systems: the results of earlier nodes, the pipeline's input, and
@@ -398,8 +406,9 @@ must reach the run's result: a node nothing later reads (an exit node)
 returns it in its outputs. When the producing node is read by a later step,
 add a final pure_function that reads every producer and returns them all.
 
-input_fields: the run's input parameters the skill asks for. When a SAMPLE
-INPUT is given, its keys are the input.
+input_fields: the run's input parameters the skill asks for: what it asks
+the person or caller to provide, never data a step reads from a system. When
+a SAMPLE INPUT is given, its keys are the input.
 
 === RUBRIC (node-kinds.md) ===
 {rubric}
@@ -756,6 +765,7 @@ def check(
     ui_session = False
     listing = listing_nodes(list(answer.get("nodes") or []))
     run_outputs = {str(k) for k in answer.get("run_outputs") or []}
+    loops_with_body = _loops_with_body(answer)
     for pos, n in enumerate(answer.get("nodes") or []):
         nid = str(n.get("id", ""))
         where = f"node {nid or f'#{pos}'}"
@@ -865,6 +875,14 @@ def check(
                     f"{where}: loop tools {unknown} are not declared tools (declared: "
                     f"{sorted(by_tool)})"
                 )
+            elif not lp.get("tools") and nid not in loops_with_body:
+                out.append(
+                    f"{where}: an agent_loop calls declared tools, and this one names none "
+                    f"(declared: {sorted(by_tool)}), so no runtime can run it. If it works on "
+                    "a system no declared tool reaches, make it one external_call with how "
+                    "public_api or unspecified: the agent running the compiled skill does it "
+                    "with its own tools"
+                )
         seen[nid] = n
     if sample is not None and sample.gates:
         out += _check_gates(answer, sample)
@@ -872,6 +890,17 @@ def check(
     out += _check_split_steps(answer)
     out += _check_gate_waiters(answer)
     return out
+
+
+def _unbound_call(system: Mapping[str, Any]) -> dict[str, Any]:
+    """``system`` as a call to a system no evidence identifies (how unspecified)."""
+    io = system.get("io") if system.get("io") in ("read", "write") else "read"
+    return {**_NO_SYSTEM, "io": io, "how": "unspecified", "name": str(system.get("name") or "")}
+
+
+def _loops_with_body(answer: Mapping[str, Any]) -> set[str]:
+    """The ids of the loops some node runs in_loop of."""
+    return {str(n["in_loop"]) for n in answer.get("nodes") or [] if n.get("in_loop")}
 
 
 def _check_split_steps(answer: dict[str, Any]) -> list[str]:
@@ -1345,12 +1374,14 @@ def _check_call(
         name = str(system.get("name", ""))
         if not name or not _mentions(name, step_text):
             out.append(f"{where}: the product {name!r} is not named in its section")
-    else:
+    elif how != "unspecified":
+        # unspecified needs no evidence: a system the skill names only by its
+        # kind ("the CRM") has no code to call, so the compiled skill's agent
+        # makes the call with its own tools (a DO step) and a workflow runtime
+        # gets a stub to fill in.
         out.append(
-            f"{where}: it {io}s a system the skill never identifies (how={how!r}), so no "
-            "code can call it. Make it a node that works on data it has: what a write "
-            "would deliver is returned as the pipeline's output, and a read's data "
-            "comes from pipeline.input"
+            f"{where}: an external_call reaches a system, so how is not {how!r}; use "
+            "unspecified when the skill never names one"
         )
     return out
 
@@ -1652,9 +1683,10 @@ def resolve(
 ) -> tuple[dict[str, Any], list[str]]:
     """``answer`` with every remaining contradiction removed the safe way, and what changed.
 
-    Nothing here guesses a better answer: an unverifiable call becomes a node
-    that works on the data it has, an unknown reference is dropped, an
-    unsupported constant or argument is left out."""
+    Nothing here guesses a better answer: an unverifiable call stays a call to
+    a system no evidence identifies (the compiled skill's agent makes it with
+    its own tools), an unknown reference is dropped, an unsupported constant
+    or argument is left out."""
     units = {u.index: u for u in skill.units}
     by_tool: dict[str, list[str]] = {}
     for server, tool in declared:
@@ -1664,6 +1696,7 @@ def resolve(
     ids: set[str] = set()
     signals: set[str] = set()
     ui_session = False
+    loops_with_body = _loops_with_body(answer)
     for raw in answer.get("nodes") or []:
         n = json.loads(json.dumps(raw))
         u = units.get(n.get("section"))
@@ -1778,25 +1811,29 @@ def resolve(
                     p["name"] for p in params or [] if p["required"] and p["name"] not in bound
                 )
                 if unbound:
-                    # A call missing a required argument fails on every run.
-                    n["kind"] = "pure_function"
-                    n["system"] = dict(_NO_SYSTEM)
+                    # A call missing a required argument fails on every run, so
+                    # it is not bound to the tool. It stays a call, which the
+                    # compiled skill's agent makes with its own tools.
+                    n["system"] = _unbound_call(system)
                     n["args"] = []
                     notes.append(
                         f"`{nid}` would call {system['tool']}, but no source was found for its "
-                        f"required {unbound}. No call was compiled for it: {'; '.join(problems)}"
+                        f"required {unbound}. It was not bound to the tool, so the agent makes "
+                        f"the call with its own tools: {'; '.join(problems)}"
                     )
                 else:
                     notes.append(f"`{nid}`: {'; '.join(problems)}")
             elif problems:
-                n["kind"] = "pure_function"
-                n["system"] = dict(_NO_SYSTEM)
+                # The step reaches a system the evidence does not identify. It
+                # stays a call: as a pure_function it would have no data to
+                # work on, and a module with nothing to read is a stub.
+                n["system"] = _unbound_call(system)
                 n["args"] = []
                 notes.append(
                     f"`{nid}` would {system.get('io', 'reach')} "
                     f"{system.get('name') or 'an outside system'}, but the skill declares "
-                    "no tool and names no system for it. No call was compiled for it; "
-                    "declare the tool if it needs one"
+                    "no tool and names no system for it, so the agent makes the call with "
+                    f"its own tools: {'; '.join(problems)}"
                 )
         else:
             n["system"] = dict(_NO_SYSTEM)
@@ -1844,6 +1881,18 @@ def resolve(
             if dropped:
                 notes.append(f"`{nid}`: dropped loop tools no server declares: {dropped}")
             n["loop"] = lp
+            if not lp["tools"] and nid not in loops_with_body:
+                # A loop with nothing to call cannot run on any runtime. Its
+                # work becomes one call the compiled skill's agent makes with
+                # its own tools.
+                n["kind"] = "external_call"
+                n["loop"] = {"tools": [], "stop_condition": "", "max_iterations": 0}
+                n["system"] = _unbound_call({"io": "read"})
+                n["args"] = []
+                notes.append(
+                    f"`{nid}` was an agent_loop with no declared tool to call. It is now one "
+                    "call the agent makes with its own tools"
+                )
         ids.add(nid)
         nodes.append(n)
     if sample is not None and sample.gates:

@@ -211,16 +211,86 @@ def test_an_undeclared_tool_goes_back_for_repair(skill: Any) -> None:
     assert rec.first_answer == bad and rec.answer == good_answer()
 
 
-def test_a_write_to_an_unidentified_system_ends_as_output(skill: Any) -> None:
+def test_a_call_to_a_system_named_only_by_kind_stays_a_call(skill: Any) -> None:
+    """ "Send the digest to the finance team" names no system rote can reach. It
+    is still a call, which the compiled skill's agent makes with its own tools
+    (a DO step). The pass used to be told to read such data from the run's
+    input, and connector-style skills ("the CRM") compiled to stubs."""
     unspecified = {"io": "write", "how": "unspecified", "name": "finance", "server": "", "tool": ""}
     answer = good_answer()
     answer["nodes"].append(node("send_digest", 3, "external_call", system=unspecified))
+    plan, rec, fake = run(skill, answer)
+    assert rec.rounds == 1 == len(fake.prompts)
+    assert rec.resolved == []
+    last = plan.nodes[-1]
+    assert (last.id, last.kind, last.mcp) == ("send_digest", "external_call", None)
+
+
+def test_an_external_call_with_how_none_goes_back(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = good_answer()
+    answer["nodes"].append(node("send_digest", 3, "external_call", system={**NONE, "io": "write"}))
+    assert structure.check(answer, skill, SKILL, declared) == [
+        "node send_digest: an external_call reaches a system, so how is not 'none'; use "
+        "unspecified when the skill never names one"
+    ]
+
+
+def test_an_unverifiable_call_resolves_to_a_call_not_a_stub(skill: Any) -> None:
+    """A call whose evidence fails every repair stays a call to an unidentified
+    system. As a pure_function it had no data and compiled to a stub, which
+    the compiled skill refuses at emit."""
+    named = {"io": "read", "how": "public_api", "name": "Salesforce", "server": "", "tool": ""}
+    answer = good_answer()
+    answer["nodes"].append(node("pull_accounts", 3, "external_call", system=named))
     plan, rec, fake = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
     assert rec.rounds == structure.REPAIR_ROUNDS + 1 == len(fake.prompts)
     last = plan.nodes[-1]
-    assert (last.id, last.kind, last.mcp) == ("send_digest", "pure_function", None)
-    assert any("send_digest" in r and "No call was compiled" in r for r in rec.resolved)
-    assert any(r.startswith("structure pass: `send_digest`") for r in plan.review)
+    assert (last.id, last.kind, last.mcp) == ("pull_accounts", "external_call", None)
+    resolved = pipeline_doc(plan)["nodes"][-1]
+    assert resolved["kind"] == "external_call"
+    assert any(
+        "`pull_accounts` would read Salesforce" in r and "with its own tools" in r
+        for r in rec.resolved
+    )
+    assert any(r.startswith("structure pass: `pull_accounts`") for r in plan.review)
+
+
+def test_a_loop_with_no_declared_tool_goes_back(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = good_answer()
+    answer["nodes"].append(node("check_notes", 2, "agent_loop", mandatory=False))
+    assert structure.check(answer, skill, SKILL, declared) == [
+        "node check_notes: an agent_loop calls declared tools, and this one names none "
+        "(declared: ['search_messages']), so no runtime can run it. If it works on a system "
+        "no declared tool reaches, make it one external_call with how public_api or "
+        "unspecified: the agent running the compiled skill does it with its own tools"
+    ]
+    # A loop that calls an in_loop node has something to call.
+    with_body = copy.deepcopy(answer)
+    with_body["nodes"].append(
+        node("score_note", 2, "llm_judge", in_loop="check_notes", mandatory=False)
+    )
+    assert structure.check(with_body, skill, SKILL, declared) == []
+
+
+def test_a_loop_left_with_nothing_to_call_becomes_one_call(skill: Any) -> None:
+    """The structure pass gave such a loop a placeholder tool no server offers,
+    and the compiled skill refused it at emit after a paid compile."""
+    answer = good_answer()
+    answer["nodes"].append(
+        node(
+            "research",
+            2,
+            "agent_loop",
+            mandatory=False,
+            loop={"tools": ["web_search"], "stop_condition": "", "max_iterations": 0},
+        )
+    )
+    plan, rec, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
+    research = next(n for n in plan.nodes if n.id == "research")
+    assert (research.kind, research.tools, research.mcp) == ("external_call", [], None)
+    assert any("`research` was an agent_loop with no declared tool" in r for r in rec.resolved)
 
 
 @pytest.mark.parametrize(
@@ -253,7 +323,14 @@ def test_a_write_to_an_unidentified_system_ends_as_output(skill: Any) -> None:
         ),
         (
             lambda a: a["nodes"].append(
-                node("research", 2, "agent_loop", mandatory=True, reads=["fetch_emails"])
+                node(
+                    "research",
+                    2,
+                    "agent_loop",
+                    mandatory=True,
+                    reads=["fetch_emails"],
+                    loop={**NO_LOOP, "tools": ["search_messages"]},
+                )
             ),
             "node research: an agent_loop cannot be mandatory (IR invariant)",
         ),
@@ -362,7 +439,10 @@ def test_resolve_never_ships_what_check_rejects(skill: Any) -> None:
     answer["nodes"].append(node("review_gate", 3, "hitl_gate", gate=gate))
     fixed, notes = structure.resolve(answer, skill, SKILL, declared, sample)
     by_id = {n["id"]: n for n in fixed["nodes"]}
-    assert by_id["fetch_emails"]["kind"] == "pure_function"
+    # A call no source binds is not bound to the tool; it stays a call.
+    assert by_id["fetch_emails"]["kind"] == "external_call"
+    assert by_id["fetch_emails"]["system"]["how"] == "unspecified"
+    assert by_id["fetch_emails"]["args"] == []
     assert any(n.startswith("`fetch_emails` would call search_messages") for n in notes)
     assert "invented" not in by_id
     assert any("dropped node 'invented'" in n for n in notes)
@@ -915,6 +995,9 @@ def test_literals_and_placeholder_loop_tools_reach_review(skill: Any) -> None:
             loop={"tools": ["web_search"], "stop_condition": "", "max_iterations": 0},
         )
     )
+    answer["nodes"].append(
+        node("score_source", 2, "llm_judge", in_loop="research", mandatory=False)
+    )
     plan, rec, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
     assert any(
         "`research`: dropped loop tools no server declares: ['web_search']" in r
@@ -1256,9 +1339,9 @@ def test_an_mcp_calls_result_keys_are_never_the_models(skill: Any) -> None:
 def test_a_structure_note_gets_its_own_open_question_title(skill: Any, tmp_path: Path) -> None:
     from rote.compiler.system1 import report_extras
 
-    unspecified = {"io": "write", "how": "unspecified", "name": "finance", "server": "", "tool": ""}
+    named = {"io": "write", "how": "public_api", "name": "Salesforce", "server": "", "tool": ""}
     answer = good_answer()
-    answer["nodes"].append(node("send_digest", 3, "external_call", system=unspecified))
+    answer["nodes"].append(node("send_digest", 3, "external_call", system=named))
     plan, _, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
     work = tmp_path / "work"
     work.mkdir()
