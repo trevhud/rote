@@ -136,27 +136,59 @@ def test_a_do_step_that_reads_another_is_its_own_block(tmp_path: Path) -> None:
     assert '{"sales":{"total":900}}' in nxt
 
 
-def test_a_bad_answer_is_asked_again_alone_with_the_ones_before_it_kept(pulse: Path) -> None:
+def test_a_bad_answer_is_asked_again_alone_and_the_valid_ones_are_kept(pulse: Path) -> None:
     block = _start(pulse)
     again = _answer(pulse, block, {"refunds": {"total": 150}, "sales": {"total": "lots"}})
     fields = header(again)
     assert (fields["kind"], fields["step"], "steps" in fields) == ("DO", "sales", False)
-    assert "Your answer to sales did not validate. The steps before it are recorded." in again
+    assert fields["attempt"] == "2"
+    assert "Recorded: refunds. Do not do those again. Answer only sales now" in again
+    assert "- answer.sales.total:" in again
     assert "--- STEP ---\nPull sales from the store." in again
     assert set(journal(again)["answers"]) == {"refunds"}
     done = _answer(pulse, again, {"total": 900})
     assert result_of(done) == {"report": {"net": 750}}
 
 
+def test_a_failing_step_never_drops_a_valid_answer_after_it(tmp_path: Path) -> None:
+    """A DO step may write: asking again for one already answered would have
+    the agent do it twice. The steps share a wave, so the order is not why."""
+    three = _pipeline(_pull("sales"), _pull("refunds"), _pull("fees"))
+    skill = _skill(tmp_path, three)
+    block = _start(skill)
+    assert header(block)["steps"] == "fees,refunds,sales"
+    value = {"fees": {"total": 5}, "refunds": {"total": "x"}, "sales": {"total": 900}}
+    again = _answer(skill, block, value)
+    assert set(journal(again)["answers"]) == {"fees", "sales"}
+    assert (header(again)["step"], "steps" in header(again)) == ("refunds", False)
+    assert "Recorded: fees, sales." in again
+    done = _answer(skill, again, {"total": 150})
+    assert result_of(done) == {"report": {"net": 750}}
+
+
+def test_several_failures_are_asked_again_together(tmp_path: Path) -> None:
+    three = _pipeline(_pull("sales"), _pull("refunds"), _pull("fees"))
+    skill = _skill(tmp_path, three)
+    block = _start(skill)
+    again = _answer(skill, block, {"fees": {"total": 5}, "refunds": {"total": "x"}})
+    fields = header(again)
+    assert (fields["kind"], fields["step"], fields["steps"]) == ("DO", "refunds", "refunds,sales")
+    assert "- answer: missing sales" in again
+    assert "--- STEP fees ---" not in again
+    done = _answer(skill, again, {"refunds": {"total": 150}, "sales": {"total": 900}})
+    assert result_of(done) == {"report": {"net": 750}}
+
+
 def test_an_answer_not_keyed_by_step_is_asked_again_whole(pulse: Path) -> None:
     block = _start(pulse)
-    again = _answer(pulse, block, {"refunds": {"total": 150}})
+    again = _answer(pulse, block, [1, 2])
     fields = header(again)
     assert (fields["kind"], fields["step"], fields["attempt"]) == ("DO", "refunds", "2")
-    assert "- answer: missing sales" in again
+    assert "- answer: expected an object keyed by step id (refunds, sales)" in again
     assert journal(again)["answers"] == {}
-    stray = _answer(pulse, block, [1, 2])
-    assert "- answer: expected an object keyed by step id (refunds, sales)" in stray
+    missing = _answer(pulse, block, {"refunds": {"total": 150}})
+    assert (header(missing)["step"], header(missing)["attempt"]) == ("sales", "3")
+    assert set(journal(missing)["answers"]) == {"refunds"}
 
 
 def test_resume_shows_the_same_block(pulse: Path) -> None:
@@ -198,3 +230,16 @@ def test_a_fanned_do_step_is_asked_alone() -> None:
         {"block": "DO", "steps": ["refunds"]},
         {"block": "DO", "steps": ["sales"], "fanned": True},
     ]
+
+
+def test_the_attempt_cap_holds_across_the_steps_asked_again(pulse: Path) -> None:
+    """The steps asked again carry the block's attempt count, so an answer
+    that keeps failing ends the run instead of being asked forever."""
+    block = _start(pulse)
+    bad = {"refunds": {"total": 150}, "sales": {"total": "lots"}}
+    again = _answer(pulse, block, bad)
+    again = _answer(pulse, again, {"total": "still lots"})
+    assert header(again)["attempt"] == "3"
+    end = _answer(pulse, again, {"total": "no"})
+    assert header(end)["kind"] == "ERROR", end
+    assert "3 answers did not validate" in end
