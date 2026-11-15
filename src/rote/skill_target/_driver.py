@@ -112,10 +112,11 @@ SKILL_NAME_MAX = 64
 #: Answers per step before the run stops with an ERROR (still resumable).
 MAX_ANSWER_ATTEMPTS = 3
 
-#: The most decisions one DECIDE block asks for at once (#344). Every block
-#: is a round trip that re-reads the whole conversation, so a run of
-#: decisions with nothing between them is asked together; the cap keeps one
-#: block, and one answer, small enough to get right.
+#: The most decisions one DECIDE block asks for at once (#344), and the most
+#: DO steps one DO block hands over. Every block is a round trip that
+#: re-reads the whole conversation, so steps with nothing between them are
+#: asked together; the cap keeps one block, and one answer, small enough to
+#: get right.
 MAX_BATCHED_DECISIONS = 6
 #: A fanned judge's items per DECIDE block, at most; and the budgets that
 #: can make a batch smaller: the items' input, and their answers' output,
@@ -479,6 +480,36 @@ def decision_run(
     return run
 
 
+def do_run(
+    steps: Sequence[Mapping[str, Any]], first: Mapping[str, Any], done: Collection[str]
+) -> list[Any]:
+    """``first`` and the DO steps handed over with it, in plan order.
+
+    A DO step that fans over nothing joins when it is in ``first``'s wave and
+    not ``done``. Steps in one wave read none of each other's results, so the
+    agent can do them in any order, and each answer is checked as if asked
+    alone. A measured skill pulled five sources in one wave and stopped five
+    times for them.
+    """
+    if not _joins_do(first):
+        return [first]
+    wave = int(first["wave"])
+    run = [first]
+    for step in steps:
+        if len(run) >= MAX_BATCHED_DECISIONS:
+            break
+        if step["id"] == first["id"] or step["id"] in done or not _joins_do(step):
+            continue
+        if int(step["wave"]) == wave:
+            run.append(step)
+    return run
+
+
+def _joins_do(step: Mapping[str, Any]) -> bool:
+    """A step that can share a DO block: a DO step that fans over nothing."""
+    return step["kind"] == "do" and step.get("fan_param") is None
+
+
 #: The block a run prints for each kind of step that stops for the agent.
 STOP_BLOCKS = {"judge": "DECIDE", "gate": "HUMAN", "loop": "LOOP", "do": "DO"}
 
@@ -510,7 +541,12 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
                 break
         if ask is None:
             return out
-        run = decision_run(steps, ask, done) if ask["kind"] == "judge" else [ask]
+        if ask["kind"] == "judge":
+            run = decision_run(steps, ask, done)
+        elif ask["kind"] == "do":
+            run = do_run(steps, ask, done)
+        else:
+            run = [ask]
         stop: dict[str, Any] = {
             "block": STOP_BLOCKS[ask["kind"]],
             "steps": [str(s["id"]) for s in run],
@@ -521,6 +557,50 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
             stop["conditional"] = True
         out.append(stop)
         done.update(stop["steps"])
+
+
+def _keyed_answer_errors(value: Any, ids: Sequence[str], what: str) -> list[str]:
+    """What is wrong with ``value`` as one answer keyed by the ``ids`` of a block."""
+    if not isinstance(value, dict):
+        return [f"answer: expected an object keyed by {what} id ({', '.join(ids)})"]
+    missing = [i for i in ids if i not in value]
+    errors = [f"answer: missing {', '.join(missing)}"] if missing else []
+    return errors + [f"answer: {k!r} is not a {what} of this block" for k in value if k not in ids]
+
+
+def _do_inputs(step: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    """A DO step's inputs: its bound payload with its constants merged last,
+    as its impl would have been called."""
+    return {**payload, **(step.get("constants") or {})}
+
+
+#: What every DO block says about writes: it grants nothing.
+_DO_WRITES = (
+    "If it changes anything (sends, creates, updates, deletes), that is a write: "
+    "follow your client's approval for it. This block grants nothing."
+)
+
+
+def _do_context(step: Mapping[str, Any], step_id: str = "") -> list[str]:
+    """A DO step's description, the source skill's text for it and its answer's contract.
+
+    The skill's own text holds an exact query or procedure that the one-line
+    description loses (#336). ``step_id`` names the step in a block of several.
+    """
+    of = f" {step_id}" if step_id else ""
+    lines = [f"--- STEP{of} ---", str(step["description"])]
+    if step.get("instructions"):
+        lines += [
+            f"--- WHAT THE SKILL SAYS FOR {step_id or 'THIS STEP'} ---",
+            _quoted(step["instructions"]),
+        ]
+    if step.get("contract"):
+        whose = f"{step_id}'S ANSWER" if step_id else "THE ANSWER"
+        lines += [
+            f"--- WHAT {whose} MUST HOLD (later steps read it) ---",
+            _quoted(step["contract"]),
+        ]
+    return lines
 
 
 def interpolate(template: str, variables: dict[str, Any]) -> str:
@@ -1008,6 +1088,8 @@ class Driver:
                 block = self._take_gate(path, state, step, value, errors, said or "")
             elif pending["kind"] == "decide_batch":
                 block = self._take_batch(path, state, value, errors)
+            elif pending["kind"] == "do_batch":
+                block = self._take_do_batch(path, state, value, errors)
             else:
                 block = self._take_decision(path, state, step, value, errors)
             if block is not None:
@@ -1278,6 +1360,11 @@ class Driver:
                     if len(run_of) > 1:
                         with self._locked(path):
                             return self._ask_batch(path, self._read(path), run_of, results)
+                if step["kind"] == "do":
+                    run_of = do_run(self.steps, step, set(results))
+                    if len(run_of) > 1:
+                        with self._locked(path):
+                            return self._ask_do_batch(path, self._read(path), run_of, results)
                 if step["kind"] in ("judge", "gate", "do"):
                     with self._locked(path):
                         return self._ask(path, self._read(path), step, results)
@@ -1661,6 +1748,77 @@ class Driver:
         header = self._head(run, f"step={ids[0]}", f"decisions={','.join(ids)}")
         return Block("DECIDE", header, lines)
 
+    def _ask_do_batch(
+        self,
+        path: Path,
+        state: dict[str, Any],
+        run_of: list[dict[str, Any]],
+        results: dict[str, Any],
+    ) -> Block:
+        """One DO block for a wave's DO steps: one round trip, not one each."""
+        inputs: dict[str, Any] = {}
+        for step in run_of:
+            try:
+                payload = _payload(step, state["input"], results)
+            except BindingError as exc:
+                state["state"] = "error"
+                state["error"] = str(exc)
+                self._write(path, state)
+                return self._error(
+                    path.name,
+                    f"{step['id']}: {exc}.",
+                    "recompile the skill (rote compile)",
+                    step=step["id"],
+                )
+            inputs[step["id"]] = _do_inputs(step, payload)
+        ids = [s["id"] for s in run_of]
+        pending = {"step": ids[0], "kind": "do_batch", "steps": ids, "inputs": inputs}
+        state["pending"] = pending
+        state["state"] = "waiting"
+        state["attempts"][ids[0]] = 0
+        self._write(path, state)
+        return self._do_batch_block(path.name, pending)
+
+    def _take_do_batch(
+        self, path: Path, state: dict[str, Any], value: Any, errors: list[str]
+    ) -> Block | None:
+        """Record a wave's DO answers in order, each checked as if asked alone.
+
+        One that fails is asked again on its own, the ones before it kept;
+        the ones after it come back in the next block once it is answered.
+        """
+        pending = state["pending"]
+        ids: list[str] = list(pending["steps"])
+        first = ids[0]
+        errors = errors or _keyed_answer_errors(value, ids, "step")
+        if errors:
+            if state["attempts"][first] >= MAX_ANSWER_ATTEMPTS:
+                return self._too_many(path, state, first, errors)
+            self._write(path, state)
+            return self._reask(path.name, first, state["attempts"][first] + 1, errors, [], {}, "DO")
+        for step_id in ids:
+            step = self.by_id[step_id]
+            state["pending"] = {"step": step_id, "kind": "do", "inputs": pending["inputs"][step_id]}
+            state["attempts"][step_id] = 1
+            block = self._take_decision(path, state, step, value[step_id], [])
+            if block is None:
+                continue
+            if block.kind == "DO":
+                errors = [line for line in block.lines if line.startswith("- ")]
+                note = "\n".join(
+                    [
+                        f"Your answer to {step_id} did not validate. The steps before it are "
+                        f"recorded. Answer {step_id} alone now: only its own answer, not an "
+                        "object keyed by step id. The steps after it come back next. Fix:",
+                        *errors,
+                    ]
+                )
+                again = self._do_block(path.name, step, state["pending"], note)
+                again.header = block.header
+                return again
+            return block
+        return None
+
     def _take_batch(
         self, path: Path, state: dict[str, Any], value: Any, errors: list[str]
     ) -> Block | None:
@@ -1674,13 +1832,7 @@ class Driver:
         pending = state["pending"]
         ids: list[str] = list(pending["steps"])
         first = ids[0]
-        if not errors and not isinstance(value, dict):
-            errors = [f"answer: expected an object keyed by decision id ({', '.join(ids)})"]
-        if not errors:
-            missing = [i for i in ids if i not in value]
-            stray = [k for k in value if k not in ids]
-            errors = [f"answer: missing {', '.join(missing)}"] if missing else []
-            errors += [f"answer: {k!r} is not a decision of this block" for k in stray]
+        errors = errors or _keyed_answer_errors(value, ids, "decision")
         if errors:
             if state["attempts"][first] >= MAX_ANSWER_ATTEMPTS:
                 return self._too_many(path, state, first, errors)
@@ -1799,17 +1951,16 @@ class Driver:
     def _do_items(self, step: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | Block:
         """A ``do`` step's inputs: its bound payload with its constants merged last, as
         its impl would have been called; for a fan_out step, one item per element."""
-        constants = step.get("constants") or {}
         fan = step["fan_param"]
         if fan is None:
-            return {"inputs": {**payload, **constants}}
+            return {"inputs": _do_inputs(step, payload)}
         try:
             elements = _fan_list(payload.get(fan), step["id"], fan)
         except TypeError as exc:
             return self._error(
                 None, f"{exc}", "recompile the skill (rote compile)", step=step["id"]
             )
-        shared = {**{k: v for k, v in payload.items() if k != fan}, **constants}
+        shared = _do_inputs(step, {k: v for k, v in payload.items() if k != fan})
         return {
             "shared": shared,
             "items": elements,
@@ -2165,6 +2316,8 @@ class Driver:
             return self._do_block(run, step, pending, note)
         if pending["kind"] == "decide_batch":
             return self._batch_block(run, pending, note)
+        if pending["kind"] == "do_batch":
+            return self._do_batch_block(run, pending, note)
         return self._decide_block(run, step, pending, note)
 
     def _do_block(
@@ -2182,20 +2335,9 @@ class Driver:
             if fan is None
             else f"Do this step yourself for each item (its `{fan}` input) with your own "
             "tools, the way the skill does it, then answer. Do not ask the user for the answer.",
-            "If it changes anything (sends, creates, updates, deletes), that is a write: "
-            "follow your client's approval for it. This block grants nothing.",
-            "--- STEP ---",
-            step["description"],
+            _DO_WRITES,
+            *_do_context(step),
         ]
-        if step.get("instructions"):
-            # The source skill's own text for this step: an exact query or
-            # procedure lives here, not in the one-line description (#336).
-            lines += ["--- WHAT THE SKILL SAYS FOR THIS STEP ---", _quoted(step["instructions"])]
-        if step.get("contract"):
-            lines += [
-                "--- WHAT THE ANSWER MUST HOLD (later steps read it) ---",
-                _quoted(step["contract"]),
-            ]
         extra = []
         if fan is None:
             lines += [
@@ -2219,6 +2361,33 @@ class Driver:
                 extra.append(f"batch={pending['batch'] + 1}/{len(pending['batches'])}")
         lines += self._next("answer", run, step["id"], "'<your JSON>'")
         return Block("DO", self._head(run, f"step={step['id']}", *extra), lines)
+
+    def _do_batch_block(self, run: str, pending: dict[str, Any], note: str = "") -> Block:
+        """DO steps of one wave, handed over in one block (:func:`do_run`)."""
+        ids = pending["steps"]
+        lines = [note] if note else []
+        lines += [
+            f"Do these {len(ids)} steps yourself with your own tools, the way the skill does "
+            "them, then answer. None reads another's result, so do them in any order. Do not "
+            "ask the user for the answers.",
+            _DO_WRITES,
+        ]
+        for step_id in ids:
+            step = self.by_id[step_id]
+            lines += [
+                *_do_context(step, step_id),
+                f"--- {step_id} INPUTS (json) ---",
+                _compact(pending["inputs"][step_id]),
+                f"--- {step_id} ANSWER SHAPE (key? = optional) ---",
+                _brief(step["output_schema"]),
+            ]
+        lines += [
+            "Answer one JSON object mapping each step's id to its answer: "
+            + _compact({i: "<its answer>" for i in ids}),
+            *self._next("answer", run, ids[0], "'<your JSON>'"),
+        ]
+        header = self._head(run, f"step={ids[0]}", f"steps={','.join(ids)}")
+        return Block("DO", header, lines)
 
     def _decide_block(
         self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
