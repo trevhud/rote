@@ -291,6 +291,43 @@ def test_a_loop_left_with_nothing_to_call_becomes_one_call(skill: Any) -> None:
     research = next(n for n in plan.nodes if n.id == "research")
     assert (research.kind, research.tools, research.mcp) == ("external_call", [], None)
     assert any("`research` was an agent_loop with no declared tool" in r for r in rec.resolved)
+    doc = next(n for n in pipeline_doc(plan)["nodes"] if n["id"] == "research")
+    assert not doc.get("loop_body") and not doc.get("termination") and not doc.get("tools")
+    Pipeline.model_validate(pipeline_doc(plan))
+
+
+def test_a_loop_whose_body_resolve_takes_out_becomes_one_call(skill: Any) -> None:
+    """Its body was a mandatory step, which resolve() moves out of the loop:
+    the loop is then left with nothing to call, like one that never had a body."""
+    answer = good_answer()
+    answer["nodes"].append(node("check_notes", 2, "agent_loop", mandatory=False))
+    answer["nodes"].append(node("score_note", 2, "llm_judge", in_loop="check_notes"))
+    plan, rec, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
+    loop = next(n for n in plan.nodes if n.id == "check_notes")
+    assert (loop.kind, loop.tools) == ("external_call", [])
+    assert any("`check_notes` was an agent_loop" in r for r in rec.resolved)
+
+
+def test_unspecified_is_refused_when_the_section_names_a_declared_tool(skill: Any) -> None:
+    """Relabeling a call the skill binds to a declared tool as unspecified
+    would make a call rote runs in code into a DO stop on every run."""
+    named = replace(
+        skill,
+        units=[
+            replace(u, mcp=[("gmail", "search_messages")]) if u.index == 1 else u
+            for u in skill.units
+        ],
+    )
+    declared = structure.declared_tools(named, TOOLS)
+    answer = good_answer()
+    answer["nodes"][0]["system"] = {**NONE, "io": "read", "how": "unspecified", "name": "Gmail"}
+    answer["nodes"][0]["args"] = []
+    assert structure.check(answer, named, SKILL, declared) == [
+        "node fetch_emails: how is unspecified, but its section names the declared tool(s) "
+        "['gmail.search_messages']; bind it with how declared_tool"
+    ]
+    # The skill names no tool there: unspecified needs no evidence.
+    assert structure.check(answer, skill, SKILL, declared) == []
 
 
 @pytest.mark.parametrize(

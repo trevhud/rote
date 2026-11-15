@@ -336,7 +336,8 @@ Per node:
   system is an external_call however the skill names it, even when no
   declared tool reaches it: the agent running the compiled skill makes the
   call with its own tools. Never turn it into a pure_function, and never
-  take the data it reads from pipeline.input. Use io "none" and how "none"
+  take the data it reads from pipeline.input, unless the SAMPLE INPUT
+  already carries that data. Use io "none" and how "none"
   for every node that is not an external_call.
 - args: for a declared_tool call, where each tool parameter's value comes
   from. Bind every required parameter. Sources: input_field (value = a field
@@ -1374,11 +1375,23 @@ def _check_call(
         name = str(system.get("name", ""))
         if not name or not _mentions(name, step_text):
             out.append(f"{where}: the product {name!r} is not named in its section")
-    elif how != "unspecified":
-        # unspecified needs no evidence: a system the skill names only by its
-        # kind ("the CRM") has no code to call, so the compiled skill's agent
-        # makes the call with its own tools (a DO step) and a workflow runtime
-        # gets a stub to fill in.
+    elif how == "unspecified":
+        # A system the skill names only by its kind ("the CRM") needs no
+        # evidence: it has no code to call, so the compiled skill's agent makes
+        # the call with its own tools (a DO step) and a workflow runtime gets a
+        # stub to fill in. One whose section names a declared tool is
+        # identified, though: unspecified would turn a call rote runs in code
+        # into a DO stop on every run.
+        named = sorted(
+            {t for t in (u.tools if u is not None else []) if t in by_tool}
+            | {f"{sv}.{t}" for sv, t in (u.mcp if u is not None else []) if t in by_tool}
+        )
+        if named:
+            out.append(
+                f"{where}: how is unspecified, but its section names the declared tool(s) "
+                f"{named}; bind it with how declared_tool"
+            )
+    else:
         out.append(
             f"{where}: an external_call reaches a system, so how is not {how!r}; use "
             "unspecified when the skill never names one"
@@ -1696,7 +1709,6 @@ def resolve(
     ids: set[str] = set()
     signals: set[str] = set()
     ui_session = False
-    loops_with_body = _loops_with_body(answer)
     for raw in answer.get("nodes") or []:
         n = json.loads(json.dumps(raw))
         u = units.get(n.get("section"))
@@ -1881,20 +1893,26 @@ def resolve(
             if dropped:
                 notes.append(f"`{nid}`: dropped loop tools no server declares: {dropped}")
             n["loop"] = lp
-            if not lp["tools"] and nid not in loops_with_body:
-                # A loop with nothing to call cannot run on any runtime. Its
-                # work becomes one call the compiled skill's agent makes with
-                # its own tools.
-                n["kind"] = "external_call"
-                n["loop"] = {"tools": [], "stop_condition": "", "max_iterations": 0}
-                n["system"] = _unbound_call({"io": "read"})
-                n["args"] = []
-                notes.append(
-                    f"`{nid}` was an agent_loop with no declared tool to call. It is now one "
-                    "call the agent makes with its own tools"
-                )
         ids.add(nid)
         nodes.append(n)
+    # After every node is settled: resolving can drop a loop's body nodes or
+    # take them out of the loop.
+    with_body = _loops_with_body({"nodes": nodes})
+    for n in nodes:
+        if n["kind"] == "agent_loop" and not n["loop"]["tools"] and n["id"] not in with_body:
+            # A loop with nothing to call cannot run on any runtime. Its work
+            # becomes one call the compiled skill's agent makes with its own
+            # tools. Whether it writes is not known: the DO block tells the
+            # agent to follow its client's approval for any write.
+            n["kind"] = "external_call"
+            n["loop"] = {"tools": [], "stop_condition": "", "max_iterations": 0}
+            n["system"] = _unbound_call({"io": "read"})
+            n["args"] = []
+            notes.append(
+                f"`{n['id']}` was an agent_loop with no declared tool to call. It is now one "
+                "call the agent makes with its own tools; rote did not decide whether it "
+                "reads or writes"
+            )
     if sample is not None and sample.gates:
         notes += _gates_from_sample(nodes, sample)
     notes += _resolve_gate_shows(nodes, answer, sample)
