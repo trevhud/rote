@@ -59,6 +59,14 @@ Asked for a node's interface entry, you answer:
     tool's description ("returns the content as text" is a string,
     "returns the matching threads" is an array) and say in the
     `description` what you inferred.
+  - a node that keeps, filters, flags or lists rows of a table (a sheet,
+    a query result, a list of records) returns each of those rows whole.
+    Besides the fields the skill names, give each item a required `row`
+    field (type `object`) for the source row's own columns as they
+    arrived. The skill lists what to report and rarely the column that
+    says which row it is (a ticket number, an order id), and whoever acts
+    on the result needs it. A node that builds the final result from such
+    items passes each `row` along.
   - the step that consumes a value decides nothing about it: describe
     what the producing step makes, in the skill's own terms.
 - `termination` (only where the message asks for it): the loop's stop
@@ -104,13 +112,16 @@ The module:
    find columns by the names the skill gives (case- and
    whitespace-insensitive), and raise `ValueError` naming a missing
    column. Never return an empty result for input you could not parse.
-7. When the message shows the argument values a recorded run sent the
+7. A `row` field in the output schema holds the source row unchanged:
+   every column it arrived with, under the column's own name, values as
+   given. Never rebuild it from the fields you parsed.
+8. When the message shows the argument values a recorded run sent the
    tool a reader calls, return values of exactly that form. A search
    result's resource id (`ari:cloud:confluence:...:page/5208211471`) is not
    the page id a fetch takes (`5208211471`): convert in code, and test the
    conversion with the recorded form. The skill's wording ("the id from the
    search results") does not override what the tool was really called with.
-8. A `pure_function` stays a stub only when the logic depends on a fact
+9. A `pure_function` stays a stub only when the logic depends on a fact
    the skill does not state (a mapping it never lists). The whole body
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.
