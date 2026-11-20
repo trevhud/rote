@@ -732,6 +732,22 @@ class DriverEvidence:
         }
 
 
+def _reports(written: Any, held: Any) -> bool:
+    """Whether what the agent wrote reports the driver's value.
+
+    The same value, or the same value with object keys left out: a case that
+    asks for three fields of each row gets three, and that changes nothing the
+    driver computed. A changed, added or reordered value is a misreport.
+    """
+    if isinstance(written, Mapping) and isinstance(held, Mapping):
+        return all(k in held and _reports(v, held[k]) for k, v in written.items())
+    if isinstance(written, list) and isinstance(held, list):
+        return len(written) == len(held) and all(
+            _reports(w, h) for w, h in zip(written, held, strict=True)
+        )
+    return bool(proof.canonical(written) == proof.canonical(held))
+
+
 def driver_evidence(
     run_root: Path,
     *,
@@ -821,7 +837,7 @@ def driver_evidence(
         for key, value in agent_output.items():
             if key in driver_values:
                 checked += 1
-                if proof.canonical(value) != proof.canonical(driver_values[key]):
+                if not _reports(value, driver_values[key]):
                     problems.append(
                         f"misreported {key}: the agent wrote {json.dumps(value)[:80]}, the "
                         f"driver's result has {json.dumps(driver_values[key])[:80]}"

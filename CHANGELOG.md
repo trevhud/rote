@@ -11,6 +11,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The paired eval no longer calls it a misreport when the agent leaves keys
+  out of a value the driver computed (a case that asks for three fields of
+  each row gets three). A changed, added or reordered value still is one.
+  Every compiled expense-audit trial had failed on rows the agent had only
+  trimmed, so the eval reported no compiled measurement at all.
+
 - A compiled skill asks the person the next gate's question in the DECIDE
   or DO block before it, when that question is already known: every step
   before the gate is done or in the block, the gate has no `when`, and it
