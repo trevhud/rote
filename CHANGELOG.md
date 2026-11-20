@@ -31,6 +31,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **The paired eval gives a compiled skill's agent its tools when the plan
+  has DO steps.** `rote eval --run --runtime skill` gave the compiled side no
+  MCP server of its own, so a DO step (an external call the agent does with
+  its own tools) could not be done and such a skill could not be measured.
+  The agent now gets the servers the original gets, only when its plan has a
+  DO step.
 - **A tool argument built from a stated value compiles (#341).** The
   structure pass now refuses a constant on a tool call that no argument sends
   (a `-summary` suffix for a note's name), and its repair says to build the
