@@ -581,19 +581,26 @@ _DO_WRITES = (
 )
 
 
-def _do_context(step: Mapping[str, Any], step_id: str = "") -> list[str]:
-    """A DO step's description, the source skill's text for it and its answer's contract.
+def _do_section(step: Mapping[str, Any], names: Sequence[str] = ()) -> list[str]:
+    """The source skill's text for a DO step, headed by the steps it is for.
 
     The skill's own text holds an exact query or procedure that the one-line
-    description loses (#336). ``step_id`` names the step in a block of several.
-    """
+    description loses (#336)."""
+    if not step.get("instructions"):
+        return []
+    whose = ", ".join(names) or "THIS STEP"
+    return [f"--- WHAT THE SKILL SAYS FOR {whose} ---", _quoted(step["instructions"])]
+
+
+def _do_context(step: Mapping[str, Any], step_id: str = "", section: bool = True) -> list[str]:
+    """A DO step's description, the source skill's text for it and its answer's contract.
+
+    ``step_id`` names the step in a block of several, which prints a section
+    its steps share once (``section`` False here)."""
     of = f" {step_id}" if step_id else ""
     lines = [f"--- STEP{of} ---", str(step["description"])]
-    if step.get("instructions"):
-        lines += [
-            f"--- WHAT THE SKILL SAYS FOR {step_id or 'THIS STEP'} ---",
-            _quoted(step["instructions"]),
-        ]
+    if section:
+        lines += _do_section(step, [step_id] if step_id else [])
     if step.get("contract"):
         whose = f"{step_id}'S ANSWER" if step_id else "THE ANSWER"
         lines += [
@@ -771,7 +778,20 @@ class Driver:
     def _next(self, *args: str) -> list[str]:
         return ["--- NEXT ---", " ".join([self.command, *args])]
 
-    # ── the journal ──
+    def _next_do(self, run: str, step: str) -> list[str]:
+        """A DO answer's command, and how to pass an answer that long.
+
+        A DO answer carries what a tool returned, so it is long and holds
+        quotes. Measured agents first staged it in a file or a script their
+        client refused (two refused calls, each retyping the answer) before
+        passing it as the argument. A heredoc on stdin is refused the same
+        way: a client's allow rule for this command matches neither."""
+        return [
+            "Pass your JSON as the one single-quoted argument of the command below, however "
+            "long it is. Only that form is approved for you: no file, no heredoc, no other "
+            "command. Inside the JSON, write an apostrophe as \\u0027.",
+            *self._next("answer", run, step, "'<your JSON>'"),
+        ]
 
     def _dir(self, run: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", run):
@@ -1263,7 +1283,10 @@ class Driver:
         lines += [f"- {e}" for e in errors]
         if missing:
             lines.append("missing items: " + ", ".join(missing))
-        lines += self._next("answer", run, step, "'<your JSON>'")
+        if kind == "DO":
+            lines += self._next_do(run, step)
+        else:
+            lines += self._next("answer", run, step, "'<your JSON>'")
         return Block(kind, self._head(run, f"step={step}", *extra, f"attempt={attempt}"), lines)
 
     # ── running ──
@@ -2382,7 +2405,7 @@ class Driver:
             ]
             if len(pending["batches"]) > 1:
                 extra.append(f"batch={pending['batch'] + 1}/{len(pending['batches'])}")
-        lines += self._next("answer", run, step["id"], "'<your JSON>'")
+        lines += self._next_do(run, step["id"])
         return Block("DO", self._head(run, f"step={step['id']}", *extra), lines)
 
     def _do_batch_block(self, run: str, pending: dict[str, Any], note: str = "") -> Block:
@@ -2395,10 +2418,18 @@ class Driver:
             "ask the user for the answers.",
             _DO_WRITES,
         ]
+        sharing: dict[str, list[str]] = {}
+        for step_id in ids:
+            sharing.setdefault(str(self.by_id[step_id].get("instructions") or ""), []).append(
+                step_id
+            )
         for step_id in ids:
             step = self.by_id[step_id]
+            names = sharing[str(step.get("instructions") or "")]
+            if names[0] == step_id:
+                lines += _do_section(step, names)
             lines += [
-                *_do_context(step, step_id),
+                *_do_context(step, step_id, section=False),
                 f"--- {step_id} INPUTS (json) ---",
                 _compact(pending["inputs"][step_id]),
                 f"--- {step_id} ANSWER SHAPE (key? = optional) ---",
@@ -2407,7 +2438,7 @@ class Driver:
         lines += [
             "Answer one JSON object mapping each step's id to its answer: "
             + _compact({i: "<its answer>" for i in ids}),
-            *self._next("answer", run, ids[0], "'<your JSON>'"),
+            *self._next_do(run, ids[0]),
         ]
         header = self._head(run, f"step={ids[0]}", f"steps={','.join(ids)}")
         return Block("DO", header, lines)

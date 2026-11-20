@@ -85,6 +85,9 @@ Post a follow-up note on the account in the CRM.
 {"name":"Acme Corp","channel":"sales"}
 --- ANSWER SHAPE (key? = optional) ---
 {note_id: string}
+Pass your JSON as the one single-quoted argument of the command below, however long it is. \
+Only that form is approved for you: no file, no heredoc, no other command. Inside the JSON, \
+write an apostrophe as \\u0027.
 --- NEXT ---
 rote skill run crm-notes answer RUN post_note '<your JSON>'
 """
@@ -164,7 +167,7 @@ def test_the_do_block_is_pinned_byte_for_byte(
     _, block = _start(capsys)
     run = header(block)["run"]
     assert block.replace(run, "RUN") == DO_BLOCK
-    assert len(block.encode("utf-8")) == 574
+    assert len(block.encode("utf-8")) == 788
     # status prints the same block again, for an agent that lost track.
     status, again = _cli(capsys, "skill", "run", "crm-notes", "status", run)
     assert status == 0 and again == block
@@ -182,6 +185,9 @@ def test_a_bad_answer_is_asked_again_then_stops_and_resume_asks_afresh(
     assert "- answer: unexpected key 'id'" in again
     assert "note_id" in again.split("Answer again with only these fixed:\n")[1]
     assert f"rote skill run crm-notes answer {run} post_note '<your JSON>'" in again
+    # Asked again, it still says how to pass a long answer: a broken quote is
+    # the likeliest reason the first one did not parse.
+    assert "write an apostrophe as \\u0027.\n--- NEXT ---\n" in again
     _answer(capsys, run, '{"note_id": 17}')
     status, stopped = _answer(capsys, run, "not json")
     assert status == 1 and header(stopped)["kind"] == "ERROR", stopped

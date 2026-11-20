@@ -11,6 +11,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compiled skill's DO block prints a skill section its steps share once,
+  and says how to pass a long answer: as the command's one single-quoted
+  argument, an apostrophe written as `\u0027`. Measured on ops-report with
+  its four reads as DO steps (Sonnet 4.6, 3 trials each): input 189k to 129k
+  tokens, requests 9 to 7, cost $0.367 to $0.296. Before, two of three runs
+  first tried to stage the answer in a file or a script their client refused,
+  retyping it each time. A heredoc on stdin was tried and is refused the same
+  way, so the block rules it out by name.
+
 - **A compiled skill asks a run of decisions in one stop (#344).** Decisions
   with no code step, tool call, gate or DO step between them share one DECIDE
   block: independent ones side by side, and one that reads another's answer
