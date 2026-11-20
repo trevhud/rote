@@ -218,6 +218,7 @@ client (`rote skill run <name> *`).
 rote skill run <name> start '<input json>' | --file <path>
 rote skill run <name> answer <run> <step> '<json>' | --file <path>
     [--said '<the person's words>' | --said-file <path>]          # HUMAN kind=gate only
+    [--with <gate> '<their reply json>']      # a block that also asks the person
 rote skill run <name> tool <run> <step> <tool> '<arguments json>'     # LOOP only
 rote skill run <name> resume <run>        # after a login, or after a crash
 rote skill run <name> status [<run>]      # print the pending block again
@@ -227,6 +228,19 @@ rote skill runs [--prune]                 # list runs, sweep expired ones
 
 A gate answer without `--said` or `--said-file` is refused, and so is
 `--said` on a `DECIDE`, `DO` or `LOOP` answer. Both refusals are usage errors.
+
+A `DECIDE` or `DO` block also asks the person the next gate's question when
+that question is already known (`_driver.gate_ahead`): every step before the
+gate is done or in the block, the gate has no `when`, and it shows nothing the
+block's own steps produce. The block prints the question under `--- ALSO ASK
+THE PERSON (<gate>) ---`, and its `NEXT` command carries the reply beside the
+agent's own answer: `--with <gate> '<their reply json>' --said '<their
+words>'`. The driver keeps the reply in the journal and takes it when the run
+reaches the gate, through the gate's usual checks, so the gate's record is the
+one a `HUMAN` stop would have written. A reply that does not fit prints the
+gate's `HUMAN` block. An answer without `--with` stops at the gate as before.
+`--with` naming a gate the block did not ask, or without `--said`, is a usage
+error that records nothing.
 
 `<name>` resolves through the apps registry (`rote.app_registry`), where
 `rote emit --runtime skill` records the skill dir and `rote skill install

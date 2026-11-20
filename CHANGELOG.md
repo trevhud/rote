@@ -11,6 +11,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compiled skill asks the person the next gate's question in the DECIDE
+  or DO block before it, when that question is already known: every step
+  before the gate is done or in the block, the gate has no `when`, and it
+  shows nothing the block's steps produce. The reply comes back with the
+  agent's own answer (`answer ... --with <gate> '<their reply>' --said
+  '<their words>'`) and goes through the gate's usual checks, so the run
+  does not stop a second time only to ask. Measured on ops-report
+  (`busy_day`, Sonnet 4.6, 3 trials a side): requests 6 to 5, input 90.4k
+  to 76.4k tokens, output, cost and wall time unchanged (3.0k to 3.2k,
+  $0.121 to $0.122, 37 s to 40 s). The original skill used 59.9k input,
+  3.6k output, $0.115. compile-report.md's Stops section names the joined
+  gate.
+
 - A compiled skill's DO block prints a skill section its steps share once,
   and says how to pass a long answer: as the command's one single-quoted
   argument, an apostrophe written as `\u0027`. Measured on ops-report with

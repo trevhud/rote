@@ -291,7 +291,12 @@ def _stops(pipeline: Pipeline, root: Path, extras: ReportExtras) -> list[str]:
         if stop.get("conditional"):
             notes.append("only when its condition holds")
         note = f" ({', '.join(notes)})" if notes else ""
-        lines.append(f"{i}. {stop['block']}: {_BLOCK_WORDS[stop['block']]}, {names}{note}.")
+        also = (
+            f" The same block asks the person `{stop['ahead']}`, so that question costs no stop."
+            if stop.get("ahead")
+            else ""
+        )
+        lines.append(f"{i}. {stop['block']}: {_BLOCK_WORDS[stop['block']]}, {names}{note}.{also}")
     return lines
 
 
