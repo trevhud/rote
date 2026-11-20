@@ -185,6 +185,9 @@ def test_a_bad_answer_is_asked_again_then_stops_and_resume_asks_afresh(
     assert "- answer: unexpected key 'id'" in again
     assert "note_id" in again.split("Answer again with only these fixed:\n")[1]
     assert f"rote skill run crm-notes answer {run} post_note '<your JSON>'" in again
+    # Asked again, it still says how to pass a long answer: a broken quote is
+    # the likeliest reason the first one did not parse.
+    assert "write an apostrophe as \\u0027.\n--- NEXT ---\n" in again
     _answer(capsys, run, '{"note_id": 17}')
     status, stopped = _answer(capsys, run, "not json")
     assert status == 1 and header(stopped)["kind"] == "ERROR", stopped

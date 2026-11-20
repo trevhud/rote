@@ -1283,7 +1283,10 @@ class Driver:
         lines += [f"- {e}" for e in errors]
         if missing:
             lines.append("missing items: " + ", ".join(missing))
-        lines += self._next("answer", run, step, "'<your JSON>'")
+        if kind == "DO":
+            lines += self._next_do(run, step)
+        else:
+            lines += self._next("answer", run, step, "'<your JSON>'")
         return Block(kind, self._head(run, f"step={step}", *extra, f"attempt={attempt}"), lines)
 
     # ── running ──
