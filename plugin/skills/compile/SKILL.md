@@ -47,11 +47,12 @@ expense-audit ran 3.6x faster at 62% less.
 Read the SKILL.md before compiling, and count the steps that need
 judgment: choosing, ranking, summarizing, writing prose. If a run needs
 more than two, tell the user compiling will not pay off and why, and do
-not compile unless they still want to. Count the same way each call to a
-system rote has no MCP server registered for: the compiled skill hands
-that call back to you, and you type its result back. Four such reads
-measured 3x slower and costlier than the same reads made in code, so
-register the server first (`rote mcp import`). rote checks the same thing after
+not compile unless they still want to. Count the same way each call rote
+cannot bind to an MCP tool: the compiled skill hands that call back to
+you, and you type its result back. Four such reads measured 3x slower and
+costlier than the same reads made in code. If the call goes to an MCP
+server, register it and log in first (`rote mcp import`, `rote mcp
+login`). rote checks the same thing after
 its first step and stops (`--compile-anyway` overrides it), so a
 misjudgment costs cents, not a whole compile. This applies to
 `--runtime skill`: on a workflow runtime a judge is an API call, not a

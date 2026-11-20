@@ -1043,9 +1043,12 @@ four reads bound and then unbound, 3 trials a side: the original cost $0.113
 in 47 s, the bound compile $0.118 in 43 s, and the unbound one $0.367 in 142 s
 (7 to 9 requests against 5, 12.7k output tokens against 3.4k). The agent makes
 each call and then types the result back as its answer. The refusal names the
-calls and the fix: register the server (`rote mcp import`) so the driver
-makes them. On `--backend api` the compile writes the calls as code, so none
-is counted. The measurement is of reads; the IR marks no write, so a write
+calls and, for one that goes to an MCP server, the fix: register it and log
+in (`rote mcp import`, `rote mcp login`) so the pass can bind it and the
+driver makes it. A call is also unbound when a required argument has no
+source, or when the step is a file or a web page; those count too. On
+`--backend api` the compile is expected to write the calls as code, so none
+is counted (one it leaves a stub still becomes a DO step). The measurement is of reads; the IR marks no write, so a write
 counts the same. Gates are not counted (the original asks the person too), nor
 `--judges helper` judges (API calls, not round trips), nor loop-body
 sub-nodes. `--compile-anyway` overrides it. `rote try` and `rote setup`

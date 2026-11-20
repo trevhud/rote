@@ -51,8 +51,11 @@ run 3.1x costlier and 3x slower: the agent makes each call, then types every
 result back as its answer, with 7k to 9k thinking tokens spent on that. So,
 as with judges, each call counts and a shared block does not lower the
 count. The measurement is of reads; the IR does not say which calls write,
-so a write counts the same. On ``--backend api`` the compile writes these
-calls as code, and none is counted.
+so a write counts the same. A call is unbound for several reasons (no server
+rote listed offers the tool, a required argument has no source, the step is
+a file or a web page and not a tool), and all count. On ``--backend api``
+the compile is expected to write these calls as code, so none is counted,
+though one it leaves a stub still becomes a DO step.
 
 A human gate is not counted: the original skill stops for the person too.
 Judges answered by the inference helper (``--judges helper``) are API calls,
@@ -87,11 +90,12 @@ class Worth:
         calls = (
             ""
             if not unbound
-            else f" {len(unbound)} of them ({', '.join(unbound)}) call a system no registered "
-            "MCP server reaches: the agent would make each call with its own tools and type "
-            "the result back, which measured 3x slower and costlier than the same calls made "
-            "in code. Register the server (rote mcp import, or rote mcp add) and compile "
-            "again, and the compiled skill makes those calls itself."
+            else f" {len(unbound)} of them ({', '.join(unbound)}) are calls no bound MCP tool "
+            "makes: the agent would make each one with its own tools and type the result "
+            "back, which measured 3x slower and costlier than the same calls made in code. "
+            "Where a call goes to an MCP server, register it (rote mcp import, or rote mcp "
+            "add), log in to it (rote mcp login) and compile again: a call rote can bind to "
+            "a tool is made by the compiled skill itself."
         )
         return (
             f"compiling this skill would not pay off: each run would stop for the model "
@@ -107,8 +111,8 @@ def worth(nodes: Iterable[Any], judges: str | None, backend: str | None) -> Wort
     """The model stops in a plan's ``nodes`` (System-1's NodePlans, each with
     an ``id``, a ``kind`` and its ``mcp`` binding), with judges counted unless
     ``judges`` is ``"helper"``, and an external call with no tool bound
-    counted unless ``backend`` is ``"api"`` (there the compile writes the
-    call as code). Loop-body sub-nodes run inside their loop's stop."""
+    counted unless ``backend`` is ``"api"`` (there the compile is expected to
+    write the call as code). Loop-body sub-nodes run inside their loop's stop."""
     counted = {"agent_loop"} | (set() if judges == "helper" else {"llm_judge"})
     stops: list[tuple[str, str]] = []
     for n in nodes:

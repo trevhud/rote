@@ -17,8 +17,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   counts toward that line like a judge, because the agent must make the call
   and type the result back. Measured on ops-report with its four reads bound
   and then unbound: $0.118 and 43 s against $0.367 and 142 s (the original:
-  $0.113, 47 s). The refusal names the calls and says to register the server
-  (`rote mcp import`), after which the compiled skill makes them itself.
+  $0.113, 47 s). The refusal names the calls. For one that goes to an MCP
+  server, register it and log in (`rote mcp import`, `rote mcp login`): a
+  call rote can bind to a tool is made by the compiled skill itself.
   `--compile-anyway` still overrides it, and `--backend api` compiles are not
   affected.
 - **A compiled skill asks a run of decisions in one stop (#344).** Decisions

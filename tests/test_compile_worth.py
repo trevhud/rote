@@ -78,6 +78,8 @@ def test_a_call_no_tool_is_bound_to_stops_for_the_model_like_a_judge() -> None:
     assert not found.pays_off
     assert worth(_reads(2), "session", "mcp").pays_off
     assert worth(_reads(2), "session", None).stops == worth(_reads(2), "session", "mcp").stops
+    # Helper judges are API calls; an unbound call is still the agent's.
+    assert len(worth([*_reads(3), *_judges(3)], "helper", "mcp").stops) == 3
     # Bound, the driver makes the call; on the api backend, the compile writes it.
     assert worth(_reads(4, BOUND), "session", "mcp").stops == ()
     assert worth(_reads(4), "session", "api").stops == ()
@@ -88,9 +90,9 @@ def test_a_call_no_tool_is_bound_to_stops_for_the_model_like_a_judge() -> None:
 def test_the_refusal_says_how_to_make_unbound_calls_run_in_code() -> None:
     message = worth([*_reads(3), *_judges(1)], "session", "mcp").explain()
     assert "stop for the model 4 times" in message
-    assert "3 of them (read_0, read_1, read_2) call a system no registered MCP server" in message
+    assert "3 of them (read_0, read_1, read_2) are calls no bound MCP tool makes" in message
     assert "rote mcp import" in message and "--compile-anyway" in message
-    assert "no registered MCP server" not in worth(_judges(4), "session", "mcp").explain()
+    assert "no bound MCP tool" not in worth(_judges(4), "session", "mcp").explain()
 
 
 def _compiler(
