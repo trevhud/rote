@@ -685,3 +685,48 @@ def test_a_codex_compile_is_pinned_to_codex() -> None:
     assert argv[argv.index("--agent") + 1] == "codex"
     default = proof.compile_command(Path("s"), Path("i.json"), Path("o"), runtime="skill")
     assert default[default.index("--agent") + 1] == "claude"
+
+
+OPS_REPORT = REPO / "examples" / "ops-report"
+
+
+def _session_servers(trial: skill_ab.Trial) -> tuple[set[str], str]:
+    """The MCP servers a trial's agent was given, and its allow rules."""
+    argv = json.loads((trial.work_dir / "argv.json").read_text())
+    config = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text())
+    return set(config["mcpServers"]), argv[argv.index("--allowedTools") + 1]
+
+
+def test_a_compiled_agent_gets_the_sessions_tools_only_for_do_steps(tmp_path: Path) -> None:
+    """A DO step is the agent's own work, so its agent needs the tools the
+    original has. A skill whose reads are all bound gets none of them, or its
+    agent could do the driver's reads itself."""
+    import re
+    import shutil
+
+    bound_dir = tmp_path / "bound"
+    shutil.copytree(OPS_REPORT / "runs" / "2026-10-23-system1", bound_dir)
+    do_dir = tmp_path / "do"
+    shutil.copytree(bound_dir, do_dir)
+    text = (do_dir / "pipeline.yaml").read_text()
+    unbound, removed = re.subn(r"  mcp:\n(?:    .*\n)+", "", text)
+    assert removed == 4
+    (do_dir / "pipeline.yaml").write_text(unbound)
+    (tmp_path / "work").mkdir()
+    harness = _harness(tmp_path)
+    seen = {}
+    for name, root in (("bound", bound_dir), ("do", do_dir)):
+        subject = skill_ab.subject_for(
+            root / "pipeline.yaml", skill_dir=OPS_REPORT / "skill", case_id="busy_day"
+        )
+        compiled_dir = skill_ab.emit_compiled(subject, tmp_path / "work" / name)
+        assert skill_ab.has_do_steps(compiled_dir) is (name == "do")
+        trial = skill_ab.run_trial(harness, subject, "compiled", 1, compiled_dir=compiled_dir)
+        seen[name] = _session_servers(trial)
+    servers, rules = seen["bound"]
+    assert servers == {"rote_gates"}
+    assert "mcp__google_drive__" not in rules and "mcp__gmail__" not in rules
+    servers, rules = seen["do"]
+    assert servers == {"rote_gates", "google_drive", "gmail"}
+    assert "mcp__google_drive__*" in rules and "mcp__gmail__*" in rules
+    assert "Bash(rote skill run ops-report *)" in rules

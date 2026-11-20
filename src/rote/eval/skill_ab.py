@@ -973,7 +973,7 @@ def _environ(env: Mapping[str, str]) -> Iterator[None]:
 
 
 def _mcp_entry(name: str, url: str, gated: Mapping[str, GatedServer]) -> dict[str, Any]:
-    """The original side's ``--mcp-config`` entry for one server. A gated
+    """An agent's ``--mcp-config`` entry for one server. A gated
     server with a login authenticates through ``rote mcp headers``, which
     reads the trial's copy of it, so no token lands in a file the run sees."""
     import shlex
@@ -1086,25 +1086,55 @@ class Harness:
 
 
 @contextlib.contextmanager
-def _servers(subject: Subject, side: Side, work: Path) -> Iterator[tuple[dict[str, str], Path]]:
-    """``({server name as this side calls it: url}, call log)`` for one trial.
+def _servers(
+    subject: Subject, side: Side, work: Path
+) -> Iterator[tuple[dict[str, str], dict[str, str], Path]]:
+    """``(this side's servers, the session's servers, call log)`` for one
+    trial, each ``{server name: url}``.
 
     The original calls a bench case's fixtures by their own names; the
-    compiled side by the names its pipeline binds (``map_servers``)."""
+    compiled side's driver by the names its pipeline binds (``map_servers``).
+    The session's servers are the ones a person running either skill has
+    connected, under their own names: the original's, and what a compiled
+    skill's agent does a DO step with."""
     log = work / "calls" / "calls.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.touch()
     if subject.casefile is None or subject.case is None or not subject.casefile.servers:
-        yield dict(subject.live_servers), log
+        yield dict(subject.live_servers), dict(subject.live_servers), log
         return
     from rote.bench.fidelity import fixture_servers, map_servers
 
     with fixture_servers(subject.casefile, subject.case, log.parent) as (urls, fixture_log):
         if side == "original":
-            yield dict(urls), fixture_log
+            yield dict(urls), dict(urls), fixture_log
         else:
             mapped, _unknown = map_servers(subject.pipeline, subject.casefile)
-            yield {name: urls[target] for name, target in mapped.items()}, fixture_log
+            bound = {name: urls[target] for name, target in mapped.items()}
+            yield bound, dict(urls), fixture_log
+
+
+def _session_tools(
+    servers: Mapping[str, str], gated: Mapping[str, GatedServer]
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
+    """``(--mcp-config entries, allowed, denied)`` for servers the agent calls
+    itself: every tool of a read-only one, a gated one's read-only tools."""
+    mcp = {n: _mcp_entry(n, u, gated) for n, u in servers.items()}
+    allowed: list[str] = []
+    denied: list[str] = []
+    for n in sorted(servers):
+        if n in gated:
+            allowed += gated[n].allowed
+            denied += gated[n].denied
+        else:
+            allowed.append(f"mcp__{n}__*")
+    return mcp, allowed, denied
+
+
+def has_do_steps(compiled_dir: Path) -> bool:
+    """Whether the compiled skill hands any step to the agent's own tools."""
+    plan = json.loads((compiled_dir / "scripts" / "plan.json").read_text(encoding="utf-8"))
+    return any(step.get("kind") == "do" for step in plan.get("steps") or [])
 
 
 def _read_calls(log: Path) -> list[dict[str, Any]]:
@@ -1137,25 +1167,25 @@ def run_trial(
     skill_dir = subject.skill_dir if side == "original" else compiled_dir
     if skill_dir is None:
         raise SkillAbError("the compiled side needs the compiled skill's directory")
-    with _servers(subject, side, work) as (servers, log):
+    with _servers(subject, side, work) as (servers, session, log):
         mcp: dict[str, dict[str, Any]] = {}
         allowed: list[str] = []
         denied: list[str] = []
         if side == "original":
-            mcp = {n: _mcp_entry(n, u, subject.gated) for n, u in servers.items()}
-            for n in sorted(servers):
-                if n in subject.gated:
-                    allowed += subject.gated[n].allowed
-                    denied += subject.gated[n].denied
-                else:
-                    allowed.append(f"mcp__{n}__*")
+            mcp, allowed, denied = _session_tools(servers, subject.gated)
         else:
             install_compiled(skill_dir, env, servers, gated=set(subject.gated))
             run_root = Path(env["ROTE_SKILL_RUN_DIR"])
             run_root.mkdir(parents=True, exist_ok=True)
+            # A DO step is the agent's own work, with the tools its session
+            # has: the ones the original gets. A skill with none gets none, so
+            # its agent cannot do the driver's reads itself.
+            if has_do_steps(skill_dir):
+                mcp, allowed, denied = _session_tools(session, subject.gated)
             # The driver writes result.json into the run folder; the agent may
             # read it there (skill_run_file_rules' second rule is that dir's).
             allowed = [
+                *allowed,
                 f"Bash(rote skill run {subject.name} *)",
                 skill_run_file_rules(run_root)[1],
             ]
