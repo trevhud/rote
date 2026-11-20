@@ -1020,8 +1020,8 @@ the compile-worthiness line (see below): that skill still cost 2.7x its
 original compiled. DO steps batch the same way (`_driver.do_run`), more simply: a DO step that
 fans over nothing joins the first one's block when it is in the same wave,
 so none reads another's answer and no marker is needed. It does not move the
-worthiness line either: DO steps are not counted there until an eval measures
-what a DO stop costs against the original's own tool calls.
+worthiness line either: each unbound call counts there on its own, as each
+judge does (see below).
 `_driver.stops` walks a plan the way a run does and lists
 every block it stops at; compile-report.md's Stops section prints it for a
 `--runtime skill` compile, so the extra stop a code step between two decisions
@@ -1036,8 +1036,20 @@ Sonnet 4.6: expense-audit (no model stops) ran 3.6x faster and 62% cheaper
 compiled; Atlassian's search-company-knowledge (4 judges) ran 4x slower and
 3x costlier, with the same substance. So a `--runtime skill` compile checks
 its plan right after the structure pass (cents) and stops before generation
-when it has more than `rote.compiler.worth.MAX_MODEL_STOPS` (2) judges and
-loops. Gates are not counted (the original asks the person too), nor
+when it has more than `rote.compiler.worth.MAX_MODEL_STOPS` (2) judges,
+loops and external calls with no tool bound (each becomes a DO step the
+agent does itself). Measured 2026-11-19 on ops-report, one pipeline with its
+four reads bound and then unbound, 3 trials a side: the original cost $0.113
+in 47 s, the bound compile $0.118 in 43 s, and the unbound one $0.367 in 142 s
+(7 to 9 requests against 5, 12.7k output tokens against 3.4k). The agent makes
+each call and then types the result back as its answer. The refusal names the
+calls and, for one that goes to an MCP server, the fix: register it and log
+in (`rote mcp import`, `rote mcp login`) so the pass can bind it and the
+driver makes it. A call is also unbound when a required argument has no
+source, or when the step is a file or a web page; those count too. On
+`--backend api` the compile is expected to write the calls as code, so none
+is counted (one it leaves a stub still becomes a DO step). The measurement is of reads; the IR marks no write, so a write
+counts the same. Gates are not counted (the original asks the person too), nor
 `--judges helper` judges (API calls, not round trips), nor loop-body
 sub-nodes. `--compile-anyway` overrides it. `rote try` and `rote setup`
 compile through it, so they inherit the check. Workflow runtimes are not
