@@ -218,6 +218,22 @@ def test_a_misreported_value_and_a_changed_input_are_named(tmp_path: Path) -> No
     )
 
 
+def test_leaving_out_row_keys_is_not_a_misreport_and_changing_a_value_is() -> None:
+    """A case that asks for three fields of each row gets three (expense-audit:
+    every compiled trial failed on rows the agent had only trimmed)."""
+    from rote.eval.skill_ab import _reports
+
+    held = [{"id": "E1", "rule": "cap", "severity": "review"}, {"id": "E2", "severity": "block"}]
+    assert _reports([{"id": "E1", "severity": "review"}, {"id": "E2", "severity": "block"}], held)
+    assert _reports(held, held)
+    # A changed value, an added key, a dropped row and a reordered list are misreports.
+    assert not _reports([{"id": "E1", "severity": "block"}, {"id": "E2"}], held)
+    assert not _reports([{"id": "E1", "note": "x"}, {"id": "E2"}], held)
+    assert not _reports([{"id": "E1"}], held)
+    assert not _reports([{"id": "E2"}, {"id": "E1"}], held)
+    assert not _reports(8, 7)
+
+
 # ───────── the harness, end to end, against the fake agent ─────────
 
 
