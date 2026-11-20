@@ -1175,6 +1175,8 @@ class Driver:
                 # person has replied, and is not asked twice. Checked when the
                 # run reaches the gate (:meth:`_ask`).
                 state.setdefault("early", {})[ahead[0]] = {"raw": ahead[1], "said": said}
+                # The person has replied: no later print of this block asks again.
+                pending.pop("ahead", None)
             value, errors = _parsed(raw)
             if step["kind"] == "gate":
                 block = self._take_gate(path, state, step, value, errors, said or "")
@@ -1715,9 +1717,10 @@ class Driver:
     ) -> dict[str, Any] | None:
         """The gate a block for ``run_of`` also asks (:func:`gate_ahead`), with
         what it shows the person. A gate whose inputs do not bind is left to
-        its own stop, which reports that."""
+        its own stop, which reports that. One the person already replied to
+        is not asked again."""
         gate = gate_ahead(self.steps, run_of, set(results))
-        if gate is None:
+        if gate is None or gate["id"] in (state.get("early") or {}):
             return None
         try:
             return {"step": gate["id"], "payload": _payload(gate, state["input"], results)}

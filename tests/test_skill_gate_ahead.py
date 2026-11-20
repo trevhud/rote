@@ -188,6 +188,11 @@ def test_a_bad_decision_keeps_the_persons_reply(skill: Path) -> None:
     assert header(again)["kind"] == "DECIDE"
     assert header(again)["attempt"] == "2"
     assert "ask" not in journal(again)["answers"]
+    # Printed again, the block no longer asks for a reply it already holds.
+    status, shown = drive(skill, "status", run)
+    assert header(shown)["kind"] == "DECIDE"
+    assert "ALSO ASK THE PERSON" not in shown
+    assert "--with" not in shown
     status, done = drive(skill, "answer", run, "classify", LABEL)
     assert header(done)["kind"] == "DONE", done
     assert journal(done)["answers"]["ask"]["said"] == "seven"
