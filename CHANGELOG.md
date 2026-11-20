@@ -20,6 +20,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   retyping it each time. A heredoc on stdin was tried and is refused the same
   way, so the block rules it out by name.
 
+- A compiled step that keeps, filters or flags rows of a table returns each
+  row whole, in a `row` field beside the fields the skill names
+  (`skills/rote-compile/GENERATE.md`). A skill lists what to report and
+  rarely the column that says which row it is, so compiled ops-report
+  reported open dwell tickets without their ticket numbers. Measured with
+  the paired eval on one compile each way (ops-report `busy_day`, Sonnet
+  4.6, three trials): `open_ticket_alerts` differed from the original in
+  3 of 3 pairs before and in none after. Not yet checked on the holdout.
+
 - **A compiled skill asks a run of decisions in one stop (#344).** Decisions
   with no code step, tool call, gate or DO step between them share one DECIDE
   block: independent ones side by side, and one that reads another's answer
