@@ -973,7 +973,7 @@ def _environ(env: Mapping[str, str]) -> Iterator[None]:
 
 
 def _mcp_entry(name: str, url: str, gated: Mapping[str, GatedServer]) -> dict[str, Any]:
-    """The original side's ``--mcp-config`` entry for one server. A gated
+    """An agent's ``--mcp-config`` entry for one server. A gated
     server with a login authenticates through ``rote mcp headers``, which
     reads the trial's copy of it, so no token lands in a file the run sees."""
     import shlex

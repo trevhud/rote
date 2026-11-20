@@ -36,7 +36,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   MCP server of its own, so a DO step (an external call the agent does with
   its own tools) could not be done and such a skill could not be measured.
   The agent now gets the servers the original gets, only when its plan has a
-  DO step.
+  DO step. With `--case` or `--replay` those are the case's fixture servers.
+  With live servers they are still only the ones the pipeline binds, because
+  a DO step names no server, so a DO step that needs another one cannot be
+  measured live yet.
 - **A tool argument built from a stated value compiles (#341).** The
   structure pass now refuses a constant on a tool call that no argument sends
   (a `-summary` suffix for a note's name), and its repair says to build the
