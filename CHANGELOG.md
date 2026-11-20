@@ -11,6 +11,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **A skill compile counts calls it cannot make in code.** A `--runtime
+  skill` compile already stops before generation when a run would stop for
+  the model more than twice. An external call with no MCP tool bound now
+  counts toward that line like a judge, because the agent must make the call
+  and type the result back. Measured on ops-report with its four reads bound
+  and then unbound: $0.118 and 43 s against $0.367 and 142 s (the original:
+  $0.113, 47 s). The refusal names the calls and says to register the server
+  (`rote mcp import`), after which the compiled skill makes them itself.
+  `--compile-anyway` still overrides it, and `--backend api` compiles are not
+  affected.
 - **A compiled skill asks a run of decisions in one stop (#344).** Decisions
   with no code step, tool call, gate or DO step between them share one DECIDE
   block: independent ones side by side, and one that reads another's answer

@@ -1176,7 +1176,7 @@ class Compiler:
         target = self.emit_target
         if target is None or target.runtime != "skill" or self.compile_anyway:
             return
-        verdict = worth(plan.nodes, target.judges)
+        verdict = worth(plan.nodes, target.judges, target.external_backend)
         if verdict.pays_off:
             return
         st = plan.structure
