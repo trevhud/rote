@@ -110,6 +110,44 @@ def test_a_waves_do_steps_are_one_block_and_each_answer_is_recorded(pulse: Path)
     }
 
 
+def test_a_section_several_steps_share_is_printed_once(tmp_path: Path) -> None:
+    """Steps cut from one skill section each carried all of it: a measured
+    block of four reads was 7.5 KB, 5.6 KB of it the same text three more
+    times, and every later request re-read it."""
+    shared = "## Sources\nPull each from the store, month by month."
+    own = "## Tax\nPull tax from the ledger."
+    pipeline = _pipeline(_pull("sales"), _pull("refunds"), _pull("tax"))
+    stubs = {"sales": "stub", "refunds": "stub", "tax": "stub"}
+    context = {
+        "sales": {"instructions": shared},
+        "refunds": {"instructions": shared},
+        "tax": {"instructions": own},
+    }
+    skill = make_skill(
+        tmp_path, pipeline, {"calc.py": REPORT}, implementations=stubs, do_context=context
+    )
+    block = _start(skill)
+    assert header(block)["steps"] == "refunds,sales,tax"
+    assert block.count(shared) == 1
+    # Before the first step it is for, naming every step it is for.
+    assert (
+        f"--- WHAT THE SKILL SAYS FOR refunds, sales ---\n{shared}\n--- STEP refunds ---" in block
+    )
+    # A section of one step's own still reaches it, under its own name.
+    assert f"--- WHAT THE SKILL SAYS FOR tax ---\n{own}\n--- STEP tax ---" in block
+
+
+def test_a_do_block_says_how_to_pass_a_long_answer(pulse: Path) -> None:
+    """Agents staged a long answer in a file or a script first, which their
+    client refused: two wasted requests in two of three measured runs."""
+    block = _start(pulse)
+    how, command = block.split("--- NEXT ---\n")
+    assert how.rstrip().endswith("Inside the JSON, write an apostrophe as \\u0027.")
+    assert "no file, no heredoc, no other command" in how
+    assert command.startswith("rote skill run pulse answer ")
+    assert command.rstrip().endswith("'<your JSON>'")
+
+
 def test_stops_lists_the_wave_as_one_do_stop() -> None:
     from rote.ir import Pipeline
 

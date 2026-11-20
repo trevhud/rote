@@ -85,6 +85,9 @@ Post a follow-up note on the account in the CRM.
 {"name":"Acme Corp","channel":"sales"}
 --- ANSWER SHAPE (key? = optional) ---
 {note_id: string}
+Pass your JSON as the one single-quoted argument of the command below, however long it is. \
+Only that form is approved for you: no file, no heredoc, no other command. Inside the JSON, \
+write an apostrophe as \\u0027.
 --- NEXT ---
 rote skill run crm-notes answer RUN post_note '<your JSON>'
 """
@@ -164,7 +167,7 @@ def test_the_do_block_is_pinned_byte_for_byte(
     _, block = _start(capsys)
     run = header(block)["run"]
     assert block.replace(run, "RUN") == DO_BLOCK
-    assert len(block.encode("utf-8")) == 574
+    assert len(block.encode("utf-8")) == 788
     # status prints the same block again, for an agent that lost track.
     status, again = _cli(capsys, "skill", "run", "crm-notes", "status", run)
     assert status == 0 and again == block

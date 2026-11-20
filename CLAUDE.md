@@ -1022,6 +1022,12 @@ fans over nothing joins the first one's block when it is in the same wave,
 so none reads another's answer and no marker is needed. It does not move the
 worthiness line either: DO steps are not counted there until an eval measures
 what a DO stop costs against the original's own tool calls.
+A DO block of several steps prints a section they share once, and every DO
+block says to pass the answer as the command's one single-quoted argument
+(`_next_do`). Keep that wording: without it, two of three measured runs first
+staged the answer in `/tmp` or a script, which the client refused, and a
+heredoc on stdin is refused by the same allow rule (measured: 189k to 129k
+input tokens on ops-report's four DO reads).
 `_driver.stops` walks a plan the way a run does and lists
 every block it stops at; compile-report.md's Stops section prints it for a
 `--runtime skill` compile, so the extra stop a code step between two decisions
