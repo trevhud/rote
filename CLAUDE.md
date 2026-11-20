@@ -1028,6 +1028,15 @@ block says to pass the answer as the command's one single-quoted argument
 staged the answer in `/tmp` or a script, which the client refused, and a
 heredoc on stdin is refused by the same allow rule (measured: 189k to 129k
 input tokens on ops-report's four DO reads).
+A DECIDE or DO block also asks the person the next gate's question when it is
+already known (`_driver.gate_ahead`: every earlier step done or in the block,
+no `when`, nothing bound from the block's steps), and the reply rides with the
+agent's answer (`--with <gate> '<json>' --said`). The driver keeps it in the
+journal (`early`) and takes it through `_take_gate` when the run reaches the
+gate, so the record is the one a HUMAN stop writes. Keep the block's first
+line ("First ... ask the person"): without it the agent worked its decision out
+before asking and again when answering (+1k output tokens). Measured on
+ops-report: 6 requests to 5, 90.4k to 76.4k input tokens, cost flat.
 `_driver.stops` walks a plan the way a run does and lists
 every block it stops at; compile-report.md's Stops section prints it for a
 `--runtime skill` compile, so the extra stop a code step between two decisions

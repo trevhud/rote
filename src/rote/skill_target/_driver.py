@@ -27,6 +27,7 @@ Commands (``argv`` after the script)::
 
     start '<input json>' | --file <path>
     answer <run> <step> '<json>' | --file <path> [--said '<words>' | --said-file <path>]
+        [--with <gate> '<their reply json>']
     tool <run> <step> <tool> '<arguments json>' | --file <path>
     resume <run>
     status [<run>]
@@ -510,6 +511,34 @@ def _joins_do(step: Mapping[str, Any]) -> bool:
     return step["kind"] == "do" and step.get("fan_param") is None
 
 
+def gate_ahead(
+    steps: Sequence[Mapping[str, Any]], run: Sequence[Mapping[str, Any]], done: Collection[str]
+) -> Any:
+    """The gate a block for ``run`` also asks, or None.
+
+    The stop after a decision or DO block is often a question for the person
+    whose text is already known: it shows nothing the block's own steps
+    produce. Asked in the same block, the person's reply comes back with the
+    agent's answer and the run saves a round trip (each re-reads the
+    conversation). A gate joins when every step of every earlier wave is
+    ``done`` or in ``run``, it has no ``when`` (a condition may read an answer
+    not given yet) and it binds no result of ``run``. A fanned step's block
+    may come in several batches, so nothing joins one.
+    """
+    taken = {s["id"] for s in run}
+    if any(s.get("fan_param") is not None for s in run):
+        return None
+    for step in steps:
+        if step["kind"] != "gate" or step["id"] in done or step.get("when"):
+            continue
+        wave = int(step["wave"])
+        if not all(s["id"] in done or s["id"] in taken for s in steps if int(s["wave"]) < wave):
+            continue
+        reads = {b[2] for b in step["bindings"] if b[1] not in ("input", "input_field")}
+        return None if reads & taken else step
+    return None
+
+
 #: The block a run prints for each kind of step that stops for the agent.
 STOP_BLOCKS = {"judge": "DECIDE", "gate": "HUMAN", "loop": "LOOP", "do": "DO"}
 
@@ -519,7 +548,8 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
 
     The forward loop's own order: wave by wave, the code and tool steps run,
     then the first step left in the wave stops the run, with the decisions
-    :func:`decision_run` asks beside it. Each stop is ``{"block", "steps"}``.
+    :func:`decision_run` asks beside it. Each stop is ``{"block", "steps"}``,
+    with ``ahead`` naming a gate the same block asks (:func:`gate_ahead`).
     A fanned judge's items may take several blocks, and a gate with ``when``
     may be skipped, so each is marked (``fanned``, ``conditional``) rather
     than guessed. ``helper_judges``: the inference helper answers judges in
@@ -555,8 +585,24 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
             stop["fanned"] = True
         if ask["kind"] == "gate" and ask.get("when"):
             stop["conditional"] = True
+        if ask["kind"] in ("judge", "do"):
+            ahead = gate_ahead(steps, run, done)
+            if ahead is not None:
+                stop["ahead"] = str(ahead["id"])
+                done.add(stop["ahead"])
         out.append(stop)
         done.update(stop["steps"])
+
+
+def _parsed(raw: str) -> tuple[Any, list[str]]:
+    """An answer's JSON, or what is wrong with it."""
+    try:
+        return json.loads(raw), []
+    except json.JSONDecodeError as e:
+        return None, [
+            f"not JSON (line {e.lineno} column {e.colno}: {e.msg}). Shell quoting is "
+            "the usual cause: write the JSON to a file and pass --file <path>"
+        ]
 
 
 def _keyed_answer_errors(value: Any, ids: Sequence[str], what: str) -> list[str]:
@@ -1042,7 +1088,16 @@ class Driver:
             lines.append(f"pruned {len(removed)}")
         return Block("DONE", self._head(None, f"runs={len(lines) - int(prune)}"), lines)
 
-    def answer(self, run: str, step_id: str, raw: str, said: str | None) -> Block:
+    def answer(
+        self,
+        run: str,
+        step_id: str,
+        raw: str,
+        said: str | None,
+        ahead: tuple[str, str] | None = None,
+    ) -> Block:
+        """Record an answer. ``ahead``: ``(gate id, raw JSON)``, a person's
+        reply to the gate this block also asked (:func:`gate_ahead`)."""
         path = self._dir(run)
         with self._locked(path):
             state = self._read(path)
@@ -1073,7 +1128,27 @@ class Driver:
                     step=step_id,
                     usage=True,
                 )
-            if step["kind"] != "gate" and said is not None:
+            if ahead is not None:
+                asked = (pending.get("ahead") or {}).get("step")
+                if ahead[0] != asked and ahead[0] not in (state.get("early") or {}):
+                    return self._error(
+                        run,
+                        f"this block did not ask the person {ahead[0]}; --with carries only "
+                        "the reply to a question the block itself asks.",
+                        f"{self.command} answer {run} {step_id} '<json>'",
+                        step=step_id,
+                        usage=True,
+                    )
+                if not (said and said.strip()):
+                    return self._error(
+                        run,
+                        f"{ahead[0]} is answered by a person: pass their words as they gave them.",
+                        f"{self.command} answer {run} {step_id} '<json>' --with {ahead[0]} "
+                        "'<their reply as JSON>' --said '<their words>'",
+                        step=step_id,
+                        usage=True,
+                    )
+            if step["kind"] != "gate" and said is not None and ahead is None:
                 return self._error(
                     run,
                     f"{step_id} is yours to answer; --said is only for a person's words "
@@ -1095,15 +1170,12 @@ class Driver:
                 )
             attempts = int(state["attempts"].get(step_id, 0)) + 1
             state["attempts"][step_id] = attempts
-            try:
-                value = json.loads(raw)
-                errors: list[str] = []
-            except json.JSONDecodeError as e:
-                value = None
-                errors = [
-                    f"not JSON (line {e.lineno} column {e.colno}: {e.msg}). Shell quoting is "
-                    "the usual cause: write the JSON to a file and pass --file <path>"
-                ]
+            if ahead is not None:
+                # Kept whether or not the agent's own answer validates: the
+                # person has replied, and is not asked twice. Checked when the
+                # run reaches the gate (:meth:`_ask`).
+                state.setdefault("early", {})[ahead[0]] = {"raw": ahead[1], "said": said}
+            value, errors = _parsed(raw)
             if step["kind"] == "gate":
                 block = self._take_gate(path, state, step, value, errors, said or "")
             elif pending["kind"] == "decide_batch":
@@ -1390,7 +1462,9 @@ class Driver:
                             return self._ask_do_batch(path, self._read(path), run_of, results)
                 if step["kind"] in ("judge", "gate", "do"):
                     with self._locked(path):
-                        return self._ask(path, self._read(path), step, results)
+                        asked = self._ask(path, self._read(path), step, results)
+                    if asked is not None:
+                        return asked
         return self._finish(path, results)
 
     def _run_wave(
@@ -1636,9 +1710,25 @@ class Driver:
 
     # ── asking ──
 
+    def _ahead(
+        self, run_of: Sequence[Mapping[str, Any]], state: dict[str, Any], results: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The gate a block for ``run_of`` also asks (:func:`gate_ahead`), with
+        what it shows the person. A gate whose inputs do not bind is left to
+        its own stop, which reports that."""
+        gate = gate_ahead(self.steps, run_of, set(results))
+        if gate is None:
+            return None
+        try:
+            return {"step": gate["id"], "payload": _payload(gate, state["input"], results)}
+        except BindingError:
+            return None
+
     def _ask(
         self, path: Path, state: dict[str, Any], step: dict[str, Any], results: dict[str, Any]
-    ) -> Block:
+    ) -> Block | None:
+        """Stop for ``step``. None: a gate whose reply came with the block
+        before it is recorded (in ``results`` too), and the run goes on."""
         run = path.name
         try:
             payload = _payload(step, state["input"], results)
@@ -1670,11 +1760,21 @@ class Driver:
                 return prepared
             kind = "do" if step["kind"] == "do" else "decide"
             pending = {"step": step["id"], "kind": kind, **prepared}
+            ahead = self._ahead([step], state, results)
+            if ahead is not None:
+                pending["ahead"] = ahead
         state["pending"] = pending
         state["state"] = "waiting"
         state["attempts"][step["id"]] = 0
-        self._write(path, state)
-        return self._pending_block(run, step, pending)
+        early = (state.get("early") or {}).pop(step["id"], None) if step["kind"] == "gate" else None
+        if early is None:
+            self._write(path, state)
+            return self._pending_block(run, step, pending)
+        state["attempts"][step["id"]] = 1
+        block = self._take_gate(path, state, step, *_parsed(early["raw"]), early["said"])
+        if block is None:
+            results[step["id"]] = self._results(path, state)[step["id"]]
+        return block
 
     # ── batched decisions (#344) ──
 
@@ -1741,6 +1841,9 @@ class Driver:
                 block.header = self._head(path.name, f"step={step['id']}")
                 return block
         pending = {"step": ids[0], "kind": "decide_batch", "steps": ids, "tasks": tasks}
+        ahead = self._ahead(run_of, state, results)
+        if ahead is not None:
+            pending["ahead"] = ahead
         state["pending"] = pending
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
@@ -1796,6 +1899,9 @@ class Driver:
             inputs[step["id"]] = _do_inputs(step, payload)
         ids = [s["id"] for s in run_of]
         pending = {"step": ids[0], "kind": "do_batch", "steps": ids, "inputs": inputs}
+        ahead = self._ahead(run_of, state, results)
+        if ahead is not None:
+            pending["ahead"] = ahead
         state["pending"] = pending
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
@@ -2359,12 +2465,68 @@ class Driver:
             calls = int(((state or {}).get("tool_calls") or {}).get(step["id"], 0))
             return self._loop_block(run, step, pending, calls, note)
         if pending["kind"] == "do":
-            return self._do_block(run, step, pending, note)
-        if pending["kind"] == "decide_batch":
-            return self._batch_block(run, pending, note)
-        if pending["kind"] == "do_batch":
-            return self._do_batch_block(run, pending, note)
-        return self._decide_block(run, step, pending, note)
+            block = self._do_block(run, step, pending, note)
+        elif pending["kind"] == "decide_batch":
+            block = self._batch_block(run, pending, note)
+        elif pending["kind"] == "do_batch":
+            block = self._do_batch_block(run, pending, note)
+        else:
+            block = self._decide_block(run, step, pending, note)
+        if pending.get("ahead"):
+            self._add_ahead(block, run, step["id"], pending["ahead"])
+        return block
+
+    def _add_ahead(self, block: Block, run: str, step: str, ahead: dict[str, Any]) -> None:
+        """Ask the person the next gate's question in this block (:func:`gate_ahead`).
+
+        Their reply rides with the agent's own answer (``--with``), so the
+        run does not stop a second time to ask. An agent that answers
+        without it loses nothing: the run stops at the gate as before."""
+        gate = self.by_id[ahead["step"]]
+        # Said first: an agent that met the question last worked its own
+        # answer out before asking, then again when answering (measured,
+        # +1k output tokens a run).
+        block.lines.insert(
+            0,
+            f"First, before you work on anything here: ask the person the question under "
+            f"ALSO ASK THE PERSON ({gate['id']}) below. Do your own part once they reply.",
+        )
+        at = block.lines.index("--- NEXT ---")
+        block.lines[at:] = [
+            f"--- ALSO ASK THE PERSON ({gate['id']}) ---",
+            "The run needs a person's reply to this next, and it is not yours to answer. Ask "
+            "them now, in plain words, and wait for their reply.",
+            *self._gate_question(gate, ahead["payload"]),
+            f"--- {gate['id']} ANSWER SCHEMA (json) ---",
+            _compact(gate["answer_schema"]),
+            "Put their reply into this shape; never fill in what they did not say. Send it "
+            "with your own answer in the one command below. If you cannot ask them now, leave "
+            "out --with and --said, and the run asks for the reply next.",
+            *self._next(
+                "answer",
+                run,
+                step,
+                "'<your JSON>'",
+                "--with",
+                gate["id"],
+                "'<their reply as JSON>'",
+                "--said",
+                "'<their words, verbatim>'",
+            ),
+        ]
+
+    @staticmethod
+    def _gate_question(step: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+        """What a gate asks and shows the person."""
+        lines = [step["description"]]
+        shown: set[str] = set()
+        if step.get("message"):
+            message, shown = _render_message(step["message"], payload)
+            lines.append(message)
+        unshown = {k: v for k, v in payload.items() if k not in shown}
+        if unshown:
+            lines += ["--- THEY SEE (json) ---", _compact(unshown)]
+        return lines
 
     def _do_block(
         self, run: str, step: dict[str, Any], pending: dict[str, Any], note: str = ""
@@ -2491,16 +2653,7 @@ class Driver:
         lines += [
             "Do not answer this yourself. Ask the person in plain words and wait for their reply.",
             "--- QUESTION ---",
-            step["description"],
-        ]
-        shown: set[str] = set()
-        if step.get("message"):
-            message, shown = _render_message(step["message"], payload)
-            lines.append(message)
-        unshown = {k: v for k, v in payload.items() if k not in shown}
-        if unshown:
-            lines += ["--- THEY SEE (json) ---", _compact(unshown)]
-        lines += [
+            *self._gate_question(step, payload),
             "--- ANSWER SCHEMA (json) ---",
             _compact(step["answer_schema"]),
             "Put their reply into this shape. If it does not fit, ask again; never fill in "
@@ -2912,9 +3065,20 @@ def _said(args: list[str]) -> tuple[list[str], str | None]:
     return args, None
 
 
+def _with(args: list[str]) -> tuple[list[str], tuple[str, str] | None]:
+    """``--with <gate> '<json>'``: a person's reply to the gate a block also asked."""
+    if "--with" not in args:
+        return args, None
+    i = args.index("--with")
+    if i + 2 >= len(args):
+        raise ValueError("--with needs a step id and the person's reply as JSON")
+    return args[:i] + args[i + 3 :], (args[i + 1], args[i + 2])
+
+
 USAGE = (
     "start '<input json>' | --file <path>; "
-    "answer <run> <step> '<json>' | --file <path> [--said '<their words>']; "
+    "answer <run> <step> '<json>' | --file <path> [--said '<their words>'] "
+    "[--with <gate> '<their reply json>']; "
     "tool <run> <step> <tool> '<arguments json>' | --file <path>; "
     "resume <run>; status [<run>]; cancel <run>; runs [--prune]"
 )
@@ -2927,7 +3091,8 @@ def dispatch(driver: Driver, argv: list[str]) -> Block:
             return driver.start(_value_arg(args, "the input"))
         if verb == "answer" and len(args) >= 3:
             rest, said = _said(args[2:])
-            return driver.answer(args[0], args[1], _value_arg(rest, "the answer"), said)
+            rest, ahead = _with(rest)
+            return driver.answer(args[0], args[1], _value_arg(rest, "the answer"), said, ahead)
         if verb == "tool" and len(args) >= 4:
             return driver.tool(args[0], args[1], args[2], _value_arg(args[3:], "the arguments"))
         if verb == "resume" and len(args) == 1:
