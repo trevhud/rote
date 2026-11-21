@@ -966,6 +966,59 @@ def _interface_entry(payload: dict[str, Any], ctx: Context, node: Any) -> dict[s
     return entry
 
 
+#: ``system.how`` values that are plain file work on the machine the skill runs on.
+LOCAL_FILE_HOWS = ("local_path", "local_file")
+
+
+def local_file_how(ctx: Context, node: Any) -> str | None:
+    """How ``node`` reaches a local file, or None when it is not such a call.
+
+    A call the structure pass read as local file work needs no vendor, so a
+    piece writes it as code like a ``pure_function``. Left a stub, it was a DO
+    stop in every compiled run: measured on expense-audit, the agent spent 4 to
+    6 requests looking for "the finance shared folder" before saving a report
+    its inputs already held, doubling the run's input tokens."""
+    if node.kind is not NodeKind.EXTERNAL_CALL or node.mcp is not None:
+        return None
+    if node.impl != f"extracted/{node.id}.py:{node.id}":
+        return None
+    for d in ctx.plan[node.id].decisions:
+        if d.field == "system" and isinstance(d.value, dict):
+            how = d.value.get("how")
+            return str(how) if how in LOCAL_FILE_HOWS else None
+    return None
+
+
+def folder_env_var(ctx: Context, node: Any) -> str:
+    """The variable that sets the folder of a ``local_file`` step."""
+    return re.sub(r"[^A-Z0-9]+", "_", f"{ctx.pipeline.name}_{node.id}_DIR".upper())
+
+
+def _local_file_lines(ctx: Context, node: Any, how: str) -> list[str]:
+    lines = [
+        "",
+        "This step is file work on the machine the skill runs on, so rote runs this "
+        "module instead of handing the step to an agent. Rule 5's ban on file and "
+        "environment access does not apply to it: do the file work with `pathlib`. "
+        "Content a parameter holds is written as given, never rebuilt. A path in the "
+        "return value is absolute.",
+    ]
+    if how == "local_file":
+        var = folder_env_var(ctx, node)
+        lines.append(
+            f"The skill names the folder only in words, so the folder is the environment "
+            f"variable `{var}` when it is set and not empty, else the current working "
+            "directory. Create the folder when it is missing. Read no other variable."
+        )
+    else:
+        lines.append("Use the path the section gives, with `~` expanded.")
+    lines.append(
+        "The tests touch only pytest's `tmp_path` (`monkeypatch.setenv` or "
+        "`monkeypatch.chdir`) and assert the file's content."
+    )
+    return lines
+
+
 def module_request(
     ctx: Context, node: Any, system: str, model: str, repair: str | None = None
 ) -> GenerationRequest:
@@ -979,6 +1032,9 @@ def module_request(
         "",
         *_node_card(ctx, node),
     ]
+    how = local_file_how(ctx, node)
+    if how:
+        lines += _local_file_lines(ctx, node, how)
     if repair:
         lines += ["", repair]
     return GenerationRequest(
@@ -1860,7 +1916,7 @@ class TextWriter:
         return [
             n
             for n in self.ctx.pipeline.nodes
-            if n.kind in (NodeKind.PURE_FUNCTION, NodeKind.LLM_JUDGE)
+            if n.kind in (NodeKind.PURE_FUNCTION, NodeKind.LLM_JUDGE) or local_file_how(self.ctx, n)
         ]
 
     async def write_all(self) -> None:

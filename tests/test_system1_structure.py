@@ -391,6 +391,24 @@ def test_unspecified_is_refused_when_the_section_names_a_declared_tool(skill: An
             "extracted/rule_tables.py and their text is in the prompt)",
         ),
         (
+            lambda a: a["nodes"].append(
+                node(
+                    "load_export",
+                    2,
+                    "external_call",
+                    system={
+                        "io": "read",
+                        "how": "local_file",
+                        "name": "",
+                        "server": "",
+                        "tool": "",
+                    },
+                )
+            ),
+            "node load_export: how is local_file, which is a file the step saves (io write); "
+            "a file it reads has a path (local_path) or is unspecified",
+        ),
+        (
             lambda a: a["nodes"][2].update(quote="Search Gmail for messages"),
             "node render_digest: its quote does not appear under the heading "
             "'Step 3: Deliver'; copy the words exactly",

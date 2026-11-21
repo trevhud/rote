@@ -1544,3 +1544,62 @@ def test_an_external_stubs_contract_is_its_functions_docstring(tmp_path: Path) -
     assert json.loads(doc.split(":", 1)[1]) == ctx.output_schema(node.id)
     module_doc = ast.get_docstring(tree)
     assert module_doc is not None and "JSON Schema" not in module_doc
+
+
+# ───────── a call that is local file work is written as code ─────────
+
+
+def _local_file_writer(tmp_path: Path, how: str, bound: bool = False) -> tuple[Any, Any, Any]:
+    """ops-report with its first call read as ``how`` and, unless ``bound``, no tool."""
+    from rote.compiler.system1.decide import Decision
+
+    ctx, writer, _ = _ops_writer(tmp_path)
+    at = next(i for i, n in enumerate(ctx.pipeline.nodes) if n.kind is NodeKind.EXTERNAL_CALL)
+    node = ctx.pipeline.nodes[at]
+    if not bound:
+        node = node.model_copy(update={"mcp": None})
+        ctx.pipeline.nodes[at] = node
+    ctx.plan[node.id].decisions.append(
+        Decision("system", {"io": "write", "how": how, "name": "reports"}, 0.9, "test")
+    )
+    return ctx, writer, node
+
+
+def test_a_call_that_saves_a_local_file_is_a_piece_with_a_folder_variable(tmp_path: Path) -> None:
+    ctx, writer, node = _local_file_writer(tmp_path, "local_file")
+    assert node.id in [n.id for n in writer.pieces()]
+    prompt = generate.module_request(ctx, node, "", "m").prompt
+    var = f"OPS_REPORT_{node.id.upper()}_DIR"
+    assert generate.folder_env_var(ctx, node) == var
+    assert f"the folder is the environment variable `{var}`" in prompt
+    assert "else the current working directory" in prompt
+    assert "Use the path the section gives" not in prompt
+    # A path the skill gives needs no variable.
+    (tmp_path / "p").mkdir()
+    ctx, writer, node = _local_file_writer(tmp_path / "p", "local_path")
+    prompt = generate.module_request(ctx, node, "", "m").prompt
+    assert "Use the path the section gives" in prompt
+    assert "environment variable" not in prompt
+
+
+@pytest.mark.parametrize(("how", "bound"), [("unspecified", False), ("local_file", True)])
+def test_any_other_call_stays_out_of_the_pieces(tmp_path: Path, how: str, bound: bool) -> None:
+    """A system nobody identified is the agent's work, and a bound tool is rote's call."""
+    ctx, writer, node = _local_file_writer(tmp_path, how, bound)
+    assert generate.local_file_how(ctx, node) is None
+    assert node.id not in [n.id for n in writer.pieces()]
+    assert "file work" not in generate.module_request(ctx, node, "", "m").prompt
+
+
+def test_a_local_file_calls_module_replaces_its_stub(tmp_path: Path) -> None:
+    from rote.adapters._common import STUB_SENTINEL
+
+    ctx, writer, node = _local_file_writer(tmp_path, "local_file")
+    path = ctx.work_dir / "extracted" / f"{node.id}.py"
+    writer.merge()
+    assert "NotImplementedError" in path.read_text(encoding="utf-8")
+    writer.modules[node.id] = {"module": "def saved():\n    return 1\n", "test": "x = 1\n"}
+    writer.merge()
+    text = path.read_text(encoding="utf-8")
+    assert text == "def saved():\n    return 1\n"
+    assert STUB_SENTINEL not in text

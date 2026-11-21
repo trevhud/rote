@@ -11,6 +11,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A step that only saves a file on the machine the skill runs on compiles
+  to code. The structure pass has a new system type, `local_file` (a folder
+  the skill names only in words, such as "the finance shared folder"), and
+  the parallel path writes that step's module and tests like a
+  `pure_function`'s, as it now does for `local_path` too. The folder is the
+  environment variable `<PIPELINE>_<NODE>_DIR` when set, else the current
+  directory, and the node declares the variable. Before, the step was a
+  stub, so a compiled skill stopped for its agent to do it. Measured on
+  expense-audit (Sonnet 4.6, 3 trials a side): the compiled run went from
+  11 to 13 requests and 224k to 260k input tokens to 5 requests and 82k,
+  $0.25 to $0.14, against the original skill's 5 requests, 114k and $0.37.
+
 - The paired eval no longer calls it a misreport when the agent leaves keys
   out of a value the driver computed (a case that asks for three fields of
   each row gets three). A changed, added or reordered value still is one.
