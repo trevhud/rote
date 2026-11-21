@@ -226,6 +226,19 @@ def test_a_call_to_a_system_named_only_by_kind_stays_a_call(skill: Any) -> None:
     assert (last.id, last.kind, last.mcp) == ("send_digest", "external_call", None)
 
 
+def test_a_file_saved_to_a_folder_named_in_words_is_a_local_file_call(skill: Any) -> None:
+    """No path to check: whether the folder is on this machine is the pass's reading."""
+    local = {"io": "write", "how": "local_file", "name": "finance", "server": "", "tool": ""}
+    answer = good_answer()
+    answer["nodes"].append(node("save_digest", 3, "external_call", system=local))
+    plan, rec, _ = run(skill, answer)
+    assert rec.rounds == 1 and rec.resolved == []
+    last = plan.nodes[-1]
+    assert (last.id, last.kind, last.mcp) == ("save_digest", "external_call", None)
+    system = next(d.value for d in last.decisions if d.field == "system")
+    assert system == {"io": "write", "how": "local_file", "name": "finance"}
+
+
 def test_an_external_call_with_how_none_goes_back(skill: Any) -> None:
     declared = structure.declared_tools(skill, TOOLS)
     answer = good_answer()

@@ -1574,6 +1574,7 @@ def test_a_call_that_saves_a_local_file_is_a_piece_with_a_folder_variable(tmp_pa
     assert f"the folder is the environment variable `{var}`" in prompt
     assert "else the current working directory" in prompt
     assert "Use the path the section gives" not in prompt
+    assert "write `# docs: skill` and a `# skill:" in prompt
     # A path the skill gives needs no variable.
     (tmp_path / "p").mkdir()
     ctx, writer, node = _local_file_writer(tmp_path / "p", "local_path")
@@ -1603,3 +1604,19 @@ def test_a_local_file_calls_module_replaces_its_stub(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert text == "def saved():\n    return 1\n"
     assert STUB_SENTINEL not in text
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "prefix"), [("rote-report", "SKILL_ROTE_REPORT_"), ("2026-audit", "SKILL_2026_")]
+)
+def test_the_folder_variable_is_always_one_a_node_may_declare(
+    tmp_path: Path, pipeline: str, prefix: str
+) -> None:
+    from rote.env_vars import ENV_NAME_RE, reserved_reason
+
+    ctx, _, node = _local_file_writer(tmp_path, "local_file")
+    ctx.pipeline = ctx.pipeline.model_copy(update={"name": pipeline})
+    var = generate.folder_env_var(ctx, node)
+    assert var.startswith(prefix)
+    assert reserved_reason(var) is None
+    assert ENV_NAME_RE.fullmatch(var)

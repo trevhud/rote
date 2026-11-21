@@ -71,6 +71,7 @@ from rote.compiler.system1.skeleton import (
     TABLES_MODULE,
 )
 from rote.contracts import ContractFinding, _prompt_paths_in_schema
+from rote.env_vars import ENV_NAME_RE, reserved_reason
 from rote.ir import (
     NodeKind,
     Pipeline,
@@ -991,7 +992,12 @@ def local_file_how(ctx: Context, node: Any) -> str | None:
 
 def folder_env_var(ctx: Context, node: Any) -> str:
     """The variable that sets the folder of a ``local_file`` step."""
-    return re.sub(r"[^A-Z0-9]+", "_", f"{ctx.pipeline.name}_{node.id}_DIR".upper())
+    name = re.sub(r"[^A-Z0-9]+", "_", f"{ctx.pipeline.name}_{node.id}_DIR".upper())
+    # A pipeline named `rote-report` or `2026-audit` would give a name no node
+    # may declare (rote.env_vars), and the piece could never pass its checks.
+    if reserved_reason(name) or not ENV_NAME_RE.fullmatch(name):
+        name = f"SKILL_{name}"
+    return name
 
 
 def _local_file_lines(ctx: Context, node: Any, how: str) -> list[str]:
@@ -1001,7 +1007,9 @@ def _local_file_lines(ctx: Context, node: Any, how: str) -> list[str]:
         "module instead of handing the step to an agent. Rule 5's ban on file and "
         "environment access does not apply to it: do the file work with `pathlib`. "
         "Content a parameter holds is written as given, never rebuilt. A path in the "
-        "return value is absolute.",
+        "return value is absolute. Above the function write `# docs: skill` and a "
+        '`# skill: "..."` quote of the sentence that names the file: the skill is this '
+        "step's only documentation.",
     ]
     if how == "local_file":
         var = folder_env_var(ctx, node)
