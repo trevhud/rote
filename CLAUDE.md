@@ -1043,6 +1043,21 @@ every block it stops at; compile-report.md's Stops section prints it for a
 costs is visible (each stop re-reads the conversation, about 11k tokens a
 request measured, while a block's own text is under 1k).
 
+### A step that only saves a local file is code, not a DO stop
+
+The structure pass's `system.how` has `local_file`: the step saves a file on
+the machine the skill runs on, in a folder the skill names only in words
+("the finance shared folder"). Whether a folder is local is a reading of the
+skill, so it lives in the prompt; code checks only that io is write. The
+parallel path writes a module and tests for a `local_file` or `local_path`
+call with no tool binding (`generate.local_file_how`), with the folder from
+`<PIPELINE>_<NODE>_DIR` (`folder_env_var`) or the current directory, and
+`env:` is declared from the module as for any node. Left a stub, the step was
+a DO stop: expense-audit's agent spent 4 to 6 requests looking for the folder
+before saving a report its inputs already held. Measured on expense-audit:
+compiled 11 to 13 requests and 224k to 260k input tokens down to 5 and 82k
+(original: 5 and 114k), cost $0.25 to $0.14 (original $0.37).
+
 ### Not every skill should become a compiled skill
 
 A compiled skill stops for the agent at each judge and agent loop, and every

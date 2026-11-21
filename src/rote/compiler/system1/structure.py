@@ -81,7 +81,16 @@ REPAIR_ROUNDS = 2
 KINDS = ("pure_function", "external_call", "llm_judge", "agent_loop", "hitl_gate")
 IO = ("none", "read", "write")
 #: How the code could reach a system: the evidence each one needs is in :func:`check`.
-HOW = ("declared_tool", "url", "web_ui", "local_path", "public_api", "unspecified", "none")
+HOW = (
+    "declared_tool",
+    "url",
+    "web_ui",
+    "local_path",
+    "local_file",
+    "public_api",
+    "unspecified",
+    "none",
+)
 ARG_SOURCES = ("input_field", "upstream_field", "fan_element", "constant", "literal")
 #: Room for adaptive thinking on a large skill: BDR ran past 20k output
 #: tokens with thinking on. Above the SDK's non-streaming ceiling, so the
@@ -330,6 +339,11 @@ Per node:
   API at a URL or HTTP path the skill gives), web_ui (operating a web app in
   a browser, at a URL the skill gives: navigate, click, read the screen),
   local_path (the skill gives a path),
+  local_file (the step saves a file on the machine the skill runs on, in a
+  folder the skill names only in words: "save the report to the finance
+  shared folder", "write it to the output folder". rote writes that step as
+  code. A drive or app the skill names, such as Google Drive, SharePoint or
+  a wiki, is not a local file),
   public_api (a product the skill names, with a public API), or unspecified
   (a system the skill names only by its kind, such as "the CRM", "your
   accounting tool" or "~~crm", or never identifies). A read or write of a
@@ -1370,6 +1384,15 @@ def _check_call(
                 f"{where}: how is local_path, but its step gives no path outside the skill "
                 "(references/ files are part of the skill: their tables are already code "
                 "in extracted/rule_tables.py and their text is in the prompt)"
+            )
+    elif how == "local_file":
+        # No evidence to check: whether a folder named in words is on this
+        # machine is a reading of the skill, which the prompt asks for. Code
+        # only holds the shape: the generated module saves a file.
+        if io == "read":
+            out.append(
+                f"{where}: how is local_file, which is a file the step saves (io write); a "
+                "file it reads has a path (local_path) or is unspecified"
             )
     elif how == "public_api":
         name = str(system.get("name", ""))

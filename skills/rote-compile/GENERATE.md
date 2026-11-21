@@ -106,7 +106,8 @@ The module:
    them. Never retype them.
 5. Python 3.11 syntax, stdlib only, imports at the top. No backslash,
    comment or reused quote inside an f-string's braces. No file, network
-   or environment access.
+   or environment access, unless the message says the step is file work:
+   then it reads or writes exactly the file the message describes.
 6. When the input format is not shown, accept the most direct form the
    skill implies (CSV text with a header row, or a list of row dicts),
    find columns by the names the skill gives (case- and
