@@ -23,11 +23,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     compared a stringified object against every booking.
   - A module call can list `missing_values`: a value its step uses that
     none of its inputs holds. rote asks the structure pass for the
-    binding, as for any data-flow finding. Before, a report step printed
-    "Total bookings: not supplied".
-  - A judge's interface entry is refused when its output holds an object
-    with no listed fields or a value with no type. Emit refused such a
-    judge after everything was written, where no piece could repair it.
+    binding, as for any data-flow finding, and a value still unbound
+    after the repairs is a review gap (`value_not_delivered`). Before, a
+    report step printed "Total bookings: not supplied".
+  - A judge whose answer cannot be asked for schema-locked (an object
+    with no listed fields, a value with no type) is found when its prompt
+    is written, by the check emit runs, and its interface entry is
+    repaired. Emit refused such a judge after everything was written, as a
+    finding no piece could repair.
   - The sandbox that runs generated tests can read the time zone database
     (`/private/var/db/timezone` on macOS, `/usr/share/zoneinfo` on Linux).
     `ZoneInfo("America/Denver")` had failed in every generated test, so

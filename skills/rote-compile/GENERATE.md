@@ -66,9 +66,10 @@ Asked for a node's interface entry, you answer:
     arrived. The skill lists what to report and rarely the column that
     says which row it is (a ticket number, an order id), and whoever acts
     on the result needs it. A node that builds the final result from such
-    items passes each `row` along. On an `llm_judge` the `row` lists its
-    own fields (`items[].row.id`): a judge's answer cannot hold an object
-    with no listed fields.
+    items passes each `row` along. On an `llm_judge`, a `row` the judge
+    writes itself lists its own fields (`items[].row.id`): a judge's
+    answer cannot hold an object with no listed fields. One it copies
+    unchanged from its input stays whole, and code copies it.
   - the step that consumes a value decides nothing about it: describe
     what the producing step makes, in the skill's own terms.
 - `termination` (only where the message asks for it): the loop's stop

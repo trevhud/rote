@@ -401,3 +401,21 @@ def test_every_call_shares_the_missing_values_field() -> None:
 
     assert "missing_values" in ANSWER_SCHEMA["required"]
     assert ANSWER_SCHEMA["properties"]["missing_values"]["items"]["required"] == ["value", "why"]
+
+
+def test_a_value_still_missing_after_the_repairs_is_a_review_gap() -> None:
+    """Dropped silently, a step that printed a placeholder shipped as verified."""
+    from rote.compiler.system1.generate import missing_value_findings, undelivered_findings
+    from rote.compiler.verify import Verification
+
+    missing = missing_value_findings(
+        {
+            "format_report": {"missing_values": [{"value": "the booking total", "why": ""}]},
+            "match": {"missing_values": []},
+        }
+    )
+    [finding] = undelivered_findings(missing)
+    assert finding.node_id == "format_report" and finding.severity == "warning"
+    assert "needs the booking total" in finding.message
+    verdict = Verification(pipeline=None, findings=[finding])
+    assert verdict.ok and verdict.review_gaps == [finding]

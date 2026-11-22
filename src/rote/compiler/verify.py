@@ -634,8 +634,13 @@ DO_HANDOFF_THIN = "do_handoff_thin"
 
 #: Findings that are repaired like errors and, if they survive, warnings
 #: (:attr:`Verification.review_gaps`), besides the provenance ones.
+#: A module reported a value its step uses and no input holds, and no binding
+#: was added for it (rote.compiler.system1.generate.missing_value_findings).
+VALUE_NOT_DELIVERED = "value_not_delivered"
+
 REVIEW_GAP_KINDS = frozenset(
     {
+        VALUE_NOT_DELIVERED,
         UNUSED_CONSTANT,
         DECLARED_TOOL_UNBOUND,
         MCP_ARGS_UNGROUNDED,

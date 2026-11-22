@@ -874,7 +874,13 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         lines += ["Its constants:", *_constant_lines(node)]
     for param, ref in (node.inputs or {}).items():
         source = parse_input_ref(ref).node_id
-        if source is not None and ctx.unverified_tool_result(source):
+        # Not a judge: its answer is schema-locked, which cannot hold a
+        # record as an object with no listed fields.
+        if (
+            node.kind is not NodeKind.LLM_JUDGE
+            and source is not None
+            and ctx.unverified_tool_result(source)
+        ):
             lines.append(UNVERIFIED_RECORDS.format(param=param))
     if node.mcp is not None:
         lines.append(
@@ -949,8 +955,6 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
         # A judge's decision is its output fields: a spec with none is
         # incomplete (verify.judge_spec_findings) and decides nothing.
         problems.append("output_schema names no properties: a judge's decision is its fields")
-    if node.kind is NodeKind.LLM_JUDGE:
-        problems += inexpressible_judge_output(node, schema)
     if isinstance(node.output, dict) and node.kind is not NodeKind.HITL_GATE:
         missing = [
             k for k in node.output if k != "items" and k not in (schema.get("properties") or {})
@@ -977,31 +981,6 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
                 f"`{c}` reads `{node.id}.output.{ref.field}`, which output_schema does not have"
             )
     return problems
-
-
-def inexpressible_judge_output(node: Any, schema: dict[str, Any]) -> list[str]:
-    """Why a judge's output schema cannot be asked for as structured output.
-
-    Every runtime asks a judge for its answer schema-locked, and that cannot
-    express an object with no listed fields or a value with no type. Emit
-    refuses such a judge, after every piece is written and with no piece able
-    to repair it: a `row` field typed `object` on a judge cost a whole
-    ops-report compile its deliverable. The interface entry is where the
-    schema is decided, so it is refused here, while one call can still fix it.
-    """
-    from rote.inference import STRUCTURED_INEXPRESSIBLE, structured_output_schema
-
-    try:
-        structured_output_schema(schema, node_id=node.id)
-    except RuntimeError as e:
-        if STRUCTURED_INEXPRESSIBLE not in str(e):
-            raise
-        return [
-            f"{e} A judge's answer is schema-locked: list the fields of every object "
-            "it returns (`findings[].row.ticket_id`), give every field a type, or leave "
-            "the field out."
-        ]
-    return []
 
 
 def _interface_entry(payload: dict[str, Any], ctx: Context, node: Any) -> dict[str, Any]:
@@ -1375,7 +1354,48 @@ def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str
             )
         except ValueError as e:
             problems.append(f"passthrough {dict(passthrough)} is refused: {e}")
+    if not problems and (payload.get("client") or "anthropic") == "anthropic":
+        problems += inexpressible_judge_answer(ctx, node, passthrough)
     return problems
+
+
+def inexpressible_judge_answer(
+    ctx: Context, node: Any, passthrough: Mapping[str, str]
+) -> list[str]:
+    """Why this judge's answer cannot be asked for as structured output.
+
+    The check emit runs (``_py_common.emit_signature_module``): an anthropic
+    judge's output, less its passthrough fields, must fit schema-locked
+    decoding, which cannot express an object with no listed fields or a value
+    with no type. Emit refused such a judge after every piece was written, as
+    a finding no node owned: a `row` typed `object` on an ops-report judge
+    cost the whole compile its deliverable. Found here, the judge can pass
+    the field through, and otherwise its interface entry is repaired
+    (:meth:`TextWriter.repair`).
+    """
+    from rote.inference import (
+        STRUCTURED_INEXPRESSIBLE,
+        passthrough_answer_schema,
+        structured_output_schema,
+    )
+
+    schema = ctx.output_schema(node.id)
+    if not schema:
+        return []  # no interface entry yet: interface_problems reports that
+    try:
+        structured_output_schema(
+            passthrough_answer_schema(schema, dict(passthrough)), node_id=node.id
+        )
+    except RuntimeError as e:
+        if STRUCTURED_INEXPRESSIBLE not in str(e):
+            raise
+        return [
+            f"{e} Pass the field through when the task offers a candidate for it. "
+            "Otherwise its interface entry must list the fields of every object the "
+            "judge returns (`findings[].row.ticket_id`), type every field, or leave "
+            "the field out."
+        ]
+    return []
 
 
 def covers_every_output(ctx: Context, node: Any, passthrough: Mapping[str, str]) -> bool:
@@ -1710,6 +1730,29 @@ def unresolved_findings(unresolved: dict[str, list[str]]) -> list[ContractFindin
         )
         for node_id, problems in sorted(unresolved.items())
         for problem in problems
+    ]
+
+
+def undelivered_findings(missing: Mapping[str, list[str]]) -> list[ContractFinding]:
+    """Each value a module still reports missing, as a review gap.
+
+    The structure pass was asked for a binding and added none (or no round
+    was left to ask), so the step runs without the value. That is a gap a
+    reviewer closes, not a failed compile.
+    """
+    from rote.compiler.verify import VALUE_NOT_DELIVERED
+
+    return [
+        ContractFinding(
+            node_id=node_id,
+            kind=VALUE_NOT_DELIVERED,
+            severity="warning",
+            message=f"{node_id}: {message}. No binding was added for it, so the step "
+            "runs without that value",
+            path=f"extracted/{node_id}.py",
+        )
+        for node_id, messages in sorted(missing.items())
+        for message in messages
     ]
 
 
@@ -2119,6 +2162,13 @@ class TextWriter:
                     f"generate: repair round {rounds}: {node_id}: "
                     + " | ".join(p[:300] for p in problems),
                 )
+            from rote.inference import STRUCTURED_INEXPRESSIBLE
+
+            for node_id, problems in per.items():
+                # A judge cannot change its own output schema: its interface
+                # entry is repaired first, then its prompt follows.
+                if any(STRUCTURED_INEXPRESSIBLE in p for p in problems):
+                    entries[node_id] = problems
             if entries:
                 # First, so the pieces repaired this round write against the
                 # entries they read.
@@ -2219,6 +2269,7 @@ async def write_text(
             "driver": driver.name,
             "mode": "parallel",
             "unresolved": writer.unresolved,
+            "missing_values": missing_value_findings(writer.modules),
             **writer.ledger.metadata(int((time.monotonic() - started) * 1000), rounds),
         },
     )
