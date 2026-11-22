@@ -104,24 +104,30 @@ _TEST_OUTPUT_CHARS = 6000
 #: What a consumer of an unverified MCP result is told (Context.unverified_tool_result).
 UNVERIFIED_TOOL_RESULT = (
     "  This value is an MCP tool's result, and no recorded run shows its shape: the schema "
-    "above is inferred from the skill's words. Accept every shape it can take: the "
-    "collection itself (a list), an object that wraps it under any key, or the same as "
-    "JSON text. Text that is not JSON (CSV, markdown) is parsed as the skill describes it. "
-    "The fields inside each record are known only by name too: one may hold the plain value "
+    "above is inferred from the skill's words. So the code takes every shape it can have:\n"
+    "  - the collection itself (a list), an object that wraps it under any key, or either "
+    "as JSON text.\n"
+    "  - text that is not JSON. That is not an error: parse it as the skill describes it "
+    "(a CSV or markdown table by its header row).\n"
+    "  - inside a record, a field holding the plain value (text, a number, true or false) "
     "or an object that wraps it (a time as text, or as an object holding the time under a "
-    "key). Read each field your step uses by finding the value in whichever form arrives, "
-    "and raise `ValueError` naming the field when no form fits. Never turn a field of "
-    "unknown form into text with `str()`: a wrapped value then compares equal to nothing "
-    "and every record silently fails to match. Test each shape, wrapped fields included."
+    "key). Find the value in whichever form arrives, and convert a plain value to the form "
+    "you need (an id that arrives as a number, to text) instead of refusing it.\n"
+    "  Raise `ValueError` naming the field only when a field the step cannot work without "
+    "is absent. Never turn an object of unknown form into text with `str()`: a wrapped "
+    "value then compares equal to nothing and every record silently fails to match. Test "
+    "each shape: the list, the wrapper, JSON text, non-JSON text where the skill describes "
+    "a table, a wrapped field, and a number where text is usual."
 )
 
 #: What the interface entry of a node that reads such a result is told.
 UNVERIFIED_RECORDS = (
     "Its input `{param}` is the result of an MCP tool no recorded run shows, so the form "
-    "of each record's fields is not known. Carry a record you pass along whole, under "
-    "`row` (type `object`). A field of your output that restates a record's own field "
-    "would be a guess at its form, so list only what this step works out, in the form "
-    "this step produces it (a date it parsed is a `YYYY-MM-DD` string of its own)."
+    "of each record's fields is not known. Still return every field the skill's step "
+    "reports, each as a value this step reads out of the record and produces in a plain "
+    "form of its own (an email as text, a date as a `YYYY-MM-DD` string): never describe "
+    "one as the tool returned it, which would be a guess at its form. Carry the record "
+    "itself whole as well, under `row` (type `object`)."
 )
 
 #: What a reader of a gate that may be skipped (``when:``) is told.

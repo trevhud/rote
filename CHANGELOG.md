@@ -11,6 +11,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The guidance a step gets for an MCP result no recorded run shows is a
+  list, one point per shape (the list, a wrapper object, JSON text, a text
+  table, a wrapped field, a number where text is usual), and says to
+  convert a plain value and to raise only when a needed field is absent.
+  Its interface entry still returns every field the skill's step reports,
+  beside the whole record under `row`. The wording from the previous
+  entry made a small model return bare rows (2 of 8 compiles), refuse a
+  numeric id (1 of 6) and refuse a text table (1 of 2). Haiku 5.5 on the
+  final wording: ops-report 0.93 to 0.97 over six compiles, a
+  reconciliation skill 0.87 to 0.94 over four, none failing to run.
+
 - The structure pass is told what separates a code step from a judge: code
   counts, filters and matches only by a field each record already holds,
   and a step that must read what a message, an email or a document says is
