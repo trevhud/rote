@@ -37,7 +37,7 @@ export async function targetResearch(
         nodeId: "target_research",
         description: "Run external research (Bright Data web search, ClinicalTrials.gov)\nand internal research (Airweave enterprise search, Salesforce account\nhistory, internal publications) in parallel. Compile a short intel\nbrief covering pipeline, RWE/HEOR signals, key programs/teams, prior\naccount interactions, and validated TA experience.\n",
         task: input,
-        model: vars.ROTE_MODEL_TARGET_RESEARCH ?? "claude-sonnet-4-6",
+        model: vars.ROTE_MODEL_TARGET_RESEARCH ?? "claude-sonnet-5-5",
         tools,
         maxIterations: 10,
         withheld: bound.withheld,

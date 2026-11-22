@@ -1768,9 +1768,28 @@ they do. Haiku 5.5 is level on fidelity since #362 (before it, a guessed
 tool-result shape and a blocked time zone database made its compiles
 wrong) and is the cheap choice by `--model`; it is slower because it
 thinks at length (about 100k output tokens a compile). One Haiku compile in
-twelve failed outright, on a structure-pass kind error. The emitted judges'
-default (`DEFAULT_ANTHROPIC_MODEL`) is still Sonnet 4.6: a judge's model
-changes its decisions, and that needs its own eval.
+twelve failed outright, on a structure-pass kind error.
+
+### Emitted judges and agent loops default to Sonnet 5.5
+
+`DEFAULT_ANTHROPIC_MODEL` (`adapters/_common.py`) is `claude-sonnet-5-5`,
+for a judge or loop whose IR names no model. Measured 2026-11-22 with
+`tools/judge_models.py` in the skill corpus: four example judges, 15
+inputs with hand-written answers, two calls each on the subscription lane.
+
+| judge model | fields right | time a call | output tokens | cost a call |
+| --- | --- | --- | --- | --- |
+| Sonnet 4.6 | 70 of 70 | 11.5 s | 709 | $0.0185 |
+| Sonnet 5.5 | 70 of 70 | 3.5 s | 330 | $0.0086 |
+| Haiku 5.5 | 70 of 70 | 4.4 s | 631 | $0.0005 |
+
+The cases are clear-cut, so this shows no regression and says nothing
+about borderline inputs. Sonnet stays the default because the priority is
+accuracy over cost, and nothing here shows Haiku holds on harder inputs;
+`ROTE_MODEL_<ID>` picks it per node. One consequence: every 5.x model
+answers 400 to `temperature`, so an Anthropic judge whose IR sets one fails
+on the default model. `rote emit` prints a note naming the judge and the
+two knobs (`adapters._common.sampling_notes`).
 
 ### `DEFAULT_MAX_TURNS = 60`
 

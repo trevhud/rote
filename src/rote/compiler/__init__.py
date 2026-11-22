@@ -271,7 +271,7 @@ class Compiler:
             bundled one inside the rote source tree.
         model
             Override the LLM model the driver uses for the compiler
-            (e.g. ``"claude-opus-4-6"`` to use Opus instead of the
+            (e.g. ``"claude-opus-5-5"`` to use Opus instead of the
             default Sonnet). ``None`` uses the driver's default.
         on_event
             Optional live-progress sink threaded to the driver and fired

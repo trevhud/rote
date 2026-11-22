@@ -31,7 +31,7 @@ from rote.ir import GATE_MESSAGE_PLACEHOLDER, MCPLiteral, Node, NodeKind, Pipeli
 # judges when the IR omits ``signature_spec.model``. Bump these when a
 # new default ships — every adapter config inherits them.
 
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
 
 #: A judge prompt's ``{{ dotted.path }}`` placeholder, as a regex source both
@@ -1206,6 +1206,24 @@ def agent_loop_named_types(pipeline: Pipeline) -> list[str]:
             for found in agent_loop_output(node).named_types.values():
                 names.update(found)
     return sorted(names)
+
+
+def sampling_notes(pipeline: Pipeline) -> list[str]:
+    """One line per Anthropic judge whose IR sets ``temperature``.
+
+    Claude models from 4.7 on answer 400 to the parameter, the default judge
+    model among them, so such a judge fails every call as emitted. Emit says
+    so, with the two knobs that fix it without a re-emit.
+    """
+    return [
+        f"{node.id}: the IR sets temperature, which current Claude models reject "
+        f"(HTTP 400). Set {temperature_env_var(node.id)}= (empty) to omit it, or "
+        f"{override_env_vars(node.id)[0]} to a model that accepts it"
+        for node in pipeline.nodes
+        if node.signature_spec is not None
+        and node.signature_spec.client == "anthropic"
+        and node.signature_spec.temperature is not None
+    ]
 
 
 def unchecked_output_notes(pipeline: Pipeline, *, types_module: str | None) -> list[str]:

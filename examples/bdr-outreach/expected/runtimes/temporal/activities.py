@@ -79,7 +79,7 @@ async def target_research(payload: dict) -> dict:
                 "eractions, and validated TA experience.\n"
             ),
             task=json.dumps(payload, default=str),
-            model=os.environ.get("ROTE_MODEL_TARGET_RESEARCH", "claude-sonnet-4-6"),
+            model=os.environ.get("ROTE_MODEL_TARGET_RESEARCH", "claude-sonnet-5-5"),
             tools=[
                 "bright_data_search",
                 "bright_data_scrape",
@@ -134,7 +134,7 @@ async def lead_generation_loop(payload: dict) -> dict:
                 "ntact quota is met.\n"
             ),
             task=json.dumps(payload, default=str),
-            model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-4-6"),
+            model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-5-5"),
             tools=["zoominfo_search_contacts", "zoominfo_search_companies"],
             tool_servers={"zoominfo_search_companies": "zoominfo", "zoominfo_search_contacts": "zoominfo"},
             max_iterations=10,

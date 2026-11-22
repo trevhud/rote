@@ -191,3 +191,22 @@ def test_more_unions_than_the_strict_limit_falls_back_to_non_strict() -> None:
     over = {**at_limit, "one_more": "int | null"}
     assert agent_loop_output(_loop(output=at_limit)).strict is True
     assert agent_loop_output(_loop(output=over)).strict is False
+
+
+def test_emit_notes_a_judge_whose_temperature_the_default_model_rejects() -> None:
+    from rote.adapters._common import sampling_notes
+    from rote.ir import Pipeline
+
+    bdr = Path(__file__).parent.parent / "examples/bdr-outreach/expected/pipeline.yaml"
+    assert sampling_notes(load_pipeline(bdr)) == []
+
+    data = load_pipeline(bdr).model_dump(mode="json", by_alias=True, exclude_none=True)
+    judge = next(n for n in data["nodes"] if n["id"] == "vet_contact")
+    judge["signature_spec"]["temperature"] = 0.2
+    (note,) = sampling_notes(Pipeline.model_validate(data))
+    assert note.startswith("vet_contact: ")
+    assert "ROTE_TEMPERATURE_VET_CONTACT=" in note
+    assert "ROTE_MODEL_VET_CONTACT" in note
+
+    judge["signature_spec"]["client"] = "openai"
+    assert sampling_notes(Pipeline.model_validate(data)) == []
