@@ -70,7 +70,7 @@ export async function leadGenerationLoop(
         nodeId: "lead_generation_loop",
         description: "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\nsearches (ideal persona, manufacturer's internal team, TA broad net).\nEnriches in batches of 10, vets each contact, backfills with new\ntargeted searches when discards create gaps. Loop terminates when the\nvetted-contact quota is met.\n",
         task: input,
-        model: vars.ROTE_MODEL_LEAD_GENERATION_LOOP ?? "claude-sonnet-4-6",
+        model: vars.ROTE_MODEL_LEAD_GENERATION_LOOP ?? "claude-sonnet-5-5",
         tools,
         maxIterations: 10,
         withheld: bound.withheld,

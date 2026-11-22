@@ -110,7 +110,7 @@ OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(
 # Operator overrides: change the model or point at a different
 # endpoint (proxy, gateway, OpenAI-compatible server) without
 # re-emitting. Unset means the default below / the vendor's endpoint.
-MODEL = os.environ.get("ROTE_MODEL_PERSONALIZE_EMAIL", "claude-sonnet-4-6")
+MODEL = os.environ.get("ROTE_MODEL_PERSONALIZE_EMAIL", "claude-sonnet-5-5")
 BASE_URL = os.environ.get("ROTE_BASE_URL_PERSONALIZE_EMAIL")
 
 

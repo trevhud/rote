@@ -11,6 +11,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- Emitted judges and agent loops default to Claude Sonnet 5.5 (it was
+  Sonnet 4.6) when the IR names no model. On four example judges and 15
+  inputs with hand-written answers, both got 70 of 70 fields right; Sonnet
+  5.5 answered in 3.5 s against 11.5 s, with half the output tokens and
+  half the cost. Set `ROTE_MODEL_<NODE_ID>` to choose another. Claude 5
+  models reject `temperature`, so `rote emit` now prints a note for an
+  Anthropic judge whose IR sets one, naming the knobs that fix it
+  (`ROTE_TEMPERATURE_<NODE_ID>=` or `ROTE_MODEL_<NODE_ID>`). Re-emit to
+  pick up the new default; an already emitted app keeps the model it has.
+
 - The guidance a step gets for an MCP result no recorded run shows is a
   list, one point per shape (the list, a wrapper object, JSON text, a text
   table, a wrapped field, a number where text is usual), and says to

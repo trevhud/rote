@@ -98,3 +98,16 @@ def test_compiler_effort_stays_below_the_cli_default() -> None:
         f"`rote compile --effort` for one hard skill instead of raising it "
         f"for everyone."
     )
+
+
+def test_the_default_judge_model_is_a_current_sonnet() -> None:
+    """Judges and agent loops whose IR names no model run on this one.
+
+    Pinned as a property: not Opus (about 5x the price on every judge call
+    of every emitted app) and not the 4.x generation the default left on a
+    measured eval.
+    """
+    from rote.adapters._common import DEFAULT_ANTHROPIC_MODEL
+
+    assert DEFAULT_ANTHROPIC_MODEL.startswith("claude-sonnet-")
+    assert int(DEFAULT_ANTHROPIC_MODEL.split("-")[2]) >= 5

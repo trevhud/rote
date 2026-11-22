@@ -293,7 +293,7 @@ signature_spec:
   prompt: |                       # Jinja-style {{ var }} interpolation
     <multi-line prompt template>
   client: anthropic               # 'anthropic' | 'openai'
-  model: claude-sonnet-4-6        # optional; adapter chooses default
+  model: claude-sonnet-5-5        # optional; adapter chooses default
   base_url: https://...           # optional; custom endpoint. With client
                                   # 'openai' this reaches any OpenAI-compatible
                                   # server (Ollama, vLLM, a gateway). Only set

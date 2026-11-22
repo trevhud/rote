@@ -143,7 +143,7 @@ export async function personalizeEmail(
     });
 
     const response = await client.messages.create({
-        model: env.ROTE_MODEL_PERSONALIZE_EMAIL ?? "claude-sonnet-4-6",
+        model: env.ROTE_MODEL_PERSONALIZE_EMAIL ?? "claude-sonnet-5-5",
         max_tokens: 4096,
         output_config: {
             format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },
