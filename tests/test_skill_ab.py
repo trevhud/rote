@@ -195,6 +195,35 @@ def test_a_gate_the_agent_answered_fails(tmp_path: Path) -> None:
     )
 
 
+def test_a_conditional_gate_the_run_skipped_needs_no_journal_entry(
+    tmp_path: Path,
+) -> None:
+    """The driver writes nothing for a gate whose ``when`` is false. The check
+    called that a missing journal entry and failed every trial of a correct run."""
+    plan = {
+        "steps": [
+            {"id": "check", "kind": "code"},
+            {"id": "ask_scope", "kind": "gate", "when": {"node": "check", "field": "empty"}},
+            {"id": "approve", "kind": "gate"},
+        ]
+    }
+    folder = _run_folder(tmp_path, gate=HUMAN_GATE)
+    check = folder / "nodes" / "check.json"
+    check.write_text(json.dumps({"result": {"empty": False}}))
+    # Answers stay one per gate in plan order, the skipped gate's included.
+    found = _evidence(tmp_path, plan=plan, gate_answers=[{"scope": "all"}, PERSON])
+    assert found.problems == ()
+    assert [g["step"] for g in found.gates] == ["approve"]
+    assert found.gates[0]["matches_person"] is True
+    # A condition that held, or that the journal cannot show, is still a missing entry.
+    check.write_text(json.dumps({"result": {"empty": True}}))
+    answers = [{"scope": "all"}, PERSON]
+    missing = "gate ask_scope has no journal entry"
+    assert missing in _evidence(tmp_path, plan=plan, gate_answers=answers).problems
+    check.unlink()
+    assert missing in _evidence(tmp_path, plan=plan, gate_answers=answers).problems
+
+
 def test_a_gate_answered_without_asking_fails(tmp_path: Path) -> None:
     _run_folder(tmp_path, gate=HUMAN_GATE)
     (problem,) = _evidence(tmp_path, asks=0).problems
