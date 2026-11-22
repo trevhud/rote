@@ -75,24 +75,25 @@ _STREAM_LINE_LIMIT = 16 * 1024 * 1024
 #: Turn-event message cap, matching the api driver's snippet width.
 _TURN_SNIPPET_CHARS = 120
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
-"""Default model for the compiler agent.
+DEFAULT_MODEL = "claude-sonnet-5-5"
+"""Default model for the compiler agent, and for a skill run as an agent.
 
-**Why Sonnet, not Opus:** Claude Code defaults to Opus 4.6, which is
-overkill for the compiler's task. Sonnet 4.6 follows structured
-rubrics just as reliably for this kind of work and is ~5× cheaper on
-both the Anthropic API and the Claude Max/Pro subscription budget.
+**Why Sonnet 5.5.** Measured 2026-11-22 with ``rote bench --fidelity`` on
+expense-audit and ops-report, two compiles each, effort ``low``. Fidelity is
+how closely the compiled pipeline's results match the skill's recorded runs:
 
-**Measured on BDR outreach (2026-04-07):** two runs with Opus burned
-~$3.50 each in subscription accounting (2.6M cache-read tokens, 31K
-output tokens, 31 turns). At that rate a single Max/Pro user's "extra
-usage" allowance is exhausted in 2-3 runs. The Sonnet switch brings
-per-run cost to ~$0.70, which makes iterative rubric tuning actually
-feasible.
+- Sonnet 4.6: 0.89, 0.85, 0.95, 0.98. $1.19 and 258 s a compile.
+- Sonnet 5.5: 0.85, 0.98, 0.96, 0.99. $0.53 and 132 s a compile.
+- Haiku 5.5: 0.85 to 0.98 over eight compiles. $0.09 and 180 s a compile.
 
-Users can override with ``ClaudeDriver(model=...)`` or the CLI flag
-``rote compile --model claude-opus-4-6`` for complex skills where
-Opus's extra reasoning ability is worth the 5× cost.
+Sonnet 5.5 holds fidelity at under half the cost and time. It writes about
+a third of the test assertions Sonnet 4.6 does, which is why an earlier
+bench (2026-10-19, before fidelity was measured) kept 4.6. Haiku 5.5 is the
+cheap choice (``--model claude-haiku-5-5``): level on fidelity, slower
+because it thinks at length.
+
+**Why not Opus:** two BDR compiles on Opus burned ~$3.50 each and used up a
+Max plan's extra-usage allowance. Pass ``--model`` for a skill that needs it.
 """
 
 DEFAULT_MAX_TURNS = 60
@@ -178,7 +179,7 @@ Grep cover discovery of source skill structure and reference content."""
 #: Unset, it is 32000 for a model the CLI cannot resolve, and a real
 #: invoice-push compile died on it after 28 minutes and 8 turns ("Claude's
 #: response exceeded the 32000 output token maximum"), on one large Write.
-#: 64000 is the default compile model's (claude-sonnet-4-6) own maximum;
+#: 64000 was the earlier default compile model's (claude-sonnet-4-6) maximum;
 #: Claude Code lowers a value above a model's cap to the cap, so a larger
 #: model is never asked for more than it supports. Higher is not free: the
 #: docs note it shrinks the context left before auto-compaction. A value

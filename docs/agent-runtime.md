@@ -65,7 +65,7 @@ gets the same output shape regardless of which backend ran the agent.
 
 ```sh
 claude -p "<prompt>" \
-    --model claude-sonnet-4-6 \
+    --model claude-sonnet-5-5 \
     --append-system-prompt "<inlined SKILL.md>" \
     --add-dir "<skill_dir>" \
     --add-dir "<compiler_skill_dir>" \
@@ -80,11 +80,11 @@ default is Opus 4.6, which is expensive overkill for the compiler's
 structured-rubric task. The first two real compilations on BDR with
 Opus burned ~$3.50 each in subscription accounting (2.6M cache-read
 tokens per run, 31 turns, ~8 minutes) and exhausted the Max/Pro
-"extra usage" budget in two runs. Switching to Sonnet 4.6 drops per-
-run cost to ~$0.70, which makes iterative rubric tuning feasible.
-rote defaults to ``claude-sonnet-4-6`` for that reason; users can
-override with ``rote compile --model claude-opus-4-6`` for complex
-skills where Opus's extra reasoning earns its cost.
+"extra usage" budget in two runs. A Sonnet compile costs well under a
+dollar, which makes iterative rubric tuning feasible. rote defaults to
+``claude-sonnet-5-5`` (measured against Sonnet 4.6 and Haiku 5.5 with
+``rote bench --fidelity``, 2026-11-22); users can override with
+``rote compile --model <id>``.
 
 **Turn budget.** BDR-scale skills need ~25 tool calls minimum and
 realistically 40–50 with exploration. The default ``--max-turns 60``

@@ -1652,15 +1652,14 @@ The general lesson, and it generalizes past this file: a usage number is
 only as complete as the fields you chose to read, and a field you never
 read fails silently and looks like a small number.
 
-### Sonnet is the default, not Opus
+### Sonnet 5.5 is the default, not Opus
 
 Both `ClaudeDriver` and `AnthropicApiDriver` default to
-`claude-sonnet-4-6` rather than Opus, because Opus is ~5× more
-expensive and Sonnet is fully capable of following the structured
-rubric. We learned this the hard way — the first two BDR runs with
-Opus exhausted a Claude Max/Pro "extra usage" budget in two
-attempts (~$3.50 each). Don't "fix" the default to Opus unless you
-have specific evidence that a skill needs it.
+`claude-sonnet-5-5`. Not Opus: it is ~5x the price, and the first two BDR
+runs on Opus exhausted a Claude Max/Pro "extra usage" budget in two
+attempts (~$3.50 each). Don't move the default to Opus without specific
+evidence that a skill needs it. The move from Sonnet 4.6 was measured, see
+"The compile default moved to Sonnet 5.5 on fidelity" below.
 
 ### Thinking, not input, is what a compile pays for
 
@@ -1749,32 +1748,29 @@ carries the writes and `ephemeral_1h_input_tokens` is 0. Unmeasured: a
 single response, or a repair round's verification, that runs past 5
 minutes expires the cache and costs one full rewrite (seen once, $0.23).
 
-### Sonnet 5.5 is faster and cheaper, but not yet the default
+### The compile default moved to Sonnet 5.5 on fidelity
 
-Measured 2026-10-19 with `rote bench` (one run each, effort `low` unless
-named), against Sonnet 4.6 at `low`:
+Measured 2026-11-22 with `rote bench --fidelity` on expense-audit and
+ops-report, two compiles each, effort `low`. Fidelity is how closely the
+compiled pipeline's results match the skill's recorded runs (1.0 is
+identical):
 
-| skill | model | wall | cost | tests | notes |
-| --- | --- | --- | --- | --- | --- |
-| expense-audit | 4.6 low | 489 s | $1.36 | 91 | |
-| expense-audit | 5.5 low | 183 s | $0.65 | 25 | |
-| expense-audit | 5.5 medium | 264 s | $0.81 | 42 | |
-| expense-audit | 5.5 high | 405 s | $1.12 | 69 | no repair round |
-| ops-report | 4.6 low | 427 s | $1.15 | 58 | |
-| ops-report | 5.5 low | 246 s | $0.78 | 14 | no pipeline input, empty gate payload |
-| ops-report | 5.5 medium | 249 s | $0.77 | 15 | |
+| compile model | fidelity | cost a compile | time a compile | tests written |
+| --- | --- | --- | --- | --- |
+| Sonnet 4.6 | 0.89, 0.85, 0.95, 0.98 | $1.19 | 258 s | 127 to 143 |
+| Sonnet 5.5 | 0.85, 0.98, 0.96, 0.99 | $0.53 | 132 s | 41 to 55 |
+| Haiku 5.5 | 0.85 to 0.98 over eight | $0.09 | 180 s | 80 to 106 |
 
-Structure held on 5.5 (kind mix, wave order, gates, every compile
-verified; the lower `kind`/`nodeR` on 5.5 low are matching artifacts
-like `check_duplicates` for `find_duplicates`). What did not hold is
-coverage: 5.5 writes about half the code and a third to half the test
-assertions (ops-report: 33 asserts against 88), and at `low` it dropped
-the pipeline input schema and the gate's resume payload. Fidelity comes
-before speed, so the default stays 4.6 until `rote bench` has a
-behavioral-equivalence check that can say whether the leaner modules
-behave the same. 5.5 `medium` is the candidate to measure then: 46 and
-42 percent faster, 40 and 33 percent cheaper. Haiku 5.5 is not one: it
-was slower (402 s, 92k output tokens) for $0.27.
+An earlier bench (2026-10-19) kept 4.6 because 5.5 writes about half the
+code and a third of the test assertions, and nothing then could say
+whether the leaner modules behaved the same. The fidelity score can, and
+they do. Haiku 5.5 is level on fidelity since #362 (before it, a guessed
+tool-result shape and a blocked time zone database made its compiles
+wrong) and is the cheap choice by `--model`; it is slower because it
+thinks at length (about 100k output tokens a compile). One Haiku compile in
+twelve failed outright, on a structure-pass kind error. The emitted judges'
+default (`DEFAULT_ANTHROPIC_MODEL`) is still Sonnet 4.6: a judge's model
+changes its decisions, and that needs its own eval.
 
 ### `DEFAULT_MAX_TURNS = 60`
 
