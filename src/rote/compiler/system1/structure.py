@@ -300,8 +300,12 @@ Per node:
   the skill marks it MANDATORY (see mandatory below).
 - kind: one of the five kinds in the RUBRIC. A call to an outside system is a
   bare external_call; filtering, matching or reshaping its result is its own
-  pure_function (fixed logic) or llm_judge (judgment). A person approving,
-  choosing or providing something is a hitl_gate. Exploratory tool use with a
+  pure_function (fixed logic) or llm_judge (judgment). The data decides
+  which, not the verb: code counts, filters and matches only by a field
+  each record already holds (a column, a status, an id, a date). A step
+  that must read what a message, an email or a document says to count or
+  sort it is an llm_judge, even when the skill words it as counting. A
+  person approving, choosing or providing something is a hitl_gate. Exploratory tool use with a
   stop condition is an agent_loop.
 - intent: one sentence, what the node does and why, in the skill's terms.
 - reads: only the earlier nodes whose results the step's own text uses
