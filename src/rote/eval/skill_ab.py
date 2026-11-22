@@ -1340,12 +1340,15 @@ def bench_score(subject: Subject, trial: Trial) -> float | None:
     """The trial's ``rote bench --fidelity`` score against the case's
     committed reference, the number the earlier round reported. A replay has
     no committed reference: the recording it replays is its reference, and
-    the pairs compare both sides directly."""
+    the pairs compare both sides directly. A case nobody recorded a reference
+    for has none either: the pairs are the result, and a missing optional
+    number must not cost the report of trials already paid for."""
     if (
         subject.replay
         or subject.casefile is None
         or subject.case is None
         or not isinstance(trial.output, dict)
+        or not subject.casefile.reference_path.is_file()
     ):
         return None
     from rote.bench.fidelity import load_reference

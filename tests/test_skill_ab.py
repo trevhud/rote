@@ -746,3 +746,30 @@ def test_a_compiled_agent_gets_the_sessions_tools_only_for_do_steps(tmp_path: Pa
     assert servers == {"rote_gates", "google_drive", "gmail"}
     assert "mcp__google_drive__*" in rules and "mcp__gmail__*" in rules
     assert "Bash(rote skill run ops-report *)" in rules
+
+
+def test_a_case_with_no_recorded_reference_has_no_bench_score(tmp_path: Path) -> None:
+    """The pairs are the result. A missing reference used to raise while the
+    report was built, after every trial had been paid for."""
+    from types import SimpleNamespace
+
+    from rote.bench.fidelity import load_cases, load_reference
+
+    example = tmp_path / "ex"
+    (example / "fidelity").mkdir(parents=True)
+    (example / "skill").mkdir()
+    (example / "fidelity" / "cases.yaml").write_text(
+        "output_fields: {n: a number}\ncases:\n  - {id: one, input: {}}\n", encoding="utf-8"
+    )
+    casefile = load_cases(example)
+    with pytest.raises(FileNotFoundError):
+        load_reference(casefile)
+    subject: Any = SimpleNamespace(
+        replay=False, casefile=casefile, case=casefile.cases[0], contract=("n",)
+    )
+    trial: Any = SimpleNamespace(output={"n": 1, "outcome": "completed"}, portable_calls=())
+    assert skill_ab.bench_score(subject, trial) is None
+    # A recorded reference is read: one without this case is an error, not None.
+    casefile.reference_path.write_text(json.dumps({"cases": {}}), encoding="utf-8")
+    with pytest.raises(KeyError):
+        skill_ab.bench_score(subject, trial)
