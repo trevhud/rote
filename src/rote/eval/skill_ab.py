@@ -748,6 +748,24 @@ def _reports(written: Any, held: Any) -> bool:
     return bool(proof.canonical(written) == proof.canonical(held))
 
 
+def _gate_skipped(plan: Mapping[str, Any], gate: str, folder: Path) -> bool:
+    """Whether the run's own journal says a conditional gate did not ask.
+
+    The driver writes nothing for a gate whose ``when`` is false, so the
+    condition is read again from the result it names, by the driver's rule."""
+    from rote.skill_target._driver import _gate_waits
+
+    step = next(s for s in plan.get("steps") or [] if s.get("id") == gate)
+    when = step.get("when")
+    if not when:
+        return False
+    source = folder / "nodes" / f"{when['node']}.json"
+    if not source.is_file():
+        return False
+    result = json.loads(source.read_text(encoding="utf-8")).get("result")
+    return _gate_waits(step, {when["node"]: result}) is False
+
+
 def driver_evidence(
     run_root: Path,
     *,
@@ -783,16 +801,20 @@ def driver_evidence(
 
     gates: list[dict[str, Any]] = []
     gate_steps = [s["id"] for s in plan.get("steps") or [] if s.get("kind") == "gate"]
-    for index, step in enumerate(gate_steps):
+    index = 0
+    for step in gate_steps:
         node = folder / "nodes" / f"{step}.json"
         if not node.is_file():
-            if state == "done":
+            if state == "done" and not _gate_skipped(plan, step, folder):
                 problems.append(f"gate {step} has no journal entry")
             continue
         record = json.loads(node.read_text(encoding="utf-8"))
         said = record.get("said")
         by = record.get("answered_by")
+        # The person's answers are in the order the gates asked, so a gate
+        # the run skipped takes none.
         person = gate_answers[index] if index < len(gate_answers) else None
+        index += 1
         recorded = record.get("result")
         matches = (
             isinstance(recorded, Mapping)
