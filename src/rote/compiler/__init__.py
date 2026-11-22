@@ -935,6 +935,17 @@ class Compiler:
                         *generate.unresolved_findings(unresolved),
                     ],
                 )
+            undelivered = result.metadata.get("missing_values")
+            if isinstance(undelivered, dict) and undelivered:
+                # A value a module said its step lacks, still unbound after the
+                # repairs: the step ships without it, so a reviewer must see it.
+                verification = dataclasses.replace(
+                    verification,
+                    findings=[
+                        *verification.findings,
+                        *generate.undelivered_findings(undelivered),
+                    ],
+                )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
             remove_materialized(Path(result.pipeline_yaml_path).parent)

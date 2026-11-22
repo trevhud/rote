@@ -107,7 +107,21 @@ UNVERIFIED_TOOL_RESULT = (
     "above is inferred from the skill's words. Accept every shape it can take: the "
     "collection itself (a list), an object that wraps it under any key, or the same as "
     "JSON text. Text that is not JSON (CSV, markdown) is parsed as the skill describes it. "
-    "Test each shape."
+    "The fields inside each record are known only by name too: one may hold the plain value "
+    "or an object that wraps it (a time as text, or as an object holding the time under a "
+    "key). Read each field your step uses by finding the value in whichever form arrives, "
+    "and raise `ValueError` naming the field when no form fits. Never turn a field of "
+    "unknown form into text with `str()`: a wrapped value then compares equal to nothing "
+    "and every record silently fails to match. Test each shape, wrapped fields included."
+)
+
+#: What the interface entry of a node that reads such a result is told.
+UNVERIFIED_RECORDS = (
+    "Its input `{param}` is the result of an MCP tool no recorded run shows, so the form "
+    "of each record's fields is not known. Carry a record you pass along whole, under "
+    "`row` (type `object`). A field of your output that restates a record's own field "
+    "would be a guess at its form, so list only what this step works out, in the form "
+    "this step produces it (a date it parsed is a `YYYY-MM-DD` string of its own)."
 )
 
 #: What a reader of a gate that may be skipped (``when:``) is told.
@@ -744,6 +758,17 @@ ANSWER_SCHEMA: dict[str, Any] = {
         # Pipeline input fields a module needs and the skeleton lacks
         # (rote.compiler.system1.added_inputs): added only, checked by code.
         "input_fields": {"type": "array", "items": added_inputs.ENTRY_SCHEMA},
+        # Values a module's step uses that none of its parameters holds: the
+        # structure pass is asked for the binding (structure.rebind).
+        "missing_values": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}, "why": {"type": "string"}},
+                "required": ["value", "why"],
+                "additionalProperties": False,
+            },
+        },
         "edits": {
             "type": "array",
             "items": {
@@ -768,6 +793,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "client",
         "passthrough",
         "input_fields",
+        "missing_values",
         "edits",
     ],
     "additionalProperties": False,
@@ -775,7 +801,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text, [] for output_fields, passthrough, input_fields and edits,'
+    '"" for text, [] for output_fields, passthrough, input_fields, missing_values and edits,'
     '{"condition": "", "max_iterations": 0} '
     'for termination, and "anthropic" for client.'
 )
@@ -846,6 +872,16 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         lines.append(f"It runs once per item of `{element}` and returns one value per item.")
     if node.constants:
         lines += ["Its constants:", *_constant_lines(node)]
+    for param, ref in (node.inputs or {}).items():
+        source = parse_input_ref(ref).node_id
+        # Not a judge: its answer is schema-locked, which cannot hold a
+        # record as an object with no listed fields.
+        if (
+            node.kind is not NodeKind.LLM_JUDGE
+            and source is not None
+            and ctx.unverified_tool_result(source)
+        ):
+            lines.append(UNVERIFIED_RECORDS.format(param=param))
     if node.mcp is not None:
         lines.append(
             f"It is the MCP call `{node.mcp.server}.{node.mcp.tool}`: its output is the "
@@ -1318,7 +1354,48 @@ def judge_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str
             )
         except ValueError as e:
             problems.append(f"passthrough {dict(passthrough)} is refused: {e}")
+    if not problems and (payload.get("client") or "anthropic") == "anthropic":
+        problems += inexpressible_judge_answer(ctx, node, passthrough)
     return problems
+
+
+def inexpressible_judge_answer(
+    ctx: Context, node: Any, passthrough: Mapping[str, str]
+) -> list[str]:
+    """Why this judge's answer cannot be asked for as structured output.
+
+    The check emit runs (``_py_common.emit_signature_module``): an anthropic
+    judge's output, less its passthrough fields, must fit schema-locked
+    decoding, which cannot express an object with no listed fields or a value
+    with no type. Emit refused such a judge after every piece was written, as
+    a finding no node owned: a `row` typed `object` on an ops-report judge
+    cost the whole compile its deliverable. Found here, the judge can pass
+    the field through, and otherwise its interface entry is repaired
+    (:meth:`TextWriter.repair`).
+    """
+    from rote.inference import (
+        STRUCTURED_INEXPRESSIBLE,
+        passthrough_answer_schema,
+        structured_output_schema,
+    )
+
+    schema = ctx.output_schema(node.id)
+    if not schema:
+        return []  # no interface entry yet: interface_problems reports that
+    try:
+        structured_output_schema(
+            passthrough_answer_schema(schema, dict(passthrough)), node_id=node.id
+        )
+    except RuntimeError as e:
+        if STRUCTURED_INEXPRESSIBLE not in str(e):
+            raise
+        return [
+            f"{e} Pass the field through when the task offers a candidate for it. "
+            "Otherwise its interface entry must list the fields of every object the "
+            "judge returns (`findings[].row.ticket_id`), type every field, or leave "
+            "the field out."
+        ]
+    return []
 
 
 def covers_every_output(ctx: Context, node: Any, passthrough: Mapping[str, str]) -> bool:
@@ -1516,6 +1593,36 @@ def dataflow_findings(
     return out
 
 
+def missing_values(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The values a module answer says its step uses and no parameter holds."""
+    out = []
+    for entry in payload.get("missing_values") or []:
+        if isinstance(entry, dict) and str(entry.get("value") or "").strip():
+            out.append(
+                {"value": str(entry["value"]).strip(), "why": str(entry.get("why") or "").strip()}
+            )
+    return out
+
+
+def missing_value_findings(modules: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+    """``{node id: messages}`` for each value a module piece reported missing.
+
+    Only the piece that wrote a step's code knows what the code needed and did
+    not get: a report step bound to the matches but not to the rows they came
+    from printed "Total bookings: not supplied", which no static check sees.
+    The structure pass decides the binding, as for any data-flow finding.
+    """
+    return {
+        node_id: [
+            f"the step's code needs {e['value']} and none of its inputs holds it"
+            + (f" ({e['why']})" if e["why"] else "")
+            for e in answer.get("missing_values") or []
+        ]
+        for node_id, answer in modules.items()
+        if answer.get("missing_values")
+    }
+
+
 #: Pydantic's per-error tail: ``[type=value_error, input_value={...},
 #: input_type=dict]``. Its input_value may hold brackets, so it ends at
 #: ``input_type=<name>]``.
@@ -1623,6 +1730,29 @@ def unresolved_findings(unresolved: dict[str, list[str]]) -> list[ContractFindin
         )
         for node_id, problems in sorted(unresolved.items())
         for problem in problems
+    ]
+
+
+def undelivered_findings(missing: Mapping[str, list[str]]) -> list[ContractFinding]:
+    """Each value a module still reports missing, as a review gap.
+
+    The structure pass was asked for a binding and added none (or no round
+    was left to ask), so the step runs without the value. That is a gap a
+    reviewer closes, not a failed compile.
+    """
+    from rote.compiler.verify import VALUE_NOT_DELIVERED
+
+    return [
+        ContractFinding(
+            node_id=node_id,
+            kind=VALUE_NOT_DELIVERED,
+            severity="warning",
+            message=f"{node_id}: {message}. No binding was added for it, so the step "
+            "runs without that value",
+            path=f"extracted/{node_id}.py",
+        )
+        for node_id, messages in sorted(missing.items())
+        for message in messages
     ]
 
 
@@ -1873,6 +2003,9 @@ class TextWriter:
             elif not is_judge:
                 # An empty list keeps the prior entries, like a file left empty.
                 answer["input_fields"] = fields or list((prior or {}).get("input_fields") or [])
+                # Never kept from the prior answer: it says what this answer's
+                # module still lacks, and a repair that got the value lacks nothing.
+                answer["missing_values"] = missing_values(payload)
             if is_judge:
                 # An empty list keeps the prior choice: a repair returns only
                 # what it changes, like a file left empty.
@@ -2001,6 +2134,10 @@ class TextWriter:
                     verification = self.verified(verify)
                     continue
             flows = dataflow_findings(verification, self._rebound)
+            for node_id, messages in missing_value_findings(self.modules).items():
+                fresh = [m for m in messages if (node_id, m) not in self._rebound]
+                if fresh:
+                    flows.setdefault(node_id, []).extend(fresh)
             if flows and self.rebind is not None and rounds + 1 < MAX_REPAIR_ROUNDS:
                 # Only with a round left after it to rewrite the pieces a new
                 # binding changes: otherwise it ships a step its code cannot run.
@@ -2025,6 +2162,13 @@ class TextWriter:
                     f"generate: repair round {rounds}: {node_id}: "
                     + " | ".join(p[:300] for p in problems),
                 )
+            from rote.inference import STRUCTURED_INEXPRESSIBLE
+
+            for node_id, problems in per.items():
+                # A judge cannot change its own output schema: its interface
+                # entry is repaired first, then its prompt follows.
+                if any(STRUCTURED_INEXPRESSIBLE in p for p in problems):
+                    entries[node_id] = problems
             if entries:
                 # First, so the pieces repaired this round write against the
                 # entries they read.
@@ -2125,6 +2269,7 @@ async def write_text(
             "driver": driver.name,
             "mode": "parallel",
             "unresolved": writer.unresolved,
+            "missing_values": missing_value_findings(writer.modules),
             **writer.ledger.metadata(int((time.monotonic() - started) * 1000), rounds),
         },
     )

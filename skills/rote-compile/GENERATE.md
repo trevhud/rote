@@ -66,7 +66,10 @@ Asked for a node's interface entry, you answer:
     arrived. The skill lists what to report and rarely the column that
     says which row it is (a ticket number, an order id), and whoever acts
     on the result needs it. A node that builds the final result from such
-    items passes each `row` along.
+    items passes each `row` along. On an `llm_judge`, a `row` the judge
+    writes itself lists its own fields (`items[].row.id`): a judge's
+    answer cannot hold an object with no listed fields. One it copies
+    unchanged from its input stays whole, and code copies it.
   - the step that consumes a value decides nothing about it: describe
     what the producing step makes, in the skill's own terms.
 - `termination` (only where the message asks for it): the loop's stop
@@ -126,6 +129,17 @@ The module:
    the skill does not state (a mapping it never lists). The whole body
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.
+
+When the skill's step uses a value that none of the module's parameters
+holds (how many rows an earlier step fetched, an id an earlier step read),
+list it in `missing_values`: one entry `{value, why}` each, where `value`
+names what the step needs in a few words and `why` is the skill's own words
+that use it. rote then asks for the binding and sends the module back with
+the new parameter. Never print a placeholder for such a value ("not
+supplied", "unknown", 0) and never work it out from something else: a
+result that hides a missing value reads as a finished one. Leave
+`missing_values` empty when every value the step uses arrives in a
+parameter.
 
 When the module reads a pipeline input field (a key of `request`) that the
 input schema in the message does not declare, and the skill says the

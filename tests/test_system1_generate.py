@@ -37,7 +37,7 @@ from rote.compiler.system1.generate import (
     module_request,
 )
 from rote.contracts import ContractFinding
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import NodeKind, Pipeline, load_pipeline, parse_input_ref
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -338,6 +338,62 @@ def test_a_judge_interface_must_name_its_decision_fields(tmp_path: Path) -> None
     assert any("names no properties" in p for p in interface_problems(ctx, node, bare))
     named = {"description": "x", "output_schema": _schema_for(node)}
     assert interface_problems(ctx, node, named) == []
+
+
+def test_a_judge_whose_answer_cannot_be_schema_locked_is_refused_as_emit_would(
+    tmp_path: Path,
+) -> None:
+    """A judge whose findings each carried a `row` typed `object` verified clean
+    and was refused at emit, where no piece could repair it."""
+    from rote.compiler.system1.generate import inexpressible_judge_answer
+
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    judge = _node(ctx, NodeKind.LLM_JUDGE)
+    row: dict[str, Any] = {"type": "object"}
+    ctx.interface[judge.id] = {
+        "description": "x",
+        "output_schema": {
+            "type": "object",
+            "properties": {"row": row, "verdict": {"type": "string"}},
+            "required": ["row", "verdict"],
+        },
+    }
+    [problem] = inexpressible_judge_answer(ctx, judge, {})
+    assert "#/properties/row" in problem and "Pass the field through" in problem
+    # Emit checks the answer less its passthrough fields, so a row code copies is fine.
+    assert inexpressible_judge_answer(ctx, judge, {"row": "anything.row"}) == []
+    row["properties"] = {"id": {"type": "string"}}
+    assert inexpressible_judge_answer(ctx, judge, {}) == []
+    # The interface entry itself is not refused: the judge may yet pass the row through.
+    del row["properties"]
+    assert interface_problems(ctx, judge, ctx.interface[judge.id]) == []
+
+
+def test_only_a_code_step_is_told_to_carry_unrecorded_records_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A judge told to return `row` as a bare object is told to write what its
+    own check refuses."""
+    from rote.compiler.system1.generate import UNVERIFIED_RECORDS, interface_request
+
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    # Every upstream result counts as an unrecorded tool result.
+    monkeypatch.setattr(Context, "unverified_tool_result", lambda self, node_id: True)
+    marker = "no recorded run shows, so the form"
+    assert marker in UNVERIFIED_RECORDS
+    told = {
+        n.kind
+        for n in ctx.pipeline.nodes
+        if n.kind is not NodeKind.HITL_GATE and marker in interface_request(ctx, n, "", "m").prompt
+    }
+    readers = {
+        n.kind
+        for n in ctx.pipeline.nodes
+        if n.kind is not NodeKind.HITL_GATE
+        and any(parse_input_ref(ref).node_id for ref in (n.inputs or {}).values())
+    }
+    assert NodeKind.LLM_JUDGE in readers and NodeKind.PURE_FUNCTION in readers
+    assert told == readers - {NodeKind.LLM_JUDGE}
 
 
 def test_judge_prompt_variables_must_exist_in_the_input_schema(tmp_path: Path) -> None:

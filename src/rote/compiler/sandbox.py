@@ -46,19 +46,30 @@ from dataclasses import dataclass
 from pathlib import Path
 
 #: macOS system trees a sandboxed interpreter must read to start at all:
-#: the dyld shared cache, system frameworks, libc and friends.
+#: the dyld shared cache, system frameworks, libc and friends. And the time
+#: zone database: `/usr/share/zoneinfo` is a link into `/var/db/timezone`, so
+#: without it `ZoneInfo("America/Denver")` failed in every generated test, and
+#: the modules were rewritten to work out daylight saving by hand.
 _MACOS_SYSTEM_READ = (
     "/System",
     "/usr/lib",
     "/usr/share",
     "/private/var/db/dyld",
+    "/private/var/db/timezone",
     "/Library/Apple/System",
 )
 _MACOS_DEVICES = ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/dtracehelper")
 
 #: Linux system dirs bound read-only. User data lives elsewhere (/home,
 #: /root, /run/user), and none of those are bound.
-_LINUX_SYSTEM_READ = ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "/etc/ld.so.cache")
+_LINUX_SYSTEM_READ = (
+    "/usr/lib",
+    "/usr/lib64",
+    "/lib",
+    "/lib64",
+    "/etc/ld.so.cache",
+    "/usr/share/zoneinfo",
+)
 
 
 @dataclass(frozen=True)

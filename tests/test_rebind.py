@@ -349,3 +349,73 @@ async def test_the_parallel_path_never_rebinds_without_a_round_left(
     )
     await writer.repair(lambda _: Verification(pipeline=None, findings=[unread]))
     assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_value_a_module_reports_missing_goes_to_the_structure_pass(
+    tmp_path: Path,
+) -> None:
+    """A report step bound to the matches, not the rows, printed "Total bookings:
+    not supplied". Only the piece that wrote the code knows what it lacked."""
+    from rote.compiler.system1.generate import Settings, TextWriter, missing_values
+    from rote.compiler.verify import Verification
+    from tests.test_system1_generate import _context
+
+    ctx, _ = _context(tmp_path, "ops-report")
+    calls: list[dict[str, list[str]]] = []
+
+    def rebind(findings: dict[str, list[str]]) -> list[str]:
+        calls.append(findings)
+        return []
+
+    writer = TextWriter(None, ctx, "", Settings(), None, rebind=rebind)  # type: ignore[arg-type]
+    writer.modules["format_report"] = {
+        "module": "",
+        "test": "",
+        "missing_values": missing_values(
+            {
+                "missing_values": [
+                    {"value": "the total number of bookings", "why": "Total bookings: N"},
+                    {"value": "  ", "why": "an empty entry says nothing"},
+                ]
+            }
+        ),
+    }
+    verification, rounds = await writer.repair(lambda _: Verification(pipeline=None))
+    assert calls == [
+        {
+            "format_report": [
+                "the step's code needs the total number of bookings and none of its "
+                "inputs holds it (Total bookings: N)"
+            ]
+        }
+    ]
+    # Nothing was bound, so no round is spent, and the same value is not sent twice.
+    assert verification.ok and rounds == 0
+    await writer.repair(lambda _: Verification(pipeline=None))
+    assert len(calls) == 1
+
+
+def test_every_call_shares_the_missing_values_field() -> None:
+    from rote.compiler.system1.generate import ANSWER_SCHEMA
+
+    assert "missing_values" in ANSWER_SCHEMA["required"]
+    assert ANSWER_SCHEMA["properties"]["missing_values"]["items"]["required"] == ["value", "why"]
+
+
+def test_a_value_still_missing_after_the_repairs_is_a_review_gap() -> None:
+    """Dropped silently, a step that printed a placeholder shipped as verified."""
+    from rote.compiler.system1.generate import missing_value_findings, undelivered_findings
+    from rote.compiler.verify import Verification
+
+    missing = missing_value_findings(
+        {
+            "format_report": {"missing_values": [{"value": "the booking total", "why": ""}]},
+            "match": {"missing_values": []},
+        }
+    )
+    [finding] = undelivered_findings(missing)
+    assert finding.node_id == "format_report" and finding.severity == "warning"
+    assert "needs the booking total" in finding.message
+    verdict = Verification(pipeline=None, findings=[finding])
+    assert verdict.ok and verdict.review_gaps == [finding]

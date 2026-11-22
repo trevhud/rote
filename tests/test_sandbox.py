@@ -78,6 +78,14 @@ def test_the_work_dir_modules_import_and_run():
     assert double(21) == 42
 
 
+def test_a_named_time_zone_resolves():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    summer = datetime(2026, 7, 1, 12, tzinfo=ZoneInfo("America/Denver"))
+    assert summer.utcoffset().total_seconds() == -6 * 3600
+
+
 def test_the_real_home_shows_no_contents():
     home = {REAL_HOME!r}
     try:
@@ -153,7 +161,7 @@ def test_the_sandbox_denies_home_network_agent_socket_and_exec(
     result = run_generated_tests(_deliverable(tmp_path / "work", planted))
     assert result is not None
     assert result.status == "passed", result.output
-    assert "6 passed" in result.summary
+    assert "7 passed" in result.summary
 
 
 @needs_sandbox
