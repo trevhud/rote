@@ -11,6 +11,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The structure pass is told what separates a code step from a judge: code
+  counts, filters and matches only by a field each record already holds,
+  and a step that must read what a message, an email or a document says is
+  a judge, even when the skill words it as counting. ops-report's "Count
+  Approved vs. Requested appointments" over Gmail threads came out a
+  `pure_function` in 2 of 24 structure runs, and that compile's code then
+  failed on a `status` field no email has (fidelity 0.65). With the
+  sentence it was a judge in 24 of 24, and expense-audit and a
+  reconciliation skill kept zero judges in 8 of 8 runs each.
+
 - `rote compile` defaults to Claude Sonnet 5.5 (it was Sonnet 4.6), on both
   the `claude` and `api` drivers, and so do skill runs (`rote run`,
   `rote baseline`, `rote eval --run`). Measured with `rote bench
