@@ -59,7 +59,7 @@ DERIVED_INPUT_FILENAME = "derived-input.json"
 INFERRED_SCHEMAS_FILENAME = "inferred-schemas.json"
 
 #: Model for input derivation — a cheap, single-shot reading task.
-DERIVE_MODEL = "claude-haiku-4-5"
+DERIVE_MODEL = "claude-haiku-5-5"
 
 
 # ───────── Input derivation ─────────

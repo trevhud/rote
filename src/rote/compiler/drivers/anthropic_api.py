@@ -105,14 +105,11 @@ _ANTHROPIC_AVAILABLE = importlib.util.find_spec("anthropic") is not None
 
 # ───────── Defaults ─────────
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 """Default model for the in-process compiler loop.
 
-Matches the ``ClaudeDriver`` default for consistency: Sonnet 4.6
-follows structured rubrics reliably and is ~5× cheaper than Opus.
-Users with complex skills can override via
-``AnthropicApiDriver(model="claude-opus-4-6")`` or the CLI's
-``--model`` flag.
+The ``ClaudeDriver`` default, for the reasons and measurements given there.
+Override with ``AnthropicApiDriver(model=...)`` or the CLI's ``--model``.
 """
 
 DEFAULT_MAX_ITERATIONS = 60

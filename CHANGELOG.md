@@ -11,6 +11,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- `rote compile` defaults to Claude Sonnet 5.5 (it was Sonnet 4.6), on both
+  the `claude` and `api` drivers, and so do skill runs (`rote run`,
+  `rote baseline`, `rote eval --run`). Measured with `rote bench
+  --fidelity` on expense-audit and ops-report, two compiles each: fidelity
+  0.85, 0.98, 0.96 and 0.99 against Sonnet 4.6's 0.89, 0.85, 0.95 and 0.98,
+  at $0.53 and 132 s a compile against $1.19 and 258 s. `--model
+  claude-haiku-5-5` compiles for about $0.09 at the same fidelity, more
+  slowly. The baseline's input-derivation call moves to Haiku 5.5. Pass
+  `--model claude-sonnet-4-6` for the old behaviour.
+
 - A compile's generation calls are told what they did not know before, so
   a smaller model writes correct code. Four changes, found by compiling a
   two-read reconciliation skill with Claude Haiku 5.5 and Sonnet 5.5:
