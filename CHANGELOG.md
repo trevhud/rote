@@ -82,8 +82,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 - The paired eval no longer fails a compiled trial over a conditional gate
   the run correctly skipped ("gate X has no journal entry"). The check reads
-  the gate's condition from the run's journal by the driver's own rule, and
-  the person's answers go to the gates that asked, in order.
+  the gate's condition from the run's journal by the driver's own rule.
 - The paired eval (`rote eval --run --runtime skill --case`) no longer needs
   a recorded `fidelity/reference.json`. Without one the Bench column is
   `n/a`. It used to raise while building the report, after every trial had
