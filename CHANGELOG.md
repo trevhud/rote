@@ -11,6 +11,35 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compile's generation calls are told what they did not know before, so
+  a smaller model writes correct code. Four changes, found by compiling a
+  two-read reconciliation skill with Claude Haiku 5.5 and Sonnet 5.5:
+  - A step that reads an MCP result no recorded run shows is told that the
+    form of each record's fields is unknown too (a time may be text, or an
+    object holding it), to read each one in whichever form arrives and
+    never through `str()`. Its interface entry carries such records whole
+    under `row` and no longer restates their fields as typed facts. A
+    guessed `start: string` had become the contract, and the matcher
+    compared a stringified object against every booking.
+  - A module call can list `missing_values`: a value its step uses that
+    none of its inputs holds. rote asks the structure pass for the
+    binding, as for any data-flow finding. Before, a report step printed
+    "Total bookings: not supplied".
+  - A judge's interface entry is refused when its output holds an object
+    with no listed fields or a value with no type. Emit refused such a
+    judge after everything was written, where no piece could repair it.
+  - The sandbox that runs generated tests can read the time zone database
+    (`/private/var/db/timezone` on macOS, `/usr/share/zoneinfo` on Linux).
+    `ZoneInfo("America/Denver")` had failed in every generated test, so
+    each piece was re-asked and wrote daylight saving rules by hand.
+
+  Measured as the bench's fidelity score (1.0 is the skill's own recorded
+  result). The reconciliation skill compiled with Haiku 5.5: 0.37, 0.83,
+  0.83 and 0.83 before, and 0.90 to 1.00 over six compiles after (mean
+  0.95), level with Sonnet 4.6's 0.98. expense-audit and ops-report, two
+  compiles each with Haiku 5.5: 0.96, 0.96, 0.95 and one compile refused at
+  emit before, and 0.85, 0.98, 0.98 and 0.96 after.
+
 - A step that only saves a file on the machine the skill runs on compiles
   to code. The structure pass has a new system type, `local_file` (a folder
   the skill names only in words, such as "the finance shared folder"), and

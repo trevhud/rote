@@ -340,6 +340,33 @@ def test_a_judge_interface_must_name_its_decision_fields(tmp_path: Path) -> None
     assert interface_problems(ctx, node, named) == []
 
 
+def test_a_judge_interface_cannot_return_an_object_with_no_fields(tmp_path: Path) -> None:
+    """A judge whose findings each carried a `row` typed `object` verified clean
+    and was refused at emit, where no piece could repair it."""
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    judge = _node(ctx, NodeKind.LLM_JUDGE)
+    row = {"type": "object"}
+    schema = {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"row": row}, "required": ["row"]},
+            }
+        },
+        "required": ["findings"],
+    }
+    [problem] = interface_problems(ctx, judge, {"description": "x", "output_schema": schema})
+    assert "#/properties/findings/items/properties/row" in problem
+    assert "list the fields of every object" in problem
+    row["properties"] = {"id": {"type": "string"}}
+    assert interface_problems(ctx, judge, {"description": "x", "output_schema": schema}) == []
+    # Code runs a pure_function, so its rows stay whole.
+    del row["properties"]
+    code = _node(ctx, NodeKind.PURE_FUNCTION)
+    assert interface_problems(ctx, code, {"description": "x", "output_schema": schema}) == []
+
+
 def test_judge_prompt_variables_must_exist_in_the_input_schema(tmp_path: Path) -> None:
     ctx, _ = _context(tmp_path, "deal-monitor")
     node = _node(ctx, NodeKind.LLM_JUDGE)
