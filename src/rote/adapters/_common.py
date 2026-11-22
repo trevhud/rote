@@ -1216,8 +1216,8 @@ def sampling_notes(pipeline: Pipeline) -> list[str]:
     so, with the two knobs that fix it without a re-emit.
     """
     return [
-        f"{node.id}: the IR sets temperature, which current Claude models reject "
-        f"(HTTP 400). Set {temperature_env_var(node.id)}= (empty) to omit it, or "
+        f"{node.id}: the IR sets temperature, which Claude models from 4.7 on reject "
+        f"(HTTP 400), the default judge model among them. Set {temperature_env_var(node.id)}= (empty) to omit it, or "
         f"{override_env_vars(node.id)[0]} to a model that accepts it"
         for node in pipeline.nodes
         if node.signature_spec is not None
