@@ -1546,9 +1546,9 @@ none stopped in the conversion step, about a third never stopped, and the
 rest raised in the report step, after the gate. GENERATE.md now says it
 twice, because the interface entry and the module are separate calls: the
 condition is never an output field, and the module raises `ValueError`
-with what the skill says to do. Measured on Sonnet 5.5: three of three
-compiles stop in the conversion step, expense-audit fidelity 0.96, 0.98,
-0.96 against 0.85, 0.98, 0.92, 0.87 before. What is left on that skill is
+with what the skill says to do. Measured on Sonnet 5.5: five of five
+compiles stop in the conversion step, expense-audit fidelity 0.96 to 0.98
+against 0.85, 0.98, 0.92, 0.87 before. What is left on that skill is
 its own ambiguity: it never says whether a cap overrun is a block or a
 review item, the original agent's runs disagree with each other, and the
 compile lists its reading as an Open question.
