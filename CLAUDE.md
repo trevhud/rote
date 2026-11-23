@@ -1536,6 +1536,23 @@ such a node, and every consumer's card says to accept the list, an
 object wrapping it, or JSON text, and to test each. A recorded baseline
 result replaces the guess with an inferred schema.
 
+### A stop the skill states is a raise in the step that finds it
+
+"If a line uses a currency that isn't in the table, stop and ask finance"
+compiled to a conversion step that returned `has_missing_rate` and carried
+on. No later step is told to read such a flag, so whether the run stopped
+was luck: of 14 expense-audit compiles (Sonnet 4.6, Sonnet 5.5, Haiku 5.5)
+none stopped in the conversion step, about a third never stopped, and the
+rest raised in the report step, after the gate. GENERATE.md now says it
+twice, because the interface entry and the module are separate calls: the
+condition is never an output field, and the module raises `ValueError`
+with what the skill says to do. Measured on Sonnet 5.5: three of three
+compiles stop in the conversion step, expense-audit fidelity 0.96, 0.98,
+0.96 against 0.85, 0.98, 0.92, 0.87 before. What is left on that skill is
+its own ambiguity: it never says whether a cap overrun is a block or a
+review item, the original agent's runs disagree with each other, and the
+compile lists its reading as an Open question.
+
 ### `claude -p` gets schema-locked output, and costs 37k tokens if you let it
 
 `claude -p --json-schema <schema> --output-format json` is a **forced

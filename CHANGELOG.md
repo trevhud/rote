@@ -11,6 +11,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A step the skill says stops the run now raises where the condition is
+  found. Compiles used to return a flag (`has_missing_rate`) that no later
+  step was told to read: of 14 expense-audit compiles on three models, none
+  stopped in the conversion step, about a third never stopped on a currency
+  with no rate, and the rest stopped in the report step, after the
+  controller had already reviewed. With the rule in the generation prompt,
+  three of three Sonnet 5.5 compiles stop in the conversion step with the
+  skill's own instruction in the error, and expense-audit fidelity is 0.96,
+  0.98 and 0.96 (it was 0.85, 0.98, 0.92 and 0.87). ops-report is unchanged
+  (0.96 to 0.98).
+
 - Emitted judges and agent loops default to Claude Sonnet 5.5 (it was
   Sonnet 4.6) when the IR names no model. On four example judges and 15
   inputs with hand-written answers, both got 70 of 70 fields right; Sonnet

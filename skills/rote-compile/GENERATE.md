@@ -59,6 +59,9 @@ Asked for a node's interface entry, you answer:
     tool's description ("returns the content as text" is a string,
     "returns the matching threads" is an array) and say in the
     `description` what you inferred.
+  - a condition the skill says stops the run is never an output field
+    (no `has_missing_rate`, no `missing_rates`). The step's code raises
+    instead, so nothing after it runs.
   - a node that keeps, filters, flags or lists rows of a table (a sheet,
     a query result, a list of records) returns each of those rows whole.
     Besides the fields the skill names, give each item a required `row`
@@ -125,7 +128,14 @@ The module:
    the page id a fetch takes (`5208211471`): convert in code, and test the
    conversion with the recorded form. The skill's wording ("the id from the
    search results") does not override what the tool was really called with.
-9. A `pure_function` stays a stub only when the logic depends on a fact
+9. When the skill says the run stops on a condition this step finds (a
+   value it cannot look up, an input it cannot use: "stop and ask finance
+   for the rate"), raise `ValueError` in this step, saying what stopped the
+   run and what the skill says to do about it. Never return a flag, a list
+   of what was missing or a partial result for a later step to act on: no
+   later step is told to read it, and the run carries on with wrong data.
+   Test that it raises.
+10. A `pure_function` stays a stub only when the logic depends on a fact
    the skill does not state (a mapping it never lists). The whole body
    after the docstring is then one
    `raise NotImplementedError("<what is missing and why>")`.
