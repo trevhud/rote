@@ -83,6 +83,22 @@ class Scorecard:
     generated_at: str
     infrastructure: InfraCost | None = None
     """Per-run runtime cost, when the target runtime bills for it."""
+    compiled_skill: AgentRunEstimate | None = None
+    """The compiled side as a compiled skill runs it: requests in an agent's
+    conversation. Set for the ``skill`` runtime, where it replaces the
+    workflow figures (a judge as one API call) in every before/after row."""
+
+    @property
+    def after_wall_seconds(self) -> Range:
+        if self.compiled_skill is not None:
+            return self.compiled_skill.wall_seconds
+        return self.pipeline.critical_path_seconds
+
+    @property
+    def after_llm_tokens(self) -> Range:
+        if (run := self.compiled_skill) is not None:
+            return run.fresh_input_tokens + run.cached_read_tokens + run.output_tokens
+        return self.pipeline.llm_input_tokens + self.pipeline.llm_output_tokens
 
     def to_dict(self) -> dict[str, object]:
         """JSON-ready form, for programmatic consumers."""
@@ -116,6 +132,15 @@ class Scorecard:
             "before": skill_part,
             "after": {
                 "critical_path_seconds": _range(self.pipeline.critical_path_seconds),
+                "compiled_skill": (
+                    None
+                    if self.compiled_skill is None
+                    else {
+                        "requests": _range(self.compiled_skill.turns),
+                        "llm_tokens": _range(self.after_llm_tokens),
+                        "wall_seconds": _range(self.compiled_skill.wall_seconds),
+                    }
+                ),
                 "hitl_gates": list(self.pipeline.hitl_gates),
                 "llm_input_tokens": _range(self.pipeline.llm_input_tokens),
                 "llm_output_tokens": _range(self.pipeline.llm_output_tokens),
@@ -188,21 +213,22 @@ class Scorecard:
 
         # ── Headline ──
         lines += ["## Before → after", ""]
-        lines.append("| Metric | As agent instructions | As compiled pipeline | Change |")
+        after = "compiled skill" if self.compiled_skill is not None else "compiled pipeline"
+        lines.append(f"| Metric | As agent instructions | As {after} | Change |")
         lines.append("|---|---|---|---|")
         if self.skill is not None:
             lines.append(
                 "| Wall clock (compute) | "
                 f"{_seconds(self.skill.wall_seconds)} | "
-                f"{_seconds(self.pipeline.critical_path_seconds)} | "
-                f"{_improvement(self.skill.wall_seconds, self.pipeline.critical_path_seconds)} |"
+                f"{_seconds(self.after_wall_seconds)} | "
+                f"{_improvement(self.skill.wall_seconds, self.after_wall_seconds)} |"
             )
             before_llm_tokens = (
                 self.skill.fresh_input_tokens
                 + self.skill.cached_read_tokens
                 + self.skill.output_tokens
             )
-            after_llm_tokens = self.pipeline.llm_input_tokens + self.pipeline.llm_output_tokens
+            after_llm_tokens = self.after_llm_tokens
             lines.append(
                 "| LLM tokens touched | "
                 f"{_tokens(before_llm_tokens)} | "
@@ -240,7 +266,7 @@ class Scorecard:
         else:
             lines.append(
                 "| Wall clock (compute) | _no skill baseline_ | "
-                f"{_seconds(self.pipeline.critical_path_seconds)} | — |"
+                f"{_seconds(self.after_wall_seconds)} | — |"
             )
         if self.pipeline.hitl_gates:
             gates = ", ".join(f"`{g}`" for g in self.pipeline.hitl_gates)
@@ -294,6 +320,14 @@ class Scorecard:
 
         # ── Assumptions ──
         lines += ["## Assumptions (audit me)", ""]
+        if (run := self.compiled_skill) is not None:
+            judges = self.pipeline.llm_input_tokens + self.pipeline.llm_output_tokens
+            lines.append(
+                f"- Compiled skill: {_count(run.turns)} requests in the agent's conversation "
+                f"({run.turn_method}); {run.token_count_method}. A workflow runtime would "
+                "pay only for the judges' own calls: "
+                f"{_tokens(judges)} tokens."
+            )
         if self.skill is not None:
             if self.skill.measured:
                 lines.append(f"- Agent turns and time: {self.skill.turn_method}.")
@@ -351,6 +385,7 @@ def build_scorecard(
     priors: Priors,
     generated_at: str,
     infrastructure: InfraCost | None = None,
+    compiled_skill: AgentRunEstimate | None = None,
 ) -> Scorecard:
     """Assemble a scorecard: apply each live price to both estimates."""
     costs = [
@@ -359,7 +394,11 @@ def build_scorecard(
             before_usd=(
                 agent_run_cost_usd(skill_estimate, p) if skill_estimate is not None else None
             ),
-            after_usd=pipeline_cost_usd(pipeline_estimate, p),
+            after_usd=(
+                agent_run_cost_usd(compiled_skill, p)
+                if compiled_skill is not None
+                else pipeline_cost_usd(pipeline_estimate, p)
+            ),
         )
         for p in prices
     ]
@@ -371,6 +410,7 @@ def build_scorecard(
         priors=priors,
         generated_at=generated_at,
         infrastructure=infrastructure,
+        compiled_skill=compiled_skill,
     )
 
 
@@ -465,7 +505,25 @@ def build_scorecard_for(
         priors=priors,
         generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         infrastructure=infrastructure,
+        compiled_skill=_compiled_skill(pipeline, pipeline_yaml, pipeline_estimate, priors)
+        if runtime == "skill"
+        else None,
     )
+
+
+def _compiled_skill(
+    pipeline: Pipeline, pipeline_yaml: Path, estimate: PipelineEstimate, priors: Priors
+) -> AgentRunEstimate | None:
+    """The compiled side as a compiled skill, or None when that runtime cannot run it."""
+    from rote.adapters.skill import run_stops
+    from rote.eval.estimate import estimate_compiled_skill
+    from rote.plan import PlanError
+
+    try:
+        stops = run_stops(pipeline, pipeline_yaml.parent)
+    except PlanError:
+        return None
+    return estimate_compiled_skill(stops, estimate, priors)
 
 
 def _infra_dict(infra: InfraCost | None) -> dict[str, object] | None:

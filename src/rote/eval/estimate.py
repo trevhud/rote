@@ -130,6 +130,63 @@ class AgentRunEstimate:
     """True when the figures are a baseline run's own, not this model's."""
 
 
+def estimate_compiled_skill(
+    stops: Sequence[Mapping[str, Any]], pipeline: PipelineEstimate, priors: Priors | None = None
+) -> AgentRunEstimate:
+    """Predict one run of the pipeline as a compiled skill, in an agent's conversation.
+
+    A workflow runtime pays for a judge as one API call. A compiled skill
+    pays for the conversation: every request re-reads the agent's fixed
+    context, and a run makes one request to start, one to finish, one per
+    block it answers (DECIDE, DO, LOOP) and two per question to the person
+    (ask, then pass the answer on). Measured with paired evals on
+    Haiku 5.5: a routing skill with one judge and one gate made 6 requests
+    and used 138k input tokens where pricing its judge as an API call said
+    3.7k to 43k; expense-audit (one gate) made 5 and used 82k. Both evals
+    add one request to write a result file, which this does not count.
+
+    ``stops`` are :func:`rote.skill_target._driver.stops`. A gate with a
+    condition is counted in the high figure only, and a LOOP block costs the
+    loop's own turns (one iteration to the default cap). The model work (what the
+    judges read and write, from ``pipeline``) enters the conversation once
+    and is re-read by the requests after it, half of them on average.
+    """
+    priors = priors or Priors()
+    low = high = 2.0
+    for stop in stops:
+        if stop["block"] == "LOOP":
+            # The agent runs the loop itself: its turns are requests too.
+            low += priors.agent_loop_turns_per_iteration
+            high += priors.agent_loop_turns_per_iteration * priors.agent_loop_default_max_iterations
+            continue
+        cost = 2.0 if stop["block"] == "HUMAN" or stop.get("ahead") else 1.0
+        high += cost
+        if not stop.get("conditional"):
+            low += cost
+    requests = Range(low, high)
+    base = float(priors.system_overhead_tokens)
+    work = pipeline.llm_input_tokens + pipeline.llm_output_tokens
+    return AgentRunEstimate(
+        turns=requests,
+        context_tokens=priors.system_overhead_tokens,
+        fresh_input_tokens=Range(base + work.low, base + work.high),
+        cached_read_tokens=Range(
+            (low - 1) * (base + work.low / 2), (high - 1) * (base + work.high / 2)
+        ),
+        output_tokens=pipeline.llm_output_tokens + requests.scale(priors.output_tokens_per_turn),
+        wall_seconds=requests.scale(priors.seconds_per_turn),
+        sampling=pipeline.sampling,
+        turn_method=(
+            "one request to start, one to finish, one per block the agent answers, "
+            "two per question to the person, a loop's own turns"
+        ),
+        token_count_method=(
+            f"each request re-reads {priors.system_overhead_tokens} tokens of fixed context "
+            "(`system_overhead_tokens`) plus the model work so far"
+        ),
+    )
+
+
 def measured_agent_run(
     estimate: AgentRunEstimate, runs: Sequence[Mapping[str, Any]]
 ) -> AgentRunEstimate | None:

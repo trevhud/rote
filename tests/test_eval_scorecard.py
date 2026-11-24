@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 
 from rote.eval.empirical import MeasuredRun, measured_run_record
-from rote.eval.estimate import estimate_pipeline, estimate_skill, measured_agent_run
+from rote.eval.estimate import (
+    estimate_compiled_skill,
+    estimate_pipeline,
+    estimate_skill,
+    measured_agent_run,
+)
 from rote.eval.pricing import ModelPrice, ModelTier, PricingCatalog, PricingError
 from rote.eval.priors import Priors
 from rote.eval.scorecard import agent_run_cost_usd, build_scorecard, pipeline_cost_usd
@@ -254,10 +259,71 @@ def test_the_scorecard_builder_and_rote_eval_use_a_saved_baseline(
     measured = card(recorded_runs(tmp_path)).skill
     assert measured is not None and measured.measured
     assert (measured.turns.low, measured.turns.high) == (3.0, 3.0)
+    # The skill runtime prices the compiled side as a conversation, from
+    # the plan's own stops: BDR has 2 loops, 2 gates, 3 DO blocks and 1 DECIDE.
+    as_skill = build_scorecard_for(
+        load_pipeline(BDR_PIPELINE), BDR_PIPELINE, BDR_SKILL, "test", runtime="skill"
+    )
+    assert as_skill.compiled_skill is not None
+    assert as_skill.compiled_skill.turns.low == 2 + 2 * 3 + 2 * 2 + 3 + 1
+    assert card([]).compiled_skill is None
     # Only a flagged run, or none: the static estimate, as before.
     for runs in ([flagged], []):
         static = card(runs).skill
         assert static is not None and not static.measured and static.turns.low > 3
+
+
+def test_a_compiled_skill_is_priced_as_a_conversation_not_as_api_calls(estimates) -> None:  # type: ignore[no-untyped-def]
+    pipeline, pe, se = estimates
+    priors = Priors()
+    base = float(priors.system_overhead_tokens)
+    stops = [
+        {"block": "DECIDE", "steps": ["a", "b"]},
+        {"block": "DO", "steps": ["c"], "ahead": "g1"},
+        {"block": "HUMAN", "steps": ["g2"]},
+        {"block": "HUMAN", "steps": ["g3"], "conditional": True},
+    ]
+    looped = estimate_compiled_skill([{"block": "LOOP", "steps": ["l"]}], pe, priors).turns
+    assert (looped.low, looped.high) == (
+        2 + priors.agent_loop_turns_per_iteration,
+        2 + priors.agent_loop_turns_per_iteration * priors.agent_loop_default_max_iterations,
+    )
+    run = estimate_compiled_skill(stops, pe, priors)
+    # Start and finish, one for the DECIDE block, two for the DO block that
+    # also asks the person, two for the gate; the conditional gate only in
+    # the high figure.
+    assert (run.turns.low, run.turns.high) == (7.0, 9.0)
+    work = pe.llm_input_tokens + pe.llm_output_tokens
+    assert run.fresh_input_tokens.low == base + work.low
+    assert run.cached_read_tokens.low == pytest.approx(6 * (base + work.low / 2))
+    assert run.cached_read_tokens.high == pytest.approx(8 * (base + work.high / 2))
+    # No stops: still a start and a finish, each reading the fixed context.
+    bare = estimate_compiled_skill([], pe, priors)
+    assert (bare.turns.low, bare.turns.high) == (2.0, 2.0)
+    assert bare.cached_read_tokens.low == pytest.approx(base + work.low / 2)
+
+    def card(compiled):  # type: ignore[no-untyped-def]
+        return build_scorecard(
+            pipeline_name=pipeline.name,
+            pipeline_estimate=pe,
+            skill_estimate=se,
+            prices=[_price()],
+            priors=priors,
+            generated_at="2026-07-03T00:00:00Z",
+            compiled_skill=compiled,
+        )
+
+    skill, workflow = card(run), card(None)
+    assert skill.after_llm_tokens.low > workflow.after_llm_tokens.low + 6 * base
+    assert skill.costs[0].after_usd.low == agent_run_cost_usd(run, _price()).low
+    assert workflow.costs[0].after_usd.low == pipeline_cost_usd(pe, _price()).low
+    md = skill.to_markdown()
+    assert "| Metric | As agent instructions | As compiled skill | Change |" in md
+    assert "- Compiled skill: 7–9 requests" in md
+    assert "As compiled pipeline" in workflow.to_markdown()
+    assert "Compiled skill:" not in workflow.to_markdown()
+    assert skill.to_dict()["after"]["compiled_skill"]["requests"] == {"low": 7.0, "high": 9.0}  # type: ignore[index]
+    assert workflow.to_dict()["after"]["compiled_skill"] is None  # type: ignore[index]
 
 
 def test_scorecard_without_skill_baseline(estimates) -> None:  # type: ignore[no-untyped-def]
