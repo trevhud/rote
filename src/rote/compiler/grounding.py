@@ -154,7 +154,10 @@ def _baseline_sample(probe_dir: Path) -> Sample | None:
         return None
     if not isinstance(payload, dict) or not payload:
         return None
-    return Sample(payload=payload, source=f"the input the baseline ran on ({path})")
+    # The baseline may have run on an envelope (input plus gate answers), the
+    # form ``rote eval --run --input`` takes. Read as a bare input, the
+    # envelope became the contract: required fields ``input`` and ``signals``.
+    return parse_sample(payload, f"the input the baseline ran on ({path})")
 
 
 # ───────── the contract ─────────
