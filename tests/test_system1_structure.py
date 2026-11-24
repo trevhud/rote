@@ -2007,6 +2007,77 @@ def _conditional(when: str = "render_digest.needs_review", **gate: str) -> dict[
     return answer
 
 
+def _shaped(answers: list[dict[str, Any]], payload: list[str]) -> dict[str, Any]:
+    answer = _gated(reads=["approve_digest"])
+    answer["nodes"][2]["gate"].update(payload=payload, answers=answers)
+    return answer
+
+
+def test_a_gate_states_the_shape_of_each_answer_key(skill: Any) -> None:
+    answers = [
+        {
+            "key": "decisions",
+            "shape": "record_list",
+            "fields": ["item_id", "decision", "reason"],
+            "about": "one per item: decision is accept or override",
+        },
+        {"key": "reviewer", "shape": "text", "fields": [], "about": ""},
+    ]
+    answer = _shaped(answers, ["decisions", "reviewer", "notes"])
+    assert _answer_findings(answer, skill) == []
+    plan, rec, _ = run(skill, answer)
+    assert rec.rounds == 1
+    gate = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}["approve_digest"]
+    # The reply is checked against this, and the module reading the gate is shown it.
+    assert gate["output_schema"] == {
+        "type": "object",
+        "properties": {
+            "decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"item_id": {}, "decision": {}, "reason": {}},
+                },
+                "description": "one per item: decision is accept or override",
+            },
+            "reviewer": {"type": "string"},
+            # A key the pass gave no shape stays open, never guessed.
+            "notes": {},
+        },
+    }
+    Pipeline.model_validate(pipeline_doc(plan))
+    # No shapes at all: no schema, as before.
+    bare, _, _ = run(skill, _shaped([], ["approved"]))
+    assert (
+        "output_schema" not in {n["id"]: n for n in pipeline_doc(bare)["nodes"]}["approve_digest"]
+    )
+
+
+def _answer_findings(answer: dict[str, Any], skill: Any) -> list[str]:
+    declared = structure.declared_tools(skill, TOOLS)
+    return [c for c in structure.check(answer, skill, SKILL, declared) if "gate answer" in c]
+
+
+@pytest.mark.parametrize(
+    ("entry", "finding"),
+    [
+        ({"key": "other", "shape": "text", "fields": []}, "'other', which is not a payload key"),
+        ({"key": "decisions", "shape": "record_list", "fields": []}, "name its record's fields"),
+        (
+            {"key": "decisions", "shape": "record_list", "fields": ["not an id"]},
+            "name its record's fields",
+        ),
+        ({"key": "decisions", "shape": "table", "fields": []}, "has shape 'table'"),
+    ],
+)
+def test_an_answer_shape_that_cannot_hold_goes_back(
+    skill: Any, entry: dict[str, Any], finding: str
+) -> None:
+    found = _answer_findings(_shaped([{**entry, "about": ""}], ["decisions"]), skill)
+    assert len(found) == 1 and finding in found[0]
+    assert found[0].startswith("node approve_digest: ")
+
+
 def test_a_conditional_gate_asks_only_when_its_key_is_true(skill: Any) -> None:
     answer = _conditional()
     assert _show_findings(answer, skill) == []
