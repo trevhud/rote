@@ -1389,6 +1389,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                     measured_run_record(r)
                     for r in (baseline_result.runs if baseline_result is not None else ())
                 ],
+                helper_judges=args.judges == "helper",
             )
             scorecard_path = compiled_dir / "scorecard.md"
             scorecard_md = scorecard.to_markdown() + "\n"

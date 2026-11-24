@@ -23,7 +23,6 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
@@ -250,29 +249,18 @@ _BLOCK_WORDS = {
 
 def _stops(pipeline: Pipeline, root: Path, extras: ReportExtras) -> list[str]:
     """Each block a compiled skill's run stops at, from the plan its emit builds (#344)."""
-    from rote.adapters.skill import implementations, shipped_module
-    from rote.plan import JudgeMode, PlanError, build_plan
-    from rote.skill_target._driver import stops
+    from rote.adapters.skill import run_stops
+    from rote.plan import PlanError
 
-    judges: JudgeMode = "helper" if extras.judges == "helper" else "session"
-    backend: Literal["mcp", "api"] = "api" if extras.api_backend else "mcp"
     try:
-        plan = build_plan(
+        found = run_stops(
             pipeline,
-            mcp="live",
-            backend=backend,
-            judges=judges,
-            implementations=dict(
-                implementations(
-                    pipeline,
-                    backend,
-                    lambda module, nodes: shipped_module(root, module, nodes),
-                )
-            ),
+            root,
+            judges="helper" if extras.judges == "helper" else "session",
+            backend="api" if extras.api_backend else "mcp",
         )
     except PlanError as e:
         return [f"The skill runtime cannot run this pipeline: {_cell(str(e))}"]
-    found = stops(plan["steps"], helper_judges=judges == "helper")
     if not found:
         return ["A run never stops for the agent: every step runs as code."]
     lines = [

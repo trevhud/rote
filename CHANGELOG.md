@@ -182,6 +182,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- A scorecard for the `skill` runtime prices the compiled side as the agent
+  conversation it is. It priced a judge as one API call, which is what a
+  workflow runtime pays; a compiled skill re-reads the agent's context on
+  every request. For a routing skill with one judge and one gate it said
+  3.7k to 43k tokens compiled, and a paired eval measured 138k to 179k.
+  The compiled column now counts requests from the plan's own stops (one
+  to start, one to finish, one per block the agent answers, two per
+  question to the person, a loop's own turns) and says so: that skill reads
+  93k to 216k, and its scorecard shows the compiled skill costing more than
+  the original, which is what the eval found. Workflow runtimes are unchanged.
 - A scorecard written by `rote compile --baseline` sizes the agent side
   from the baseline it just measured. It used the static turn estimate
   even then, and printed the measurement in a separate section below. For
