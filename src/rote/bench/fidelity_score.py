@@ -19,7 +19,9 @@ counts as reproduced when it appears anywhere in the pipeline's trace
 Lists compare as sets; a list of records compares per field (the set of
 ``expense_id`` values in a review queue). Values that would match by
 coincidence (small integers, booleans, short strings, empty lists) also
-need a key whose name shares a word with the contract field.
+need a key whose name shares a word with the contract field. A breakdown
+written as a map of names to numbers compares as the two columns its
+records would have, always under such a key.
 """
 
 from __future__ import annotations
@@ -156,7 +158,7 @@ class TraceIndex:
     #: Sets read off a name-to-number map (its names, and its numbers), with
     #: the keys the map sat under. Kept apart from ``values`` because any
     #: record of numbers is such a map, so these count only under a key
-    #: that shares a word with the field.
+    #: that shares a word with the field's own name, however many values.
     maps: dict[str, set[str]] = field(default_factory=dict)
 
     def add(self, value: Value, key: str) -> None:
@@ -231,22 +233,19 @@ def field_reproduced(path: str, value: Value, index: TraceIndex) -> bool:
     it is part of a longer trace string: an agent reports the file name
     (``2026-09-expense-audit.md``) where a pipeline reports the full path.
     A column of a breakdown also counts when the pipeline wrote the
-    breakdown as a map under a key sharing a word with the field's path.
+    breakdown as a map under a key sharing a word with the field's own name.
     """
-    keys = index.values.get(_key(value))
-    if not keys:
-        whole = _tokens(path.replace("[]", "").replace(".", "_"))
-        if any(whole & _tokens(k) for k in index.maps.get(_key(value), ())):
-            return True
-        return (
-            isinstance(value, str)
-            and len(value) >= MIN_SUBSTRING
-            and any(value in s for s in index.strings)
-        )
-    if _informative(value):
-        return True
     want = _leaf_tokens(path)
-    return any(want & _tokens(k) for k in keys)
+    keys = index.values.get(_key(value), ())
+    if keys and (_informative(value) or any(want & _tokens(k) for k in keys)):
+        return True
+    if any(want & _tokens(k) for k in index.maps.get(_key(value), ())):
+        return True
+    return (
+        isinstance(value, str)
+        and len(value) >= MIN_SUBSTRING
+        and any(value in s for s in index.strings)
+    )
 
 
 # ───────── tool calls ─────────

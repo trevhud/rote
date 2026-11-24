@@ -236,8 +236,14 @@ def test_a_breakdown_written_as_a_map_reproduces_its_record_columns() -> None:
     # some other record, and a map with other numbers is another breakdown.
     assert not field_reproduced("tickets[].packages", {"set": [1.0, 2.0]}, index)
     assert not field_reproduced("dock_pending_by_site[].open_count", {"set": [1.0, 3.0]}, index)
-    # A day with one site is still a breakdown.
-    one = index_trace([{"open_by_site": {"EAST1": 1}}])
+    # Any record of numbers looks like a map. Totals under a key that shares
+    # a word only with the field's parent are not its column, and a record's
+    # field names are not a column of names.
+    totals = index_trace([{"dock_summary": {"open": 2, "closed": 1}}])
+    assert not field_reproduced("dock_pending_by_site[].open_count", {"set": [1.0, 2.0]}, totals)
+    assert not field_reproduced("dock_by_site[].status", {"set": ["closed", "open"]}, totals)
+    # A day with one site is still a breakdown, whatever else holds a 1.
+    one = index_trace([{"open_by_site": {"EAST1": 1}}, {"retries": [1]}])
     assert field_reproduced("dock_pending_by_site[].open_count", {"set": [1.0]}, one)
     assert field_reproduced("dock_pending_by_site[].site", {"set": ["east1"]}, one)
 

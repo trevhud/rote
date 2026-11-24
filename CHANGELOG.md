@@ -15,9 +15,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   writes open rows per site as records (`[{"site": "EAST1", "open": 2}]`)
   and the next as `{"EAST1": 2}`; the scorer saw only the records, so the
   map lost a field it had produced. A map of names to numbers is now read
-  as the two columns, under a key sharing a word with the field. On two
+  as the two columns, under a key sharing a word with the field's name. On two
   saved ops-report compiles this returns `dock_pending_by_site[].open_count`
-  (quiet day 0.98 to 1.0); no other field's score moves.
+  (quiet day 0.98 to 1.0), and no other field of theirs moves.
 
 - A step the skill says stops the run now raises where the condition is
   found. Compiles used to return a flag (`has_missing_rate`) that no later
