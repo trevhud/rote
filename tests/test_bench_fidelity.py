@@ -1311,6 +1311,15 @@ def test_a_case_answer_goes_to_the_gate_it_fits_past_a_conditional_gate() -> Non
     # An unconditional gate always answers: with none to spare, by position.
     first = _gate("first", ["ok"])
     assert assign_gate_payloads([first, approve], [answer]) == [0, None]
+    # A tie (two conditional gates the answer fits equally, or not at all)
+    # goes to the earliest gate, as position did.
+    twin = _gate("twin", ["seasonal_pattern"], when="check.output.ask")
+    assert assign_gate_payloads([season, twin], [{"seasonal_pattern": []}]) == [0, None]
+    assert assign_gate_payloads([season, twin], [{"other": 1}]) == [0, None]
+    # More gates short of an answer than conditional gates: the conditional
+    # one still goes without, and the unconditional ones take the answers.
+    assert assign_gate_payloads([season, approve, first], [answer]) == [None, 0, None]
+    assert assign_gate_payloads([season, approve], []) == [None, None]
 
 
 def test_a_conditional_gate_that_asks_when_the_skill_did_not_costs_gate_fit() -> None:

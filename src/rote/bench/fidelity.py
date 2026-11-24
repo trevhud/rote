@@ -495,17 +495,24 @@ def assign_gate_payloads(gates: list[Any], payloads: list[dict[str, Any]]) -> li
     nothing. So when the case has fewer answers than the pipeline has gates,
     the gates left without one are conditional ones, chosen so the answers'
     keys fit the gates that get them best (ties: the earliest gates answer).
-    Order is kept. With no conditional gate to spare, it is by position.
+    Order is kept. With more answers missing than conditional gates, every
+    conditional gate goes without and the rest answer by position.
     """
     spare = len(gates) - len(payloads)
     conditional = [i for i, g in enumerate(gates) if g.when is not None]
-    if spare <= 0 or spare > len(conditional):
-        return [i if i < len(payloads) else None for i in range(len(gates))]
+    if spare <= 0:
+        return list(range(len(gates)))
+    if spare >= len(conditional):
+        # Every conditional gate goes without; the rest answer by position.
+        answers = iter(range(len(payloads)))
+        return [None if i in conditional else next(answers, None) for i in range(len(gates))]
     best: tuple[float, tuple[int, ...]] | None = None
     for left_out in itertools.combinations(conditional, spare):
         kept = [i for i in range(len(gates)) if i not in left_out]
         fit = sum(_payload_fit(p, gates[i]) for p, i in zip(payloads, kept, strict=True))
-        if best is None or fit > best[0]:
+        # Combinations come earliest-left-out first, so ">=" ends on the one
+        # that leaves out the latest gates among equals.
+        if best is None or fit >= best[0]:
             best = (fit, left_out)
     assert best is not None
     answers = iter(range(len(payloads)))
@@ -685,7 +692,7 @@ def run_pipeline_case(
     unanswered = 0
     for gate, index in zip(gates, assign_gate_payloads(gates, case.gates), strict=True):
         assert gate.signal is not None
-        if index is None and gate.when is not None and len(case.gates) < len(gates):
+        if index is None and gate.when is not None:
             # A conditional gate the case holds no answer for: the skill did
             # not ask on this input. It is sent an empty answer in case the
             # pipeline asks anyway, which is scored once the run shows it.
