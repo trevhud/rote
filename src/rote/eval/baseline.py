@@ -894,11 +894,28 @@ def load_observations(baseline_dir: str | Path) -> list[ObservedToolCall]:
     return [ObservedToolCall(**entry) for entry in raw]
 
 
-def render_baseline_markdown(result: BaselineResult) -> str:
-    """The scorecard's measured-baseline section (the skill side, measured).
+def recorded_runs(out_dir: Path) -> list[dict[str, Any]]:
+    """The run records a baseline saved under ``out_dir``, or none.
 
-    Appended after the static estimate when a baseline ran alongside a
-    compilation — the "before" column stops being a model and becomes data.
+    What ``rote eval <out_dir>`` sizes the agent side from, so a scorecard
+    written later agrees with the one the compile wrote.
+    """
+    path = out_dir / BASELINE_DIRNAME / METRICS_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        runs = json.loads(path.read_text(encoding="utf-8")).get("runs")
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    return [r for r in runs or [] if isinstance(r, dict)]
+
+
+def render_baseline_markdown(result: BaselineResult) -> str:
+    """The scorecard's measured-baseline section: the run as it reported itself.
+
+    Appended to a compile's scorecard, whose agent column is sized from the
+    same runs; this section adds the run's own cost, its tool traffic and
+    any reliability flags.
     """
     ok = [r for r in result.runs if r.succeeded]
     lines = [

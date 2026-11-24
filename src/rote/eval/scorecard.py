@@ -10,8 +10,9 @@ reader can't audit is marketing, not measurement.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rote.eval.estimate import AgentRunEstimate, PipelineEstimate, Range
 from rote.eval.infra_pricing import InfraCost
@@ -101,6 +102,7 @@ class Scorecard:
                 "sampled_steps": self.skill.sampling.sampled_steps,
                 "total_steps": self.skill.sampling.total_steps,
                 "sampled_output_tokens": _range(self.skill.sampling.sampled_output_tokens),
+                "measured": self.skill.measured,
                 "turn_method": self.skill.turn_method,
                 "token_count_method": self.skill.token_count_method,
             }
@@ -175,7 +177,12 @@ class Scorecard:
         lines: list[str] = [
             f"# Eval scorecard — {self.pipeline_name}",
             "",
-            f"Generated: {self.generated_at} · static estimate (nothing was executed)",
+            f"Generated: {self.generated_at} · "
+            + (
+                "the agent side is a measured baseline run, the compiled side a static estimate"
+                if self.skill is not None and self.skill.measured
+                else "static estimate (nothing was executed)"
+            ),
             "",
         ]
 
@@ -288,14 +295,25 @@ class Scorecard:
         # ── Assumptions ──
         lines += ["## Assumptions (audit me)", ""]
         if self.skill is not None:
-            lines.append(f"- Turn estimate: {self.skill.turn_method}.")
-            lines.append(f"- Token counting: {self.skill.token_count_method}.")
-            lines.append(
-                "- Agent cost model: cache-aware transcript growth — turn *i* "
-                "re-reads min(C₀ + (i−1)·Δ, cap) context, where the cap models "
-                "harness compaction near the context window; fresh tokens bill "
-                "at cache-write price, re-reads at cache-read price."
-            )
+            if self.skill.measured:
+                lines.append(f"- Agent turns and time: {self.skill.turn_method}.")
+                lines.append(f"- Agent tokens: {self.skill.token_count_method}.")
+                lines.append(
+                    "- Agent cost: those tokens at each listed model's published rates "
+                    "(cache writes at the cache-write rate, cache reads at the cache-read "
+                    "rate). A subscription run writes a 1-hour cache, billed above the "
+                    "published 5-minute rate, so the run's own cost, in the measured "
+                    "baseline section, can be higher than this table's figure for its model."
+                )
+            else:
+                lines.append(f"- Turn estimate: {self.skill.turn_method}.")
+                lines.append(f"- Token counting: {self.skill.token_count_method}.")
+                lines.append(
+                    "- Agent cost model: cache-aware transcript growth — turn *i* "
+                    "re-reads min(C₀ + (i−1)·Δ, cap) context, where the cap models "
+                    "harness compaction near the context window; fresh tokens bill "
+                    "at cache-write price, re-reads at cache-read price."
+                )
         lines.append("- HITL gate waits are human time and excluded from wall-clock on both sides.")
         lines.append(
             "- Compiled model input is sized along the IR's data flow: each judge or "
@@ -372,8 +390,14 @@ def build_scorecard_for(
     provider: str,
     priors: Priors | None = None,
     runtime: str | None = None,
+    measured_runs: Sequence[Mapping[str, Any]] = (),
 ) -> Scorecard:
     """End-to-end eval flow: estimate both sides, fetch live prices, assemble.
+
+    ``measured_runs`` are baseline runs of the skill as ``measured_run_record``
+    writes them; when one qualifies (:func:`measured_agent_run`), the agent
+    side is that measurement, priced at each model's rates, and no longer
+    the static model.
 
     The public entry point behind ``rote eval`` / ``rote compile``'s
     scorecard and the cloud runner: given a validated pipeline (and,
@@ -394,6 +418,7 @@ def build_scorecard_for(
         estimate_pipeline,
         estimate_skill,
         external_call_payload_tokens,
+        measured_agent_run,
     )
     from rote.eval.pricing import fetch_catalog
     from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
@@ -418,6 +443,7 @@ def build_scorecard_for(
         skill_estimate = estimate_skill(
             skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
         )
+        skill_estimate = measured_agent_run(skill_estimate, measured_runs) or skill_estimate
 
     infrastructure = None
     if runtime in INFRA_RUNTIMES:

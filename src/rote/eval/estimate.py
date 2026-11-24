@@ -22,6 +22,7 @@ the scorecard using live-fetched prices.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,68 @@ class AgentRunEstimate:
     sampling: SamplingSurface
     turn_method: str
     token_count_method: str
+    measured: bool = False
+    """True when the figures are a baseline run's own, not this model's."""
+
+
+def measured_agent_run(
+    estimate: AgentRunEstimate, runs: Sequence[Mapping[str, Any]]
+) -> AgentRunEstimate | None:
+    """``estimate`` with every figure a baseline measured put in its place.
+
+    ``runs`` are the skill's own measured runs as ``measured_run_record``
+    writes them (a compile's baseline, or its saved ``metrics.json``). A
+    static turn count can be far off: a skill that reads one uploaded file
+    and asks once was sized at 9 steps and 287k to 479k tokens while its
+    baseline, run in the same compile, took 3 turns and 28k. So a run that
+    succeeded with nothing flagged and reported its usage replaces the
+    model; a truncated run, or one missing its tools, is not the skill's
+    cost. What a run does not report (the step counts) stays the
+    estimate's. ``None`` when no run qualifies.
+
+    Turns and wall time span the runs. The token buckets are one run's, the
+    median by total tokens: a low built from one run's cache reads and
+    another's cache writes would be below anything a run cost.
+    """
+    buckets = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
+    usable = [
+        r
+        for r in runs
+        if r.get("succeeded")
+        and not r.get("flags")
+        and r.get("turns")
+        and all(r.get(b) is not None for b in buckets)
+    ]
+    if not usable:
+        return None
+
+    def span(key: str) -> Range:
+        values = [float(r[key]) for r in usable]
+        return Range(min(values), max(values))
+
+    def one(value: float) -> Range:
+        return Range(float(value), float(value))
+
+    by_total = sorted(usable, key=lambda r: sum(r[b] for b in buckets))
+    run = by_total[(len(by_total) - 1) // 2]
+    models = sorted({str(r["model"]) for r in usable if r.get("model")})
+    where = f" on {', '.join(models)}" if models else ""
+    how = f"measured, {len(usable)} baseline run(s) of the skill{where}"
+    return replace(
+        estimate,
+        turns=span("turns"),
+        fresh_input_tokens=one(run["input_tokens"] + run["cache_creation_tokens"]),
+        cached_read_tokens=one(run["cache_read_tokens"]),
+        output_tokens=one(run["output_tokens"]),
+        wall_seconds=span("wall_seconds"),
+        sampling=replace(estimate.sampling, sampled_output_tokens=one(run["output_tokens"])),
+        turn_method=how,
+        token_count_method=(
+            f"{how}: the usage the run reported"
+            + (", from the median run by total tokens" if len(usable) > 1 else "")
+        ),
+        measured=True,
+    )
 
 
 @dataclass(frozen=True)
