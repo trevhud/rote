@@ -107,6 +107,22 @@ def _call(args: dict[str, Any], text: str, error: bool = False) -> dict[str, Any
     }
 
 
+def test_a_recording_of_an_envelope_replays_its_input_and_its_gate_answers(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path, [_call({"name": "alpha"}, "hello")])
+    envelope = {"input": {"name": "alpha"}, "signals": {"review": {"approved": ["alpha"]}}}
+    (recording / "baseline" / "metrics.json").write_text(
+        json.dumps({"input": envelope, "runs": [{"succeeded": True}]})
+    )
+    prepare(_skill(tmp_path), recording, _compiled(tmp_path), tmp_path / "replay")
+    doc = yaml.safe_load((tmp_path / "replay" / "fidelity" / "cases.yaml").read_text())
+    [case] = doc["cases"]
+    # The compile grounds the inner input, so the replay must start on it too.
+    assert case["input"] == {"name": "alpha"}
+    assert case["gates"] == [{"approved": ["alpha"]}]
+
+
 def test_a_recording_becomes_a_reviewable_case(tmp_path: Path) -> None:
     observed = [
         _call({"name": "alpha"}, '{"text": "hello"}'),

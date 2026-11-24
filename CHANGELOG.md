@@ -177,7 +177,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   --input` and `--sample-input` take. The baseline's input was read as a
   bare object, so the compiled pipeline required fields named `input` and
   `signals` and failed on every real input, and the gate answers in the
-  envelope were ignored.
+  envelope were ignored. `rote replay prepare` reads the same recording the
+  same way, and uses its gate answers when `--gates` gives none.
 - A compile no longer fails verification because a conditional gate was
   skipped on the sample input. The sample run reports a skipped gate's
   result as null, which is what every runtime produces, and the output
