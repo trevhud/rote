@@ -22,6 +22,7 @@ the scorecard using live-fetched prices.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,49 @@ class AgentRunEstimate:
     sampling: SamplingSurface
     turn_method: str
     token_count_method: str
+    measured: bool = False
+    """True when the figures are a baseline run's own, not this model's."""
+
+
+def measured_agent_run(estimate: AgentRunEstimate, runs: Sequence[Any]) -> AgentRunEstimate | None:
+    """``estimate`` with every figure a baseline measured put in its place.
+
+    ``runs`` are the skill's own measured runs (``MeasuredRun``). A static
+    turn count can be far off: a skill that reads one uploaded file and
+    asks once was sized at 9 steps and 287k to 479k tokens while its
+    baseline, run in the same compile, took 3 turns and 28k. So a run that
+    reported its usage replaces the model. What a run does not report (the
+    step counts) stays the estimate's. ``None`` when no run reported usage.
+    """
+    usable = [
+        r
+        for r in runs
+        if r.turns
+        and None
+        not in (r.input_tokens, r.cache_read_tokens, r.cache_creation_tokens, r.output_tokens)
+    ]
+    if not usable:
+        return None
+
+    def span(values: list[float]) -> Range:
+        return Range(min(values), max(values))
+
+    output = span([float(r.output_tokens) for r in usable])
+    models = sorted({r.model for r in usable if r.model})
+    where = f" on {', '.join(models)}" if models else ""
+    how = f"measured: {len(usable)} baseline run(s) of the skill{where}"
+    return replace(
+        estimate,
+        turns=span([float(r.turns) for r in usable]),
+        fresh_input_tokens=span([float(r.input_tokens + r.cache_creation_tokens) for r in usable]),
+        cached_read_tokens=span([float(r.cache_read_tokens) for r in usable]),
+        output_tokens=output,
+        wall_seconds=span([float(r.wall_seconds) for r in usable]),
+        sampling=replace(estimate.sampling, sampled_output_tokens=output),
+        turn_method=how,
+        token_count_method=f"{how} (the run's reported usage)",
+        measured=True,
+    )
 
 
 @dataclass(frozen=True)

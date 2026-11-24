@@ -1384,6 +1384,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 # Infrastructure is priced for where this run is headed:
                 # rote cloud when it auto-deploys there, else the emit.
                 runtime="rote-cloud" if auto_deploy else args.runtime,
+                # A flagged run (truncated, tools missing) is not the skill's cost.
+                measured_runs=[
+                    r
+                    for r in (baseline_result.runs if baseline_result is not None else ())
+                    if r.succeeded and not r.flags
+                ],
             )
             scorecard_path = compiled_dir / "scorecard.md"
             scorecard_md = scorecard.to_markdown() + "\n"

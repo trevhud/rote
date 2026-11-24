@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from rote.eval.estimate import estimate_pipeline, estimate_skill
+from rote.eval.empirical import MeasuredRun
+from rote.eval.estimate import estimate_pipeline, estimate_skill, measured_agent_run
 from rote.eval.pricing import ModelPrice, ModelTier, PricingCatalog, PricingError
 from rote.eval.priors import Priors
 from rote.eval.scorecard import agent_run_cost_usd, build_scorecard, pipeline_cost_usd
@@ -152,6 +153,68 @@ def test_scorecard_markdown_and_dict(estimates) -> None:  # type: ignore[no-unty
     costs = payload["costs"]
     assert isinstance(costs, list) and len(costs) == 2
     assert costs[0]["before_usd"]["low"] > 0  # type: ignore[index]
+
+
+def _run(turns: int | None, read: int, wrote: int, out: int, seconds: float) -> MeasuredRun:
+    return MeasuredRun(
+        wall_seconds=seconds,
+        output={},
+        turns=turns,
+        input_tokens=4,
+        cache_read_tokens=read,
+        cache_creation_tokens=wrote,
+        output_tokens=out,
+        model="claude-test-1",
+    )
+
+
+def test_a_measured_baseline_replaces_the_agent_side_estimate(estimates) -> None:  # type: ignore[no-untyped-def]
+    pipeline, pe, se = estimates
+    runs = [_run(3, 14_000, 13_000, 5_000, 40.0), _run(5, 30_000, 15_000, 6_000, 55.0)]
+    measured = measured_agent_run(se, runs)
+    assert measured is not None and measured.measured
+    # The estimate said 30 to 50 turns; the runs took 3 and 5.
+    assert (measured.turns.low, measured.turns.high) == (3.0, 5.0)
+    assert (measured.fresh_input_tokens.low, measured.fresh_input_tokens.high) == (
+        13_004.0,
+        15_004.0,
+    )
+    assert (measured.cached_read_tokens.low, measured.cached_read_tokens.high) == (
+        14_000.0,
+        30_000.0,
+    )
+    assert (measured.output_tokens.low, measured.output_tokens.high) == (5_000.0, 6_000.0)
+    assert (measured.wall_seconds.low, measured.wall_seconds.high) == (40.0, 55.0)
+    # Dollars follow the measurement at this price: write 12.5, read 1, output 50 per Mtok.
+    cost = agent_run_cost_usd(measured, _price())
+    assert cost.low == pytest.approx((13_004 * 12.5 + 14_000 * 1.0 + 5_000 * 50.0) / 1e6)
+    assert cost.low < agent_run_cost_usd(se, _price()).low / 5
+
+    card = build_scorecard(
+        pipeline_name=pipeline.name,
+        pipeline_estimate=pe,
+        skill_estimate=measured,
+        prices=[_price()],
+        priors=Priors(),
+        generated_at="2026-07-03T00:00:00Z",
+    )
+    md = card.to_markdown()
+    assert "the agent side is a measured baseline run" in md
+    assert "nothing was executed" not in md
+    assert "measured: 2 baseline run(s) of the skill on claude-test-1" in md
+    # A run that reported no usage measures nothing, and the estimate stands.
+    assert measured_agent_run(se, [_run(None, 0, 0, 0, 1.0)]) is None
+    assert (
+        "nothing was executed"
+        in build_scorecard(
+            pipeline_name=pipeline.name,
+            pipeline_estimate=pe,
+            skill_estimate=se,
+            prices=[_price()],
+            priors=Priors(),
+            generated_at="2026-07-03T00:00:00Z",
+        ).to_markdown()
+    )
 
 
 def test_scorecard_without_skill_baseline(estimates) -> None:  # type: ignore[no-untyped-def]
