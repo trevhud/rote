@@ -19,7 +19,9 @@ counts as reproduced when it appears anywhere in the pipeline's trace
 Lists compare as sets; a list of records compares per field (the set of
 ``expense_id`` values in a review queue). Values that would match by
 coincidence (small integers, booleans, short strings, empty lists) also
-need a key whose name shares a word with the contract field.
+need a key whose name shares a word with the contract field. A breakdown
+written as a map of names to numbers compares as the two columns its
+records would have, always under such a key.
 """
 
 from __future__ import annotations
@@ -67,6 +69,10 @@ def normalize(value: Any) -> Any:
 
 def _is_scalar(value: Any) -> bool:
     return not isinstance(value, (dict, list, tuple, set))
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
 
 
 def _as_set(values: Iterable[Any]) -> dict[str, list[Any]]:
@@ -149,6 +155,11 @@ class TraceIndex:
 
     values: dict[str, set[str]] = field(default_factory=dict)
     strings: set[str] = field(default_factory=set)
+    #: Sets read off a name-to-number map (its names, and its numbers), with
+    #: the keys the map sat under. Kept apart from ``values`` because any
+    #: record of numbers is such a map, so these count only under a key
+    #: that shares a word with the field's own name, however many values.
+    maps: dict[str, set[str]] = field(default_factory=dict)
 
     def add(self, value: Value, key: str) -> None:
         self.values.setdefault(_key(value), set()).add(key)
@@ -157,11 +168,20 @@ class TraceIndex:
 
 
 def index_trace(objects: Iterable[Any]) -> TraceIndex:
-    """Index scalars, scalar lists (as sets) and record-list columns."""
+    """Index scalars, scalar lists (as sets), record-list columns and maps.
+
+    A breakdown is written as records (``[{"site": "EAST1", "open": 2}]``)
+    or as a map (``{"EAST1": 2}``) from one compile to the next. Both say
+    the same thing, so a map of names to numbers is indexed as
+    the two columns the records would have.
+    """
     index = TraceIndex()
 
     def walk(obj: Any, key: str) -> None:
         if isinstance(obj, dict):
+            if obj and all(_is_number(v) for v in obj.values()):
+                for side in (obj.keys(), obj.values()):
+                    index.maps.setdefault(_key(_as_set(side)), set()).add(key)
             for k, v in obj.items():
                 walk(v, str(k))
         elif isinstance(obj, list):
@@ -212,18 +232,20 @@ def field_reproduced(path: str, value: Value, index: TraceIndex) -> bool:
     A string of at least :data:`MIN_SUBSTRING` characters also counts when
     it is part of a longer trace string: an agent reports the file name
     (``2026-09-expense-audit.md``) where a pipeline reports the full path.
+    A column of a breakdown also counts when the pipeline wrote the
+    breakdown as a map under a key sharing a word with the field's own name.
     """
-    keys = index.values.get(_key(value))
-    if not keys:
-        return (
-            isinstance(value, str)
-            and len(value) >= MIN_SUBSTRING
-            and any(value in s for s in index.strings)
-        )
-    if _informative(value):
-        return True
     want = _leaf_tokens(path)
-    return any(want & _tokens(k) for k in keys)
+    keys = index.values.get(_key(value), ())
+    if keys and (_informative(value) or any(want & _tokens(k) for k in keys)):
+        return True
+    if any(want & _tokens(k) for k in index.maps.get(_key(value), ())):
+        return True
+    return (
+        isinstance(value, str)
+        and len(value) >= MIN_SUBSTRING
+        and any(value in s for s in index.strings)
+    )
 
 
 # ───────── tool calls ─────────
