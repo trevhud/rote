@@ -76,9 +76,24 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
 
 
+#: Most distinct values a record column can hold and still be read as a
+#: label. A status is a small vocabulary; an id or a name per row is not,
+#: and grouping by one costs rows times columns for nothing.
+MAX_LABELS = 50
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _words(text: str) -> frozenset[str]:
+    """Every word of a name, stopwords kept: ``order_now`` and ``order_soon`` must differ."""
+    return frozenset(_WORD_RE.findall(text.casefold()))
+
+
 def _is_label_column(column: list[Any]) -> bool:
-    """Whether a record column sorts its records into groups: all strings, or all booleans."""
-    return all(isinstance(c, str) for c in column) or all(isinstance(c, bool) for c in column)
+    """Whether a record column sorts its records into named groups: strings, some maybe missing."""
+    return any(c is not None for c in column) and all(
+        c is None or isinstance(c, str) for c in column
+    )
 
 
 def _as_set(values: Iterable[Any]) -> dict[str, list[Any]]:
@@ -167,6 +182,13 @@ class TraceIndex:
     #: that shares a word with the field's own name, however many values.
     maps: dict[str, set[str]] = field(default_factory=dict)
 
+    #: Sets read off one group of a record list (the rows sharing a label,
+    #: such as ``status: order_now``), with the words of each label they sat
+    #: under. They count only for a field whose own name holds every word of
+    #: the label, whatever the values: the rows of another status are
+    #: another list.
+    groups: dict[str, set[frozenset[str]]] = field(default_factory=dict)
+
     def add(self, value: Value, key: str) -> None:
         self.values.setdefault(_key(value), set()).add(key)
         if isinstance(value, str):
@@ -183,8 +205,8 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
 
     A list per group is written the same two ways: ``order_now_skus`` as
     its own list, or a ``status`` column on every record. So each column is
-    also indexed once per value of every label column (all strings, or all
-    booleans), under that value's name.
+    also indexed once per value of every label column (strings), kept in
+    ``groups`` under that label's words.
     """
     index = TraceIndex()
 
@@ -208,14 +230,17 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
                 for label, labels in columns.items():
                     if not _is_label_column(labels):
                         continue
-                    for group in dict.fromkeys(labels):
-                        name = label if isinstance(group, bool) else group
+                    rows: dict[str, list[int]] = {}
+                    for i, group in enumerate(labels):
+                        if group is not None:
+                            rows.setdefault(group, []).append(i)
+                    if len(rows) > MAX_LABELS:
+                        continue
+                    for group, members in rows.items():
                         for col, column in columns.items():
                             if col != label:
-                                part = [
-                                    c for c, g in zip(column, labels, strict=True) if g == group
-                                ]
-                                index.add(_as_set(part), f"{name}_{col}")
+                                part = _as_set(column[i] for i in members)
+                                index.groups.setdefault(_key(part), set()).add(_words(group))
             for v in obj:
                 walk(v, key)
         else:
@@ -258,12 +283,17 @@ def field_reproduced(path: str, value: Value, index: TraceIndex) -> bool:
     (``2026-09-expense-audit.md``) where a pipeline reports the full path.
     A column of a breakdown also counts when the pipeline wrote the
     breakdown as a map under a key sharing a word with the field's own name.
+    A list also counts as one group of a record list (the rows with
+    ``status: order_now``) when the field's name holds every word of the label.
     """
     want = _leaf_tokens(path)
     keys = index.values.get(_key(value), ())
     if keys and (_informative(value) or any(want & _tokens(k) for k in keys)):
         return True
     if any(want & _tokens(k) for k in index.maps.get(_key(value), ())):
+        return True
+    leaf = _words(path.rsplit(".", 1)[-1])
+    if any(label and label <= leaf for label in index.groups.get(_key(value), ())):
         return True
     return (
         isinstance(value, str)
