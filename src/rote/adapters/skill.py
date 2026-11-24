@@ -912,3 +912,34 @@ class SkillAdapter:
         )
         writer.finalize()
         return written
+
+
+def run_stops(
+    pipeline: Pipeline,
+    root: Path,
+    *,
+    judges: JudgeMode = "session",
+    backend: Literal["mcp", "api"] = "mcp",
+) -> list[dict[str, Any]]:
+    """The blocks a compiled skill's run stops at, from the plan its emit builds.
+
+    ``root`` holds the deliverable's modules (``extracted/``), which decide
+    which external calls are agent work. Raises :class:`rote.plan.PlanError`
+    when the skill runtime cannot run the pipeline. One derivation for
+    compile-report.md's Stops section and the scorecard's compiled side.
+    """
+    from rote.plan import build_plan
+    from rote.skill_target._driver import stops
+
+    plan = build_plan(
+        pipeline,
+        mcp="live",
+        backend=backend,
+        judges=judges,
+        implementations=dict(
+            implementations(
+                pipeline, backend, lambda module, nodes: shipped_module(root, module, nodes)
+            )
+        ),
+    )
+    return stops(plan["steps"], helper_judges=judges == "helper")
