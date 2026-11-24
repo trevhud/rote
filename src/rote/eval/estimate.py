@@ -21,6 +21,7 @@ the scorecard using live-fetched prices.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -137,52 +138,107 @@ def estimate_compiled_skill(
 
     A workflow runtime pays for a judge as one API call. A compiled skill
     pays for the conversation: every request re-reads the agent's fixed
-    context, and a run makes one request to start, one to finish, one per
-    block it answers (DECIDE, DO, LOOP) and two per question to the person
-    (ask, then pass the answer on). Measured with paired evals on
-    Haiku 5.5: a routing skill with one judge and one gate made 6 requests
-    and used 138k input tokens where pricing its judge as an API call said
-    3.7k to 43k; expense-audit (one gate) made 5 and used 82k. Both evals
-    add one request to write a result file, which this does not count.
+    context. Measured with paired evals on Haiku 5.5: a routing skill with
+    one judge and one gate made 6 requests and used 138k input tokens where
+    pricing its judge as an API call said 3.7k to 43k; expense-audit (one
+    gate) made 5 and used 82k. Both evals add one request to write a result
+    file, which this does not count.
 
-    ``stops`` are :func:`rote.skill_target._driver.stops`. A gate with a
-    condition is counted in the high figure only, and a LOOP block costs the
-    loop's own turns (one iteration to the default cap). The model work (what the
-    judges read and write, from ``pipeline``) enters the conversation once
-    and is re-read by the requests after it, half of them on average.
+    Requests, from ``stops`` (:func:`rote.skill_target._driver.stops`, built
+    for the compile's own judge mode and backend):
+
+    * one to start the run and one to finish;
+    * a DECIDE block: one, to answer it;
+    * a DO block: two, the agent's own tool call and then the answer;
+    * a fanned DECIDE or DO block: that per batch of
+      ``MAX_BATCH_ITEMS`` items, from the pipeline's fan width;
+    * a question to the person, as its own HUMAN block or asked ahead by
+      another block: one more to ask (the answer rides with the block's own
+      for a question asked ahead, and is one more for a HUMAN block);
+    * a LOOP block: the loop's own turns, which the agent runs itself;
+    * a gate with a condition: in the high figure only.
+
+    What the blocks show and the agent answers (each judge's input and
+    output, a DO step's tool result) enters the conversation once and is
+    re-read by the requests after it, half of them on average. A loop's
+    figures from ``pipeline`` already hold its own re-reads, so they are
+    added as they are. A judge no block asks (``--judges helper``) is the
+    API call it is: its tokens are read once and never re-read.
     """
+    from rote.skill_target._driver import MAX_BATCH_ITEMS
+
     priors = priors or Priors()
+    nodes = {n.node_id: n for n in pipeline.nodes}
+    widths = {w.node_id: w.elements for w in pipeline.fan_out_widths}
+    zero = Range(0.0, 0.0)
     low = high = 2.0
+    loop_turns = zero
+    shown = zero  # enters the conversation once, re-read afterwards
+    loop_in = zero  # a loop's own input total, re-reads included
+    asked: set[str] = set()
     for stop in stops:
+        steps = [nodes[s] for s in stop["steps"] if s in nodes]
+        asked.update(n.node_id for n in steps)
         if stop["block"] == "LOOP":
-            # The agent runs the loop itself: its turns are requests too.
-            low += priors.agent_loop_turns_per_iteration
-            high += priors.agent_loop_turns_per_iteration * priors.agent_loop_default_max_iterations
+            for node in steps:
+                turns = node.calls.scale(priors.agent_loop_turns_per_iteration)
+                loop_turns += turns
+                loop_in += node.llm_input_tokens
             continue
-        cost = 2.0 if stop["block"] == "HUMAN" or stop.get("ahead") else 1.0
-        high += cost
+        if stop["block"] == "HUMAN":
+            cost = Range(2.0, 2.0)
+        else:
+            per_batch = 2.0 if stop["block"] == "DO" else 1.0
+            width = widths.get(stop["steps"][0]) if stop.get("fanned") else None
+            batches = (
+                Range(1.0, 1.0)
+                if width is None
+                else Range(
+                    max(1.0, math.ceil(width.low / MAX_BATCH_ITEMS)),
+                    max(1.0, math.ceil(width.high / MAX_BATCH_ITEMS)),
+                )
+            )
+            ahead = 1.0 if stop.get("ahead") else 0.0
+            cost = Range(batches.low * per_batch + ahead, batches.high * per_batch + ahead)
+            for node in steps:
+                shown += node.llm_input_tokens + node.llm_output_tokens
+                if stop["block"] == "DO":
+                    shown += node.calls.scale(priors.tokens_per_external_call_result)
+        high += cost.high
         if not stop.get("conditional"):
-            low += cost
-    requests = Range(low, high)
+            low += cost.low
+    # A judge or loop no block asks runs as an API call from the driver.
+    api = [
+        n
+        for n in pipeline.nodes
+        if n.node_id not in asked and n.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
+    ]
+    api_in = sum((n.llm_input_tokens for n in api), zero)
+    api_out = sum((n.llm_output_tokens for n in api), zero)
+    own = Range(low, high)  # requests outside any loop
+    requests = own + loop_turns
     base = float(priors.system_overhead_tokens)
-    work = pipeline.llm_input_tokens + pipeline.llm_output_tokens
+    judged_out = sum((n.llm_output_tokens for n in pipeline.nodes if n.node_id in asked), zero)
     return AgentRunEstimate(
         turns=requests,
         context_tokens=priors.system_overhead_tokens,
-        fresh_input_tokens=Range(base + work.low, base + work.high),
+        fresh_input_tokens=Range(base + shown.low, base + shown.high) + api_in,
         cached_read_tokens=Range(
-            (low - 1) * (base + work.low / 2), (high - 1) * (base + work.high / 2)
-        ),
-        output_tokens=pipeline.llm_output_tokens + requests.scale(priors.output_tokens_per_turn),
+            (requests.low - 1) * (base + shown.low / 2),
+            (requests.high - 1) * (base + shown.high / 2),
+        )
+        + loop_in,
+        # A loop's output already counts its turns; ``judged_out`` holds it.
+        output_tokens=judged_out + api_out + own.scale(priors.output_tokens_per_turn),
         wall_seconds=requests.scale(priors.seconds_per_turn),
         sampling=pipeline.sampling,
         turn_method=(
-            "one request to start, one to finish, one per block the agent answers, "
-            "two per question to the person, a loop's own turns"
+            "one request to start, one to finish, one per DECIDE block, two per DO block, "
+            "one more per question to the person, a loop's own turns"
         ),
         token_count_method=(
             f"each request re-reads {priors.system_overhead_tokens} tokens of fixed context "
-            "(`system_overhead_tokens`) plus the model work so far"
+            "(`system_overhead_tokens`) plus what the blocks before it showed"
         ),
     )
 

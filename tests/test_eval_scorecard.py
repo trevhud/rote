@@ -7,12 +7,16 @@ fetch path is covered separately with mocked HTTP.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from rote.eval.empirical import MeasuredRun, measured_run_record
 from rote.eval.estimate import (
+    FanOutWidth,
+    NodeEstimate,
+    Range,
     estimate_compiled_skill,
     estimate_pipeline,
     estimate_skill,
@@ -23,7 +27,7 @@ from rote.eval.priors import Priors
 from rote.eval.scorecard import agent_run_cost_usd, build_scorecard, pipeline_cost_usd
 from rote.eval.sidecar import EvalEstimates, TurnRange
 from rote.eval.tokens import HeuristicTokenCounter
-from rote.ir import load_pipeline
+from rote.ir import NodeKind, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -265,7 +269,18 @@ def test_the_scorecard_builder_and_rote_eval_use_a_saved_baseline(
         load_pipeline(BDR_PIPELINE), BDR_PIPELINE, BDR_SKILL, "test", runtime="skill"
     )
     assert as_skill.compiled_skill is not None
-    assert as_skill.compiled_skill.turns.low == 2 + 2 * 3 + 2 * 2 + 3 + 1
+    assert as_skill.compiled_skill.turns.low == 2 + 2 * 3 + 2 * 2 + 3 * 2 + 1
+    # With --judges helper the DECIDE block is gone, as in compile-report.md.
+    helped = build_scorecard_for(
+        load_pipeline(BDR_PIPELINE),
+        BDR_PIPELINE,
+        BDR_SKILL,
+        "test",
+        runtime="skill",
+        helper_judges=True,
+    )
+    assert helped.compiled_skill is not None
+    assert helped.compiled_skill.turns.low == as_skill.compiled_skill.turns.low - 1
     assert card([]).compiled_skill is None
     # Only a flagged run, or none: the static estimate, as before.
     for runs in ([flagged], []):
@@ -273,34 +288,79 @@ def test_the_scorecard_builder_and_rote_eval_use_a_saved_baseline(
         assert static is not None and not static.measured and static.turns.low > 3
 
 
+def _node(node_id: str, kind: NodeKind, calls: float, tin: float, tout: float) -> NodeEstimate:
+    return NodeEstimate(
+        node_id=node_id,
+        kind=kind,
+        calls=Range.exact(calls),
+        llm_input_tokens_per_call=Range.exact(tin),
+        llm_output_tokens_per_call=Range.exact(tout),
+        wall_seconds_per_call=1.0,
+    )
+
+
 def test_a_compiled_skill_is_priced_as_a_conversation_not_as_api_calls(estimates) -> None:  # type: ignore[no-untyped-def]
     pipeline, pe, se = estimates
     priors = Priors()
     base = float(priors.system_overhead_tokens)
-    stops = [
-        {"block": "DECIDE", "steps": ["a", "b"]},
-        {"block": "DO", "steps": ["c"], "ahead": "g1"},
-        {"block": "HUMAN", "steps": ["g2"]},
-        {"block": "HUMAN", "steps": ["g3"], "conditional": True},
-    ]
-    looped = estimate_compiled_skill([{"block": "LOOP", "steps": ["l"]}], pe, priors).turns
-    assert (looped.low, looped.high) == (
-        2 + priors.agent_loop_turns_per_iteration,
-        2 + priors.agent_loop_turns_per_iteration * priors.agent_loop_default_max_iterations,
+    tool = priors.tokens_per_external_call_result
+    judge, fanned, do, loop, helper = (
+        _node("judge", NodeKind.LLM_JUDGE, 1, 1000, 100),
+        _node("fanned", NodeKind.LLM_JUDGE, 25, 200, 20),
+        _node("do", NodeKind.EXTERNAL_CALL, 1, 0, 0),
+        _node("loop", NodeKind.AGENT_LOOP, 4, 5000, 250),
+        _node("helper", NodeKind.LLM_JUDGE, 1, 700, 70),
     )
-    run = estimate_compiled_skill(stops, pe, priors)
-    # Start and finish, one for the DECIDE block, two for the DO block that
-    # also asks the person, two for the gate; the conditional gate only in
-    # the high figure.
-    assert (run.turns.low, run.turns.high) == (7.0, 9.0)
-    work = pe.llm_input_tokens + pe.llm_output_tokens
-    assert run.fresh_input_tokens.low == base + work.low
-    assert run.cached_read_tokens.low == pytest.approx(6 * (base + work.low / 2))
-    assert run.cached_read_tokens.high == pytest.approx(8 * (base + work.high / 2))
-    # No stops: still a start and a finish, each reading the fixed context.
-    bare = estimate_compiled_skill([], pe, priors)
+
+    def run(stops: list[dict[str, object]], *nodes: NodeEstimate):  # type: ignore[no-untyped-def]
+        shaped = replace(
+            pe,
+            nodes=list(nodes),
+            fan_out_widths=(FanOutWidth("fanned", Range(25.0, 25.0), "test"),),
+        )
+        return estimate_compiled_skill(stops, shaped, priors)
+
+    # No stops: a start and a finish, each reading the fixed context.
+    bare = run([])
     assert (bare.turns.low, bare.turns.high) == (2.0, 2.0)
-    assert bare.cached_read_tokens.low == pytest.approx(base + work.low / 2)
+    assert bare.fresh_input_tokens.low == base and bare.cached_read_tokens.low == base
+
+    # One DECIDE block: one more request; what it showed is re-read by half of the rest.
+    one = run([{"block": "DECIDE", "steps": ["judge"]}], judge)
+    assert one.turns.low == 3.0
+    assert one.fresh_input_tokens.low == base + 1100
+    assert one.cached_read_tokens.low == pytest.approx(2 * (base + 550))
+    assert one.output_tokens.low == 100 + 3 * priors.output_tokens_per_turn
+
+    def requests(stop: dict[str, object], *nodes: NodeEstimate) -> tuple[float, float]:
+        turns = run([stop], *nodes).turns
+        return turns.low - 2, turns.high - 2
+
+    # A question asked ahead is one more request; a HUMAN block is two.
+    assert requests({"block": "DECIDE", "steps": ["judge"], "ahead": "g"}, judge) == (2.0, 2.0)
+    assert requests({"block": "HUMAN", "steps": ["g"]}) == (2.0, 2.0)
+    # A conditional gate may never ask.
+    assert requests({"block": "HUMAN", "steps": ["g"], "conditional": True}) == (0.0, 2.0)
+    # A DO block is the agent's tool call and then its answer, and the tool's
+    # result enters the conversation.
+    assert requests({"block": "DO", "steps": ["do"]}, do) == (2.0, 2.0)
+    assert run([{"block": "DO", "steps": ["do"]}], do).fresh_input_tokens.low == base + tool
+    # 25 fanned items are three blocks of at most ten.
+    assert requests({"block": "DECIDE", "steps": ["fanned"], "fanned": True}, fanned) == (3.0, 3.0)
+    # A loop costs its own turns, and its tokens, which already hold their
+    # re-reads, are added once and never re-read again.
+    looped = run([{"block": "LOOP", "steps": ["loop"]}], loop)
+    loop_turns = 4 * priors.agent_loop_turns_per_iteration
+    assert looped.turns.low == 2 + loop_turns
+    assert looped.fresh_input_tokens.low == base
+    assert looped.cached_read_tokens.low == pytest.approx((1 + loop_turns) * base + 4 * 5000)
+    assert looped.output_tokens.low == 4 * 250 + 2 * priors.output_tokens_per_turn
+    # A judge no block asks (--judges helper) is an API call: read once.
+    api = run([], helper)
+    assert (api.turns.low, api.fresh_input_tokens.low) == (2.0, base + 700)
+    assert api.cached_read_tokens.low == base and api.output_tokens.low == 70 + 2 * 250
+
+    run = one  # type: ignore[assignment]
 
     def card(compiled):  # type: ignore[no-untyped-def]
         return build_scorecard(
@@ -314,15 +374,17 @@ def test_a_compiled_skill_is_priced_as_a_conversation_not_as_api_calls(estimates
         )
 
     skill, workflow = card(run), card(None)
-    assert skill.after_llm_tokens.low > workflow.after_llm_tokens.low + 6 * base
+    assert skill.after_llm_tokens.low == 3 * base + 1100 + 2 * 550 + one.output_tokens.low
     assert skill.costs[0].after_usd.low == agent_run_cost_usd(run, _price()).low
     assert workflow.costs[0].after_usd.low == pipeline_cost_usd(pe, _price()).low
     md = skill.to_markdown()
     assert "| Metric | As agent instructions | As compiled skill | Change |" in md
-    assert "- Compiled skill: 7–9 requests" in md
+    assert "- Compiled skill: 3 requests" in md
+    assert "asked in the conversation" in md and "durable" not in md
+    assert "durable" in workflow.to_markdown()
     assert "As compiled pipeline" in workflow.to_markdown()
     assert "Compiled skill:" not in workflow.to_markdown()
-    assert skill.to_dict()["after"]["compiled_skill"]["requests"] == {"low": 7.0, "high": 9.0}  # type: ignore[index]
+    assert skill.to_dict()["after"]["compiled_skill"]["requests"] == {"low": 3.0, "high": 3.0}  # type: ignore[index]
     assert workflow.to_dict()["after"]["compiled_skill"] is None  # type: ignore[index]
 
 
