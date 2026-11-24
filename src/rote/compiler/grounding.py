@@ -141,6 +141,23 @@ def find_sample(
     return None
 
 
+def recorded_sample(payload: dict[str, Any], source: str) -> Sample:
+    """The sample a recorded run's input holds, never an error.
+
+    A run may have been given an envelope (input plus gate answers), the
+    form ``rote eval --run --input`` takes. Read as a bare input, the
+    envelope became the contract: required fields ``input`` and ``signals``.
+    A recording is already paid for, so anything that is not plainly an
+    envelope (a non-empty ``input`` object and a ``signals`` object) is the
+    bare input it was before: a skill whose own input is ``{"signals": ...}``
+    keeps that contract.
+    """
+    inner, signals = payload.get("input"), payload.get("signals")
+    if isinstance(inner, dict) and inner and isinstance(signals, dict):
+        return parse_sample(payload, source)
+    return Sample(payload=payload, source=source)
+
+
 def _baseline_sample(probe_dir: Path) -> Sample | None:
     """The payload a ``rote baseline`` run actually ran the skill on."""
     from rote.eval.baseline import METRICS_FILENAME
@@ -154,7 +171,7 @@ def _baseline_sample(probe_dir: Path) -> Sample | None:
         return None
     if not isinstance(payload, dict) or not payload:
         return None
-    return Sample(payload=payload, source=f"the input the baseline ran on ({path})")
+    return recorded_sample(payload, f"the input the baseline ran on ({path})")
 
 
 # ───────── the contract ─────────

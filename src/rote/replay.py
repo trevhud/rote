@@ -73,7 +73,9 @@ def _observations(baseline: Path) -> list[dict[str, Any]]:
     return [o for o in raw if isinstance(o, dict)]
 
 
-def _recorded_input(baseline: Path) -> dict[str, Any]:
+def _recorded_input(baseline: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The input the recorded run was given, and any gate answers given with it."""
+    from rote.compiler.grounding import recorded_sample
     from rote.eval.baseline import METRICS_FILENAME
 
     metrics = json.loads((baseline / METRICS_FILENAME).read_text(encoding="utf-8"))
@@ -85,7 +87,8 @@ def _recorded_input(baseline: Path) -> dict[str, Any]:
         raise ReplayError(
             f"{baseline}: no recorded trial succeeded, so its calls are not a run to replay"
         )
-    return payload
+    sample = recorded_sample(payload, str(baseline / METRICS_FILENAME))
+    return sample.payload, list(sample.gates.values())
 
 
 def _result_text(result: Any) -> Any:
@@ -183,7 +186,8 @@ def prepare(
     baseline = baseline_dir / BASELINE_DIRNAME
     if not baseline.is_dir():
         baseline = baseline_dir
-    payload = _recorded_input(baseline)
+    payload, recorded_gates = _recorded_input(baseline)
+    gates = list(gates) or recorded_gates
     observed = _observations(baseline)
     pipeline = load_pipeline(compiled_pipeline)
     gate_count = sum(1 for n in pipeline.nodes if n.kind.value == "hitl_gate")

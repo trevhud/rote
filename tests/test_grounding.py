@@ -97,6 +97,26 @@ def test_the_baseline_input_is_the_last_source(tmp_path: Path) -> None:
     assert sample is not None and sample.payload == {"d": "x"}
 
 
+def test_a_baseline_run_on_an_envelope_grounds_its_input_and_its_gate_answers(
+    tmp_path: Path,
+) -> None:
+    skill = _write(tmp_path / "skill", {"SKILL.md": "# s\n"})
+    envelope = {"input": {"leads": [1, 2]}, "signals": {"review": {"accepted": [1]}}}
+    probe = _write(tmp_path / "baseline", {"metrics.json": json.dumps({"input": envelope})})
+    sample = find_sample(skill, probe_dir=probe)
+    assert sample is not None
+    # The contract is the inner input, never the envelope's own two keys.
+    assert sample.payload == {"leads": [1, 2]}
+    assert sample.gates == {"review": {"accepted": [1]}}
+    # A recording is never a reason to stop: an input that only looks like
+    # an envelope (its own field is `signals`, or `signals` is a list) stays
+    # the bare input it is.
+    for bare in ({"signals": {"cpu": {"value": 97}}}, {"input": {"a": 1}, "signals": ["x"]}):
+        probe = _write(tmp_path / "bare", {"metrics.json": json.dumps({"input": bare})})
+        sample = find_sample(skill, probe_dir=probe)
+        assert sample is not None and sample.payload == bare and sample.gates == {}
+
+
 def test_the_eval_envelope_grounds_the_gate_payloads_too() -> None:
     sample = load_sample(EXPENSE / "eval-input.json")
     assert set(sample.payload) == {"period", "submissions"}
