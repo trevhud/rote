@@ -247,7 +247,9 @@ def output_findings(
     (System-1 fixes it before any module is written), so a module that
     returns another shape fails here, on data no model wrote, instead of in
     the next node. A fan_out node's result is one value per element, each
-    checked. A node without an ``output_schema`` declares nothing to check.
+    checked. A node without an ``output_schema`` declares nothing to check,
+    and a gate its ``when`` skipped answered nothing: its result is null on
+    every runtime, whatever schema its answer would have had.
     """
     from rote.compiler.grounding import schema_mismatches
 
@@ -255,6 +257,8 @@ def output_findings(
     for node in pipeline.nodes:
         step = report.get(node.id) or {}
         if not node.output_schema or step.get("status") != "ok" or "output" not in step:
+            continue
+        if step.get("skipped"):
             continue
         values = step["output"] if node.fan_out else [step["output"]]
         if not isinstance(values, list):

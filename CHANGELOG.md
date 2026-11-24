@@ -164,6 +164,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- A compile no longer fails verification because a conditional gate was
+  skipped on the sample input. The sample run reports a skipped gate's
+  result as null, which is what every runtime produces, and the output
+  check then held that null to the schema of the gate's answer. Two of
+  three compiles of a skill that asks for a lead time only when one is
+  missing ended "verification FAILED" on a sample where none was.
+
 - The paired eval no longer fails a compiled trial over a conditional gate
   the run correctly skipped ("gate X has no journal entry"). The check reads
   the gate's condition from the run's journal by the driver's own rule.
