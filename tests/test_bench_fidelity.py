@@ -250,6 +250,35 @@ def test_a_breakdown_written_as_a_map_reproduces_its_record_columns() -> None:
     assert field_reproduced("dock_pending_by_site[].site", {"set": ["east1"]}, one)
 
 
+def test_a_list_per_status_reproduces_from_a_status_column() -> None:
+    index = index_trace(
+        [
+            {
+                "projections": [
+                    {"sku": "FLT-2025", "status": "order_now", "enough_history": True, "n": 1},
+                    {"sku": "CAP-4505", "status": "order_now", "enough_history": True, "n": 2},
+                    {"sku": "THM-T6", "status": "order_soon", "enough_history": True, "n": 2},
+                    {"sku": "SMT-PRO", "status": "fine", "enough_history": False, "n": 2},
+                ]
+            }
+        ]
+    )
+    assert field_reproduced("order_now_skus", {"set": ["cap-4505", "flt-2025"]}, index)
+    assert field_reproduced("order_soon_skus", {"set": ["thm-t6"]}, index)
+    assert field_reproduced("not_enough_history_skus", {"set": ["smt-pro"]}, index)
+    # The rows of another status, or one row too many, are a different list.
+    assert not field_reproduced("order_now_skus", {"set": ["flt-2025", "thm-t6"]}, index)
+    assert not field_reproduced(
+        "order_now_skus", {"set": ["cap-4505", "flt-2025", "smt-pro"]}, index
+    )
+    # A group's small numbers still need a key that shares a word with the
+    # field, and here that key is the status itself.
+    assert field_reproduced("order_soon_counts", {"set": [2.0]}, index)
+    assert not field_reproduced("retries", {"set": [2.0]}, index)
+    # A number column is not a label: no list per count.
+    assert not field_reproduced("pairs", {"set": ["cap-4505", "smt-pro", "thm-t6"]}, index)
+
+
 def test_values_match_by_value_wherever_the_pipeline_put_them() -> None:
     index = index_trace(
         [

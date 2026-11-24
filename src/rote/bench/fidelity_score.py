@@ -21,7 +21,8 @@ Lists compare as sets; a list of records compares per field (the set of
 coincidence (small integers, booleans, short strings, empty lists) also
 need a key whose name shares a word with the contract field. A breakdown
 written as a map of names to numbers compares as the two columns its
-records would have, always under such a key.
+records would have, always under such a key. A record list with a label
+column (a ``status`` on every row) also compares as one list per label.
 """
 
 from __future__ import annotations
@@ -73,6 +74,11 @@ def _is_scalar(value: Any) -> bool:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _is_label_column(column: list[Any]) -> bool:
+    """Whether a record column sorts its records into groups: all strings, or all booleans."""
+    return all(isinstance(c, str) for c in column) or all(isinstance(c, bool) for c in column)
 
 
 def _as_set(values: Iterable[Any]) -> dict[str, list[Any]]:
@@ -174,6 +180,11 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
     or as a map (``{"EAST1": 2}``) from one compile to the next. Both say
     the same thing, so a map of names to numbers is indexed as
     the two columns the records would have.
+
+    A list per group is written the same two ways: ``order_now_skus`` as
+    its own list, or a ``status`` column on every record. So each column is
+    also indexed once per value of every label column (all strings, or all
+    booleans), under that value's name.
     """
     index = TraceIndex()
 
@@ -188,10 +199,23 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
             if all(_is_scalar(v) for v in obj):
                 index.add(_as_set(obj), key)
             elif all(isinstance(v, dict) for v in obj):
-                for col in sorted({k for v in obj for k in v}):
-                    column = [v.get(col) for v in obj]
-                    if all(_is_scalar(c) for c in column):
-                        index.add(_as_set(column), col)
+                columns = {
+                    col: [v.get(col) for v in obj] for col in sorted({k for v in obj for k in v})
+                }
+                columns = {col: c for col, c in columns.items() if all(map(_is_scalar, c))}
+                for col, column in columns.items():
+                    index.add(_as_set(column), col)
+                for label, labels in columns.items():
+                    if not _is_label_column(labels):
+                        continue
+                    for group in dict.fromkeys(labels):
+                        name = label if isinstance(group, bool) else group
+                        for col, column in columns.items():
+                            if col != label:
+                                part = [
+                                    c for c, g in zip(column, labels, strict=True) if g == group
+                                ]
+                                index.add(_as_set(part), f"{name}_{col}")
             for v in obj:
                 walk(v, key)
         else:
