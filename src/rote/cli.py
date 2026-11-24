@@ -1373,6 +1373,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         )
     elif not args.no_eval:
         from rote.eval import build_scorecard_for
+        from rote.eval.empirical import measured_run_record
         from rote.eval.pricing import PricingError
 
         try:
@@ -1384,11 +1385,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 # Infrastructure is priced for where this run is headed:
                 # rote cloud when it auto-deploys there, else the emit.
                 runtime="rote-cloud" if auto_deploy else args.runtime,
-                # A flagged run (truncated, tools missing) is not the skill's cost.
                 measured_runs=[
-                    r
+                    measured_run_record(r)
                     for r in (baseline_result.runs if baseline_result is not None else ())
-                    if r.succeeded and not r.flags
                 ],
             )
             scorecard_path = compiled_dir / "scorecard.md"
@@ -5175,6 +5174,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         )
 
     from rote.eval import build_scorecard_for
+    from rote.eval.baseline import recorded_runs
     from rote.eval.priors import priors_from_overrides
 
     try:
@@ -5191,6 +5191,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             args.provider,
             priors=priors,
             runtime=args.runtime or _single_emitted_runtime(target),
+            measured_runs=recorded_runs(target) if target.is_dir() else (),
         )
     except PricingError as e:
         print(f"error: could not fetch live prices: {e}", file=sys.stderr)

@@ -189,7 +189,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   287k to 479k tokens before and 94% fewer after, while the baseline in
   the same file had used 28k tokens in 3 turns. The measured turns, tokens
   and time now fill the agent column, priced at each model's rates, and
-  the header says which side is measured.
+  the header says which side is measured. `rote eval <out dir>` reads the
+  baseline the compile saved, so a scorecard regenerated later agrees.
 - `rote compile --baseline --baseline-input` reads an input written as the
   `{"input": ..., "signals": ...}` envelope, the form `rote eval --run
   --input` and `--sample-input` take. The baseline's input was read as a
