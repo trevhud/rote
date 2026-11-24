@@ -250,6 +250,33 @@ def test_a_breakdown_written_as_a_map_reproduces_its_record_columns() -> None:
     assert field_reproduced("dock_pending_by_site[].site", {"set": ["east1"]}, one)
 
 
+def test_a_list_per_status_reproduces_from_a_status_column() -> None:
+    index = index_trace(
+        [
+            {
+                "projections": [
+                    {"sku": "FLT-2025", "name": "Filter", "status": "order_now", "n": 1},
+                    {"sku": "CAP-4505", "name": "Cap", "status": "order_now", "n": 2},
+                    {"sku": "THM-T6", "name": "Stat", "status": "Order soon", "n": 2},
+                    {"sku": "SMT-PRO", "name": "Smart", "status": None, "n": 2},
+                ]
+            }
+        ]
+    )
+    assert field_reproduced("order_now_skus", {"set": ["cap-4505", "flt-2025"]}, index)
+    assert field_reproduced("order_soon_skus", {"set": ["thm-t6"]}, index)
+    # The right rows under another status are a different list, and "order"
+    # alone does not make two statuses one.
+    assert not field_reproduced("order_soon_skus", {"set": ["cap-4505", "flt-2025"]}, index)
+    assert not field_reproduced("fine_skus", {"set": ["cap-4505", "flt-2025"]}, index)
+    assert not field_reproduced("order_now_skus", {"set": ["thm-t6"]}, index)
+    # One row of a status is not the status's list, though a name column
+    # groups every row alone.
+    assert not field_reproduced("order_now_skus", {"set": ["cap-4505"]}, index)
+    # A number column is not a label: no list per count.
+    assert not field_reproduced("n_skus", {"set": ["cap-4505", "smt-pro", "thm-t6"]}, index)
+
+
 def test_values_match_by_value_wherever_the_pipeline_put_them() -> None:
     index = index_trace(
         [

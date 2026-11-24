@@ -19,6 +19,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   saved ops-report compiles this returns `dock_pending_by_site[].open_count`
   (quiet day 0.98 to 1.0), and no other field of theirs moves.
 
+- `rote bench --fidelity` counts a list per status written as a status
+  column. A skill reports `order_now_skus` and `order_soon_skus`; a compile
+  writes one record per item with `status: order_now`. The scorer saw only
+  whole columns, so every such list was lost. Each column of a record list
+  is now also read once per value of a label column (strings, at most 50
+  distinct), and counts for a field whose name holds every word of the
+  label, so the same rows under another status are not credited. On two
+  saved compiles of a private inventory skill, outputs went from 0.38 to
+  0.50 up to 0.50 to 0.71.
+
 - A step the skill says stops the run now raises where the condition is
   found. Compiles used to return a flag (`has_missing_rate`) that no later
   step was told to read: of 14 expense-audit compiles on three models, none

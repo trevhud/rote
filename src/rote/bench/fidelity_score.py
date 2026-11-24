@@ -21,7 +21,8 @@ Lists compare as sets; a list of records compares per field (the set of
 coincidence (small integers, booleans, short strings, empty lists) also
 need a key whose name shares a word with the contract field. A breakdown
 written as a map of names to numbers compares as the two columns its
-records would have, always under such a key.
+records would have, always under such a key. A record list with a label
+column (a ``status`` on every row) also compares as one list per label.
 """
 
 from __future__ import annotations
@@ -73,6 +74,26 @@ def _is_scalar(value: Any) -> bool:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+#: Most distinct values a record column can hold and still be read as a
+#: label. A status is a small vocabulary; an id or a name per row is not,
+#: and grouping by one costs rows times columns for nothing.
+MAX_LABELS = 50
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _words(text: str) -> frozenset[str]:
+    """Every word of a name, stopwords kept: ``order_now`` and ``order_soon`` must differ."""
+    return frozenset(_WORD_RE.findall(text.casefold()))
+
+
+def _is_label_column(column: list[Any]) -> bool:
+    """Whether a record column sorts its records into named groups: strings, some maybe missing."""
+    return any(c is not None for c in column) and all(
+        c is None or isinstance(c, str) for c in column
+    )
 
 
 def _as_set(values: Iterable[Any]) -> dict[str, list[Any]]:
@@ -161,6 +182,13 @@ class TraceIndex:
     #: that shares a word with the field's own name, however many values.
     maps: dict[str, set[str]] = field(default_factory=dict)
 
+    #: Sets read off one group of a record list (the rows sharing a label,
+    #: such as ``status: order_now``), with the words of each label they sat
+    #: under. They count only for a field whose own name holds every word of
+    #: the label, whatever the values: the rows of another status are
+    #: another list.
+    groups: dict[str, set[frozenset[str]]] = field(default_factory=dict)
+
     def add(self, value: Value, key: str) -> None:
         self.values.setdefault(_key(value), set()).add(key)
         if isinstance(value, str):
@@ -174,6 +202,11 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
     or as a map (``{"EAST1": 2}``) from one compile to the next. Both say
     the same thing, so a map of names to numbers is indexed as
     the two columns the records would have.
+
+    A list per group is written the same two ways: ``order_now_skus`` as
+    its own list, or a ``status`` column on every record. So each column is
+    also indexed once per value of every label column (strings), kept in
+    ``groups`` under that label's words.
     """
     index = TraceIndex()
 
@@ -188,10 +221,26 @@ def index_trace(objects: Iterable[Any]) -> TraceIndex:
             if all(_is_scalar(v) for v in obj):
                 index.add(_as_set(obj), key)
             elif all(isinstance(v, dict) for v in obj):
-                for col in sorted({k for v in obj for k in v}):
-                    column = [v.get(col) for v in obj]
-                    if all(_is_scalar(c) for c in column):
-                        index.add(_as_set(column), col)
+                columns = {
+                    col: [v.get(col) for v in obj] for col in sorted({k for v in obj for k in v})
+                }
+                columns = {col: c for col, c in columns.items() if all(map(_is_scalar, c))}
+                for col, column in columns.items():
+                    index.add(_as_set(column), col)
+                for label, labels in columns.items():
+                    if not _is_label_column(labels):
+                        continue
+                    rows: dict[str, list[int]] = {}
+                    for i, group in enumerate(labels):
+                        if group is not None:
+                            rows.setdefault(group, []).append(i)
+                    if len(rows) > MAX_LABELS:
+                        continue
+                    for group, members in rows.items():
+                        for col, column in columns.items():
+                            if col != label:
+                                part = _as_set(column[i] for i in members)
+                                index.groups.setdefault(_key(part), set()).add(_words(group))
             for v in obj:
                 walk(v, key)
         else:
@@ -234,12 +283,17 @@ def field_reproduced(path: str, value: Value, index: TraceIndex) -> bool:
     (``2026-09-expense-audit.md``) where a pipeline reports the full path.
     A column of a breakdown also counts when the pipeline wrote the
     breakdown as a map under a key sharing a word with the field's own name.
+    A list also counts as one group of a record list (the rows with
+    ``status: order_now``) when the field's name holds every word of the label.
     """
     want = _leaf_tokens(path)
     keys = index.values.get(_key(value), ())
     if keys and (_informative(value) or any(want & _tokens(k) for k in keys)):
         return True
     if any(want & _tokens(k) for k in index.maps.get(_key(value), ())):
+        return True
+    leaf = _words(path.rsplit(".", 1)[-1])
+    if any(label and label <= leaf for label in index.groups.get(_key(value), ())):
         return True
     return (
         isinstance(value, str)
