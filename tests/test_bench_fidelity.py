@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
+from rote.bench.fidelity import asked_without_answer, assign_gate_payloads
 from rote.bench.fidelity_score import (
     call_key,
     field_reproduced,
@@ -28,6 +29,7 @@ from rote.bench.fidelity_score import (
     score_case,
     stable_reference,
 )
+from rote.ir import Node
 
 
 def test_normalize_folds_amount_text_case_and_space() -> None:
@@ -1304,3 +1306,56 @@ def test_every_committed_case_gives_its_gates_distinct_payloads(example: str) ->
     from .conftest import EXAMPLES_DIR
 
     assert load_cases(EXAMPLES_DIR / example).cases
+
+
+def _gate(node_id: str, keys: list[str], when: str | None = None) -> Node:
+    return Node.model_validate(
+        {
+            "id": node_id,
+            "kind": "hitl_gate",
+            "description": node_id,
+            "signal": node_id,
+            "output": dict.fromkeys(keys, "list"),
+            **({"when": when} if when else {}),
+        }
+    )
+
+
+def test_a_case_answer_goes_to_the_gate_it_fits_past_a_conditional_gate() -> None:
+    """A pipeline that asks about seasonality only when history is short, then
+    asks for PO approval, gave the case's one approval to the seasonality gate
+    (which never asks on that input) and nothing to the approval gate."""
+    season = _gate("season", ["seasonal_pattern"], when="check.output.ask")
+    approve = _gate("approve", ["approved_vendors", "declined_vendors"])
+    answer = {"approved_vendors": ["Ferguson"], "declined_vendors": []}
+    assert assign_gate_payloads([season, approve], [answer]) == [None, 0]
+    # Conditional gates on both sides: the answer still lands on the fit.
+    late = _gate("late", ["note"], when="check.output.ask")
+    assert assign_gate_payloads([season, approve, late], [answer]) == [None, 0, None]
+    # As many answers as gates is by position, conditional or not.
+    assert assign_gate_payloads([season, approve], [{"seasonal_pattern": []}, answer]) == [0, 1]
+    # An unconditional gate always answers: with none to spare, by position.
+    first = _gate("first", ["ok"])
+    assert assign_gate_payloads([first, approve], [answer]) == [0, None]
+    # A tie (two conditional gates the answer fits equally, or not at all)
+    # goes to the earliest gate, as position did.
+    twin = _gate("twin", ["seasonal_pattern"], when="check.output.ask")
+    assert assign_gate_payloads([season, twin], [{"seasonal_pattern": []}]) == [0, None]
+    assert assign_gate_payloads([season, twin], [{"other": 1}]) == [0, None]
+    # More gates short of an answer than conditional gates: the conditional
+    # one still goes without, and the unconditional ones take the answers.
+    assert assign_gate_payloads([season, approve, first], [answer]) == [None, 0, None]
+    assert assign_gate_payloads([season, approve], []) == [None, None]
+
+
+def test_a_conditional_gate_that_asks_when_the_skill_did_not_costs_gate_fit() -> None:
+    wait = {"name": "DBOS.recv"}
+    step = {"name": "compute"}
+    # One answered gate, one conditional gate without an answer, two waits:
+    # the conditional gate asked a question the skill never did.
+    (entry,) = asked_without_answer([wait, step, wait], answered=1, unanswered=1)
+    assert entry["fit"] == 0.0 and entry["asked_without_answer"] is True
+    # It was skipped, as on the skill's own run: nothing to charge.
+    assert asked_without_answer([step, wait], answered=1, unanswered=1) == []
+    # Never more entries than gates left without an answer.
+    assert len(asked_without_answer([wait, wait, wait], answered=1, unanswered=1)) == 1

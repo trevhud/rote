@@ -22,6 +22,7 @@ computed before, and the gate payloads it received.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import os
 import shutil
@@ -483,6 +484,56 @@ def _payload_fit(payload: dict[str, Any], gate: Any) -> float:
     return round(len(want & have) / len(want | have), 4)
 
 
+def assign_gate_payloads(gates: list[Any], payloads: list[dict[str, Any]]) -> list[int | None]:
+    """For each gate in run order, the index of the case answer it gets.
+
+    The case lists the answers the skill asked for on this input, in order.
+    A pipeline can hold more gates than that when some are conditional (a
+    question asked only when a value is missing), and those are skipped on
+    an input that needs no question. Handing answers out by position gave
+    the first one to a gate that never asks and left the real gate with
+    nothing. So when the case has fewer answers than the pipeline has gates,
+    the gates left without one are conditional ones, chosen so the answers'
+    keys fit the gates that get them best (ties: the earliest gates answer).
+    Order is kept. With more answers missing than conditional gates, every
+    conditional gate goes without and the rest answer by position.
+    """
+    spare = len(gates) - len(payloads)
+    conditional = [i for i, g in enumerate(gates) if g.when is not None]
+    if spare <= 0:
+        return list(range(len(gates)))
+    if spare >= len(conditional):
+        # Every conditional gate goes without; the rest answer by position.
+        answers = iter(range(len(payloads)))
+        return [None if i in conditional else next(answers, None) for i in range(len(gates))]
+    best: tuple[float, tuple[int, ...]] | None = None
+    for left_out in itertools.combinations(conditional, spare):
+        kept = [i for i in range(len(gates)) if i not in left_out]
+        fit = sum(_payload_fit(p, gates[i]) for p, i in zip(payloads, kept, strict=True))
+        # Combinations come earliest-left-out first, so ">=" ends on the one
+        # that leaves out the latest gates among equals.
+        if best is None or fit >= best[0]:
+            best = (fit, left_out)
+    assert best is not None
+    answers = iter(range(len(payloads)))
+    return [None if i in best[1] else next(answers) for i in range(len(gates))]
+
+
+def asked_without_answer(
+    steps: list[dict[str, Any]], answered: int, unanswered: int
+) -> list[dict[str, Any]]:
+    """A zero-fit entry per question the pipeline asked that the skill did not.
+
+    A conditional gate the case has no answer for should be skipped on this
+    input. The run waited once per gate that asked, so waits beyond the
+    answered gates are those gates asking anyway. Which of several asked is
+    not recorded, so the entry names none.
+    """
+    waits = sum(1 for s in steps if s["name"] == "DBOS.recv")
+    extra = min(unanswered, max(0, waits - answered))
+    return [{"gate": None, "signal": None, "fit": 0.0, "asked_without_answer": True}] * extra
+
+
 def _dbos_objects(app: Path) -> tuple[list[dict[str, Any]], list[Any]]:
     """Every step (and fanned child step) of the app's workflow, with outputs."""
     from dbos import DBOSClient
@@ -637,10 +688,20 @@ def run_pipeline_case(
     gates = _gate_order(pipeline)
     signals: dict[str, Any] = {}
     gate_fit = []
-    for i, gate in enumerate(gates):
-        payload = case.gates[i] if i < len(case.gates) else {}
+    answered: list[dict[str, Any]] = []
+    unanswered = 0
+    for gate, index in zip(gates, assign_gate_payloads(gates, case.gates), strict=True):
         assert gate.signal is not None
+        if index is None and gate.when is not None:
+            # A conditional gate the case holds no answer for: the skill did
+            # not ask on this input. It is sent an empty answer in case the
+            # pipeline asks anyway, which is scored once the run shows it.
+            signals[gate.signal] = {}
+            unanswered += 1
+            continue
+        payload = case.gates[index] if index is not None else {}
         signals[gate.signal] = payload
+        answered.append(payload)
         gate_fit.append(
             {"gate": gate.id, "signal": gate.signal, "fit": _payload_fit(payload, gate)}
         )
@@ -677,6 +738,7 @@ def run_pipeline_case(
         )
         calls = read_calls(calls_log) + (api_calls(http_log) if http_log else [])
     steps, objects = _dbos_objects(app)
+    gate_fit += asked_without_answer(steps, len(answered), unanswered)
     if run.output is not None:
         objects.append(run.output)
     return {
@@ -688,7 +750,7 @@ def run_pipeline_case(
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
-        "reads_before_gate": reads_before_parks(steps, calls, [signals[g.signal] for g in gates]),
+        "reads_before_gate": reads_before_parks(steps, calls, answered),
         "gate_fit": gate_fit,
         "unknown_servers": unknown,
         "backend": backend,

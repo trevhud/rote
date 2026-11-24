@@ -172,6 +172,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- `rote bench --fidelity` hands a case's gate answers to the gates they
+  fit. Answers went out by position, so a pipeline with a conditional gate
+  ahead of its approval gate gave the approval to the gate that never asks
+  on that input and left the real one with nothing (gate fit 0.0, and every
+  field that depends on the decision lost). With fewer answers than gates,
+  the gates left without one are now conditional ones, chosen by how well
+  the answers' keys fit. A conditional gate that asks anyway, where the
+  skill did not, costs gate fit.
+
 - The paired eval no longer fails a compiled trial over a conditional gate
   the run correctly skipped ("gate X has no journal entry"). The check reads
   the gate's condition from the run's journal by the driver's own rule.
