@@ -298,6 +298,46 @@ def test_a_result_that_breaks_its_output_schema_is_an_error() -> None:
     assert output_findings(_pipeline(fan_out=False), ok, sample) == []
 
 
+def test_a_gate_its_condition_skipped_is_not_held_to_its_answer_schema() -> None:
+    """A skipped gate's result is null by design (#309). Two of three compiles
+    of a skill that asks for a lead time only when one is missing failed
+    verification on a sample where none was."""
+    answer = {"type": "object", "properties": {"days": {"type": "integer"}}, "required": ["days"]}
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "p",
+            "version": "0.1.0",
+            "input": {"type": "PInput"},
+            "nodes": [
+                {
+                    "id": "src",
+                    "kind": "pure_function",
+                    "description": "rows",
+                    "impl": "extracted/src.py:src",
+                    "inputs": {"request": "pipeline.input"},
+                    "output": {"lead_time_missing": "bool"},
+                },
+                {
+                    "id": "ask",
+                    "kind": "hitl_gate",
+                    "description": "ask for the lead time",
+                    "signal": "lead_time",
+                    "when": "src.output.lead_time_missing",
+                    "output_schema": answer,
+                },
+            ],
+            "edges": [{"from": "src", "to": "ask"}],
+        }
+    )
+    sample = Sample(payload={}, source="sample.json")
+    skipped = {"ask": {"status": "ok", "skipped": True, "output": None}}
+    assert output_findings(pipeline, skipped, sample) == []
+    # The same gate, answered with the wrong shape, is still a finding.
+    answered = {"ask": {"status": "ok", "output": {"days": "ten"}}}
+    (finding,) = output_findings(pipeline, answered, sample)
+    assert finding.node_id == "ask" and "ask.days is str" in finding.message
+
+
 def test_each_fanned_result_is_checked() -> None:
     sample = Sample(payload={}, source="sample.json")
     report = {
