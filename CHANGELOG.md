@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- `rote bench --fidelity` counts a breakdown written as a map. One compile
+  writes open rows per site as records (`[{"site": "EAST1", "open": 2}]`)
+  and the next as `{"EAST1": 2}`; the scorer saw only the records, so the
+  map lost a field it had produced. A map of names to numbers is now read
+  as the two columns, under a key sharing a word with the field's name. On two
+  saved ops-report compiles this returns `dock_pending_by_site[].open_count`
+  (quiet day 0.98 to 1.0), and no other field of theirs moves.
+
 - A step the skill says stops the run now raises where the condition is
   found. Compiles used to return a flag (`has_missing_rate`) that no later
   step was told to read: of 14 expense-audit compiles on three models, none
@@ -170,6 +178,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   check then held that null to the schema of the gate's answer. Two of
   three compiles of a skill that asks for a lead time only when one is
   missing ended "verification FAILED" on a sample where none was.
+- `rote bench --fidelity` hands a case's gate answers to the gates they
+  fit. Answers went out by position, so a pipeline with a conditional gate
+  ahead of its approval gate gave the approval to the gate that never asks
+  on that input and left the real one with nothing (gate fit 0.0, and every
+  field that depends on the decision lost). With fewer answers than gates,
+  the gates left without one are now conditional ones, chosen by how well
+  the answers' keys fit. A conditional gate that asks anyway, where the
+  skill did not, costs gate fit.
 
 - The paired eval no longer fails a compiled trial over a conditional gate
   the run correctly skipped ("gate X has no journal entry"). The check reads
