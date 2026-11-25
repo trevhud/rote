@@ -902,7 +902,9 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     )
     answer = good_answer()
     # The model put the lead's gate first; the sample answers the budget first.
-    lead = {"signal": "lead_ok", "payload": ["approved"], "timeout": ""}
+    # It also stated a shape the sample's own answer contradicts (True, not text).
+    said = [{"key": "approved", "shape": "text", "fields": [], "about": ""}]
+    lead = {"signal": "lead_ok", "payload": ["approved"], "timeout": "", "answers": said}
     budget = {"signal": "money_check", "payload": ["budget"], "timeout": ""}
     answer["nodes"].append(node("lead_gate", 3, "hitl_gate", gate=lead))
     answer["nodes"].append(node("budget_gate", 3, "hitl_gate", gate=budget))
@@ -913,6 +915,8 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     assert by_id["lead_gate"] == {
         "signal": "lead_ok",
         "payload": ["approved", "reviewer"],
+        # The sample answers this gate, so its answer decides the shape.
+        "answers": [],
         "timeout": "",
         "shows": [],
         "message": "",
@@ -920,6 +924,7 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     assert by_id["budget_gate"] == {
         "signal": "budget_ok",
         "payload": ["budget"],
+        "answers": [],
         "timeout": "",
         "shows": [],
         "message": "",
@@ -2005,6 +2010,99 @@ def _conditional(when: str = "render_digest.needs_review", **gate: str) -> dict[
         {"when": when, "when_quote": "Send the digest to the finance team", **gate}
     )
     return answer
+
+
+def _shaped(answers: list[dict[str, Any]], payload: list[str]) -> dict[str, Any]:
+    answer = _gated(reads=["approve_digest"])
+    answer["nodes"][2]["gate"].update(payload=payload, answers=answers)
+    return answer
+
+
+def test_a_gate_states_the_shape_of_each_answer_key(skill: Any) -> None:
+    answers = [
+        {
+            "key": "decisions",
+            "shape": "record_list",
+            "fields": ["item_id", "decision", "reason"],
+            "about": "one per item: decision is accept or override",
+        },
+        {"key": "reviewer", "shape": "text", "fields": [], "about": ""},
+    ]
+    answer = _shaped(answers, ["decisions", "reviewer", "notes"])
+    assert _answer_findings(answer, skill) == []
+    plan, rec, _ = run(skill, answer)
+    assert rec.rounds == 1
+    gate = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}["approve_digest"]
+    # The reply is checked against this, and the module reading the gate is shown it.
+    assert gate["output_schema"] == {
+        "type": "object",
+        "properties": {
+            "decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"item_id": {}, "decision": {}, "reason": {}},
+                },
+                "description": "one per item: decision is accept or override",
+            },
+            # A scalar may be null: a key that does not apply has an answer.
+            "reviewer": {"type": ["string", "null"]},
+            # A key the pass gave no shape stays open, never guessed.
+            "notes": {},
+        },
+    }
+    Pipeline.model_validate(pipeline_doc(plan))
+    # No shapes at all: no schema, as before.
+    bare, _, _ = run(skill, _shaped([], ["approved"]))
+    assert (
+        "output_schema" not in {n["id"]: n for n in pipeline_doc(bare)["nodes"]}["approve_digest"]
+    )
+
+
+def test_a_shape_still_wrong_after_repair_is_dropped_never_guessed(skill: Any) -> None:
+    keep = {"key": "reviewer", "shape": "text", "fields": [], "about": ""}
+    twice = {"key": "decisions", "shape": "text_list", "fields": [], "about": ""}
+    answers = [
+        keep,
+        twice,
+        {**twice, "shape": "text"},
+        {"key": "nowhere", "shape": "text", "fields": [], "about": ""},
+    ]
+    fixed, _ = structure.resolve(
+        _shaped(answers, ["decisions", "reviewer"]),
+        skill,
+        SKILL,
+        structure.declared_tools(skill, TOOLS),
+        None,
+    )
+    gate = next(n["gate"] for n in fixed["nodes"] if n["kind"] == "hitl_gate")
+    assert gate["answers"] == [keep]
+    assert structure.gate_answer_schema(gate)["properties"]["decisions"] == {}  # type: ignore[index]
+
+
+def _answer_findings(answer: dict[str, Any], skill: Any) -> list[str]:
+    declared = structure.declared_tools(skill, TOOLS)
+    return [c for c in structure.check(answer, skill, SKILL, declared) if "gate answer" in c]
+
+
+@pytest.mark.parametrize(
+    ("entry", "finding"),
+    [
+        ({"key": "other", "shape": "text", "fields": []}, "'other', which is not a payload key"),
+        ({"key": "decisions", "shape": "record_list", "fields": []}, "name its record's fields"),
+        (
+            {"key": "decisions", "shape": "record_list", "fields": ["not an id"]},
+            "name its record's fields",
+        ),
+        ({"key": "decisions", "shape": "table", "fields": []}, "has shape 'table'"),
+    ],
+)
+def test_an_answer_shape_that_cannot_hold_goes_back(
+    skill: Any, entry: dict[str, Any], finding: str
+) -> None:
+    found = _answer_findings(_shaped([{**entry, "about": ""}], ["decisions"]), skill)
+    assert len(found) == 1 and finding in found[0]
+    assert found[0].startswith("node approve_digest: ")
 
 
 def test_a_conditional_gate_asks_only_when_its_key_is_true(skill: Any) -> None:

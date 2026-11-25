@@ -182,6 +182,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- A gate's answer has a shape. The structure pass named a gate's answer
+  keys and nothing more, so with no sample answer every key was untyped: a
+  routing skill's gate declared `decision`, the agent wrote one sentence
+  for the whole batch into it, and the code reading it treated every card
+  as undecided (0 of 3 paired trials). The pass now states each key's
+  shape (text, number, yes_no, text_list, or record_list with its fields)
+  and a line about what goes there; code checks it and the gate's
+  `output_schema` carries it, so the person's reply is validated against
+  it and the module reading the gate is shown it. The same skill now gets
+  one record per card. A sample answer, when there is one, still decides.
 - A scorecard for the `skill` runtime prices the compiled side as the agent
   conversation it is. It priced a judge as one API call, which is what a
   workflow runtime pays; a compiled skill re-reads the agent's context on

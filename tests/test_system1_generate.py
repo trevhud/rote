@@ -1582,6 +1582,25 @@ def test_a_reader_of_a_gate_that_may_be_skipped_is_told_it_gets_none(tmp_path: P
     assert "is skipped and this value is None" not in card
     assert "anyOf" not in always.param_schema(always.node("recap"), "answer")
 
+    # A shape the structure pass stated for the gate's answer is what its
+    # reader is shown; with none stated the key stays open, as above.
+    raw["nodes"][1]["output_schema"] = {
+        "type": "object",
+        "properties": {"owner": {"type": "string"}},
+    }
+    stated = Context(
+        work_dir=ctx.work_dir,
+        doc=raw,
+        pipeline=Pipeline.model_validate(raw),
+        plan=plans,
+        grounding=Grounding(),
+        tables=[],
+    )
+    assert stated.param_schema(stated.node("recap"), "answer")["properties"] == {
+        "owner": {"type": "string"}
+    }
+    assert always.param_schema(always.node("recap"), "answer")["properties"] == {"owner": {}}
+
 
 def test_an_external_stubs_contract_is_its_functions_docstring(tmp_path: Path) -> None:
     """A compiled skill shows the stub's function docstring to the agent that

@@ -348,6 +348,10 @@ class Context:
             from rote.probe import infer_schema
 
             return infer_schema([payload])
+        stated = getattr(node, "output_schema", None)
+        if isinstance(stated, dict) and set(stated.get("properties") or {}) == set(keys):
+            # The structure pass stated each key's shape (structure.gate_answer_schema).
+            return dict(stated)
         return {"type": "object", "properties": {k: {} for k in keys}}
 
     def known_result_schema(self, node: Any) -> tuple[dict[str, Any], str] | None:

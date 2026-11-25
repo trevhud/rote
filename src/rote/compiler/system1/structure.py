@@ -118,6 +118,19 @@ class StructureUnavailable(Spent):
     """The structure pass was asked for and could not produce a valid skeleton."""
 
 
+#: The shapes a gate's answer key can take, and the JSON Schema each one is.
+ANSWER_SHAPES: dict[str, dict[str, Any]] = {
+    # A scalar admits null: a key that does not apply this time (no notes, no
+    # override amount) must have an honest answer, as the open key it
+    # replaces did. An empty list is a list's.
+    "text": {"type": ["string", "null"]},
+    "number": {"type": ["number", "null"]},
+    "yes_no": {"type": ["boolean", "null"]},
+    "text_list": {"type": "array", "items": {"type": "string"}},
+    "record_list": {"type": "array", "items": {"type": "object"}},
+}
+
+
 def _str(**extra: Any) -> dict[str, Any]:
     return {"type": "string", **extra}
 
@@ -221,6 +234,27 @@ SCHEMA: dict[str, Any] = _obj(
                         {
                             "signal": _str(),
                             "payload": {"type": "array", "items": _str()},
+                            "answers": {
+                                "type": "array",
+                                "items": _obj(
+                                    {
+                                        "key": _str(description="a key in payload"),
+                                        "shape": {"type": "string", "enum": list(ANSWER_SHAPES)},
+                                        "fields": {
+                                            "type": "array",
+                                            "items": _str(),
+                                            "description": "a record's field names; "
+                                            "empty for any other shape",
+                                        },
+                                        "about": _str(
+                                            description="one line: what the person puts "
+                                            "here, with the allowed words when the skill "
+                                            "fixes them"
+                                        ),
+                                    }
+                                ),
+                                "description": "one entry per payload key",
+                            },
                             "timeout": _str(description="e.g. '72h', '7d', or ''"),
                             "shows": {
                                 "type": "array",
@@ -385,6 +419,15 @@ Per node:
   back, and the timeout if the skill states one. Else empty. The step the
   approval guards waits for it: that node reads the gate, or lists it in
   after. A final sign-off comes after every other step.
+  answers: the shape of each payload key, one entry per key. Code written
+  later reads the answer by this shape and the person's reply is checked
+  against it, so a key with no shape is read by guesswork. shape is text,
+  number, yes_no, text_list (a list of names or ids) or record_list (a list
+  with one object per item). When the person decides on each of several
+  items (accept or override each card, approve or decline each order), use
+  one record_list key whose fields include the item's id and the decision,
+  or one text_list key per outcome ("approved_ids", "declined_ids"): never
+  one text key for the whole batch.
   shows: the data the person must see to make this decision, and nothing
   more: each a snake_case name and where it comes from, one output key of
   an earlier node ("<node id>.<key>", a key in that node's outputs), a whole
@@ -882,6 +925,7 @@ def check(
                 out.append(f"{where}: gate payload keys must be identifiers, at least one")
             if gate.get("timeout") and not _DURATION.match(str(gate["timeout"])):
                 out.append(f"{where}: gate timeout {gate['timeout']!r} is not like '72h' or '7d'")
+            out += [f"{where}: {problem}" for problem in _answer_problems(gate)]
             out += _check_gate_shows(
                 where, n, seen, listing, run_outputs, _input_names(answer, sample)
             )
@@ -1012,6 +1056,61 @@ def _gates_nothing_waits_for(nodes: list[dict[str, Any]]) -> list[tuple[str, lis
         and str(n.get("id")) not in waited
         and exits != [str(n.get("id"))]
     ]
+
+
+def _answer_problems(gate: Mapping[str, Any]) -> list[str]:
+    """What is wrong with a gate's ``answers``, checked against its own payload keys."""
+    out = []
+    payload = [str(k) for k in gate.get("payload") or []]
+    seen: set[str] = set()
+    for answer in gate.get("answers") or []:
+        key, shape = str(answer.get("key", "")), str(answer.get("shape", ""))
+        fields = [str(f) for f in answer.get("fields") or []]
+        if key not in payload:
+            out.append(f"gate answers name {key!r}, which is not a payload key {payload}")
+        elif key in seen:
+            out.append(f"gate answers describe {key!r} twice")
+        seen.add(key)
+        if shape not in ANSWER_SHAPES:
+            out.append(f"gate answer {key!r} has shape {shape!r}; use one of {list(ANSWER_SHAPES)}")
+        if shape == "record_list" and (not fields or any(not _IDENTIFIER.match(f) for f in fields)):
+            out.append(
+                f"gate answer {key!r} is a record_list: name its record's fields "
+                "(snake_case identifiers, at least one)"
+            )
+    return out
+
+
+def gate_answer_schema(gate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The answer schema a gate's ``answers`` state, or None when they state none.
+
+    One property per payload key. A key the pass gave no shape stays open
+    (``{}``), as every key was before the pass stated shapes: a routing
+    skill's gate declared ``decision`` with no type, the agent wrote a
+    sentence into it, and the code that read it treated every card as
+    undecided. The person's reply is checked against this schema, and the
+    module that reads the gate is shown it.
+    """
+    shapes = {
+        str(a.get("key")): a for a in gate.get("answers") or [] if a.get("shape") in ANSWER_SHAPES
+    }
+    payload = [str(k) for k in gate.get("payload") or []]
+    if not any(k in shapes for k in payload):
+        return None
+    properties: dict[str, Any] = {}
+    for key in payload:
+        answer = shapes.get(key)
+        if answer is None:
+            properties[key] = {}
+            continue
+        schema = json.loads(json.dumps(ANSWER_SHAPES[str(answer["shape"])]))
+        if answer["shape"] == "record_list":
+            schema["items"]["properties"] = {str(f): {} for f in answer.get("fields") or []}
+        about = _one_line(str(answer.get("about") or ""), 300)
+        if about:
+            schema["description"] = about
+        properties[key] = schema
+    return {"type": "object", "properties": properties}
 
 
 def _check_gate_waiters(answer: dict[str, Any]) -> list[str]:
@@ -1913,6 +2012,17 @@ def resolve(
                 "payload": payload or ["approved", "notes"],
                 "timeout": timeout,
             }
+            if _answer_problems(n["gate"]):
+                # A shape that still names no payload key, a record with no
+                # fields, or a key described twice is dropped: the key stays
+                # untyped, never guessed.
+                stated = [str(a.get("key")) for a in gate.get("answers") or []]
+                n["gate"]["answers"] = [
+                    a
+                    for a in gate.get("answers") or []
+                    if stated.count(str(a.get("key"))) == 1
+                    and not _answer_problems({"payload": n["gate"]["payload"], "answers": [a]})
+                ]
         if n["kind"] == "agent_loop":
             lp = n.get("loop") or {}
             dropped = [t for t in lp.get("tools") or [] if t not in by_tool]
@@ -2013,6 +2123,9 @@ def _gates_from_sample(nodes: list[dict[str, Any]], sample: Any) -> list[str]:
     for signal, gate_id in match_sample_gates(views, sample).items():
         gate = by_id[gate_id]["gate"]
         keys = sorted(sample.gates[signal])
+        # The sample's own answer decides this gate's shape (it is data), so
+        # a shape the pass stated must not stand beside it and contradict it.
+        gate["answers"] = []
         if sorted(gate["payload"]) != keys:
             notes.append(
                 f"`{gate_id}`: gate keys {gate['payload']} replaced by the sample's {keys}"
@@ -2301,6 +2414,7 @@ def to_plan(
             gate = n.get("gate") or {}
             node.signal = gate["signal"]
             node.payload = list(gate["payload"])
+            node.output_schema = gate_answer_schema(gate)
             node.timeout = gate.get("timeout") or None
             node.message = str(gate.get("message") or "").strip() or None
             when = str(gate.get("when") or "")
