@@ -120,9 +120,12 @@ class StructureUnavailable(Spent):
 
 #: The shapes a gate's answer key can take, and the JSON Schema each one is.
 ANSWER_SHAPES: dict[str, dict[str, Any]] = {
-    "text": {"type": "string"},
-    "number": {"type": "number"},
-    "yes_no": {"type": "boolean"},
+    # A scalar admits null: a key that does not apply this time (no notes, no
+    # override amount) must have an honest answer, as the open key it
+    # replaces did. An empty list is a list's.
+    "text": {"type": ["string", "null"]},
+    "number": {"type": ["number", "null"]},
+    "yes_no": {"type": ["boolean", "null"]},
     "text_list": {"type": "array", "items": {"type": "string"}},
     "record_list": {"type": "array", "items": {"type": "object"}},
 }
@@ -2010,12 +2013,15 @@ def resolve(
                 "timeout": timeout,
             }
             if _answer_problems(n["gate"]):
-                # A shape that still names no payload key, or a record with no
-                # fields, is dropped: the key stays untyped, never guessed.
+                # A shape that still names no payload key, a record with no
+                # fields, or a key described twice is dropped: the key stays
+                # untyped, never guessed.
+                stated = [str(a.get("key")) for a in gate.get("answers") or []]
                 n["gate"]["answers"] = [
                     a
                     for a in gate.get("answers") or []
-                    if not _answer_problems({"payload": n["gate"]["payload"], "answers": [a]})
+                    if stated.count(str(a.get("key"))) == 1
+                    and not _answer_problems({"payload": n["gate"]["payload"], "answers": [a]})
                 ]
         if n["kind"] == "agent_loop":
             lp = n.get("loop") or {}
@@ -2117,6 +2123,9 @@ def _gates_from_sample(nodes: list[dict[str, Any]], sample: Any) -> list[str]:
     for signal, gate_id in match_sample_gates(views, sample).items():
         gate = by_id[gate_id]["gate"]
         keys = sorted(sample.gates[signal])
+        # The sample's own answer decides this gate's shape (it is data), so
+        # a shape the pass stated must not stand beside it and contradict it.
+        gate["answers"] = []
         if sorted(gate["payload"]) != keys:
             notes.append(
                 f"`{gate_id}`: gate keys {gate['payload']} replaced by the sample's {keys}"

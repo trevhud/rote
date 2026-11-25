@@ -902,7 +902,9 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     )
     answer = good_answer()
     # The model put the lead's gate first; the sample answers the budget first.
-    lead = {"signal": "lead_ok", "payload": ["approved"], "timeout": ""}
+    # It also stated a shape the sample's own answer contradicts (True, not text).
+    said = [{"key": "approved", "shape": "text", "fields": [], "about": ""}]
+    lead = {"signal": "lead_ok", "payload": ["approved"], "timeout": "", "answers": said}
     budget = {"signal": "money_check", "payload": ["budget"], "timeout": ""}
     answer["nodes"].append(node("lead_gate", 3, "hitl_gate", gate=lead))
     answer["nodes"].append(node("budget_gate", 3, "hitl_gate", gate=budget))
@@ -913,6 +915,8 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     assert by_id["lead_gate"] == {
         "signal": "lead_ok",
         "payload": ["approved", "reviewer"],
+        # The sample answers this gate, so its answer decides the shape.
+        "answers": [],
         "timeout": "",
         "shows": [],
         "message": "",
@@ -920,6 +924,7 @@ def test_sample_gates_match_by_signal_name_and_adopt_it(skill: Any) -> None:
     assert by_id["budget_gate"] == {
         "signal": "budget_ok",
         "payload": ["budget"],
+        "answers": [],
         "timeout": "",
         "shows": [],
         "message": "",
@@ -2040,7 +2045,8 @@ def test_a_gate_states_the_shape_of_each_answer_key(skill: Any) -> None:
                 },
                 "description": "one per item: decision is accept or override",
             },
-            "reviewer": {"type": "string"},
+            # A scalar may be null: a key that does not apply has an answer.
+            "reviewer": {"type": ["string", "null"]},
             # A key the pass gave no shape stays open, never guessed.
             "notes": {},
         },
@@ -2051,6 +2057,27 @@ def test_a_gate_states_the_shape_of_each_answer_key(skill: Any) -> None:
     assert (
         "output_schema" not in {n["id"]: n for n in pipeline_doc(bare)["nodes"]}["approve_digest"]
     )
+
+
+def test_a_shape_still_wrong_after_repair_is_dropped_never_guessed(skill: Any) -> None:
+    keep = {"key": "reviewer", "shape": "text", "fields": [], "about": ""}
+    twice = {"key": "decisions", "shape": "text_list", "fields": [], "about": ""}
+    answers = [
+        keep,
+        twice,
+        {**twice, "shape": "text"},
+        {"key": "nowhere", "shape": "text", "fields": [], "about": ""},
+    ]
+    fixed, _ = structure.resolve(
+        _shaped(answers, ["decisions", "reviewer"]),
+        skill,
+        SKILL,
+        structure.declared_tools(skill, TOOLS),
+        None,
+    )
+    gate = next(n["gate"] for n in fixed["nodes"] if n["kind"] == "hitl_gate")
+    assert gate["answers"] == [keep]
+    assert structure.gate_answer_schema(gate)["properties"]["decisions"] == {}  # type: ignore[index]
 
 
 def _answer_findings(answer: dict[str, Any], skill: Any) -> list[str]:

@@ -125,9 +125,11 @@ comes from keeping them clean.
   gate's reader is shown. Before this a key had no type unless a sample
   answered the gate: a routing skill's gate declared `decision`, the agent
   wrote one sentence for the whole batch, and the module read every card as
-  undecided (0 of 3 paired trials). A sample answer still wins
-  (`Context.gate_schema`), and a key the pass gives no shape stays open,
-  never guessed.
+  undecided (0 of 3 paired trials). A sample answer still wins: a gate the
+  sample answers has its stated shapes cleared (`_gates_from_sample`), so
+  no schema can contradict the data on either generation path. A scalar
+  shape admits null (a key that does not apply needs an honest answer), and
+  a key the pass gives no shape stays open, never guessed.
 - **A value that never reaches the step needing it goes back to the
   structure pass** (#329, `structure.rebind`). Two static checks find it
   (`compiler/boundaries.py`): a step's code reads a key the value bound to it
