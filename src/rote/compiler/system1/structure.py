@@ -1028,11 +1028,28 @@ def _check_run_outputs(answer: dict[str, Any]) -> list[str]:
     nodes = [n for n in answer.get("nodes") or [] if not n.get("in_loop")]
     read = {r for n in nodes for r in n.get("reads") or []}
     exits = [n for n in nodes if n.get("id") not in read]
-    returned = {str(k) for n in exits for k in n.get("outputs") or []}
+    named = {str(k) for k in answer.get("run_outputs") or []}
+    listing = listing_nodes(list(answer.get("nodes") or []))
+    # The keys the skeleton renders, not the ones the model named: a tool
+    # call's result is the server's own, whatever `outputs` says. A roster
+    # skill's compile ended on four raw query results and no word of who was
+    # added, and its agent went through the run folder to find out.
+    returned = {k for n in exits for k in result_keys(n, listing, named) or []}
+    tools = [
+        str(n.get("id"))
+        for n in exits
+        if n.get("kind") == "external_call" and system_of(n).get("how") == "declared_tool"
+    ]
+    hint = (
+        f". A tool call ({', '.join(tools)}) returns the server's own answer, never a key "
+        "named here: add a final pure_function that reads the steps that know and returns it"
+        if tools
+        else ""
+    )
     return [
         f"run output {key!r} is not returned by an exit node (exit nodes: "
         f"{[n.get('id') for n in exits]}); add it to an exit node's outputs, or add a final "
-        "node that reads its producer and returns it"
+        f"node that reads its producer and returns it{hint}"
         for key in answer.get("run_outputs") or []
         if str(key) not in returned
     ]

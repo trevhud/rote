@@ -2635,3 +2635,28 @@ def test_a_condition_names_a_key_the_skeleton_keeps(skill: Any) -> None:
     from_tool["nodes"][-2]["reads"] = ["fetch_emails", "render_digest"]
     found = [f for f in _step_findings(from_tool, skill) if "send_digest" in f]
     assert len(found) == 1 and "whose result is the tool's own" in found[0], found
+
+
+def test_a_run_output_named_on_a_tool_call_is_not_returned(skill: Any) -> None:
+    """A tool call's result is the server's, whatever keys the model names on
+    it, so a reported result named there never reaches the run's result. The
+    negative half: the same key on a pure_function exit node is returned."""
+    answer = good_answer()
+    answer["run_outputs"] = ["sent_count"]
+    send = node(
+        "send_mail",
+        3,
+        "external_call",
+        reads=["render_digest"],
+        outputs=["sent_count"],
+        system=dict(answer["nodes"][0]["system"], io="write"),
+        args=[{"param": "query", "source": "literal", "value": "to:finance"}],
+    )
+    answer["nodes"].append(send)
+    found = [f for f in _step_findings(answer, skill) if "run output" in f]
+    assert len(found) == 1 and "A tool call (send_mail) returns the server's own answer" in found[0]
+
+    answer["nodes"].append(
+        node("report", 3, "pure_function", reads=["send_mail"], outputs=["sent_count"])
+    )
+    assert [f for f in _step_findings(answer, skill) if "run output" in f] == []
