@@ -17,8 +17,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   reads whole. Any other value fails the run naming the step. All six
   workflow runtimes and the compiled skill honor it: a skipped DO step is
   never handed to the agent, and a skipped code step never runs. A mandatory
-  node cannot have `when:`. The compiler does not write it for steps yet;
-  a hand-edited or agent-written `pipeline.yaml` can.
+  node cannot have `when:`. The compiler writes it: the structure pass
+  states a step's condition with the words of the skill that give it, and
+  code checks the key, the quote and the IR's rules before it is kept.
 
 - A fidelity case can answer a SQL tool from a seeded SQLite database
   (`sqlite:` in place of a list of responses in `cases.yaml`). The fixture

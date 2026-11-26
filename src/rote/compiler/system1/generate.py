@@ -130,11 +130,16 @@ UNVERIFIED_RECORDS = (
     "itself whole as well, under `row` (type `object`)."
 )
 
-#: What a reader of a gate that may be skipped (``when:``) is told.
+#: What a reader of a node that may be skipped (``when:``) is told.
 SKIPPABLE_GATE = (
     "  This is the person's answer at gate `{gate}`, which asks only when `{when}` is true. "
     "When it is false the gate is skipped and this value is None, not an answer. Handle "
     "None the way the skill says to carry on without asking, and test both cases."
+)
+SKIPPABLE_STEP = (
+    "  This is the result of `{step}`, which runs only when `{when}` is true. When it is "
+    "false the step is skipped and this value is None, not a result. Handle None the way "
+    "the skill says to carry on without that step, and test both cases."
 )
 
 #: Modules a generated module or test may import besides the stdlib.
@@ -410,11 +415,12 @@ class Context:
             # Gmail's search returns, on every run. Untyped, it takes either.
             return {}
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
-        if ref.node_id is not None and self.node(ref.node_id).when is not None:
-            # A skipped gate's result is null (the IR has its readers bind it whole).
-            return {"anyOf": [schema, {"type": "null"}]}
         if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
             schema = {"type": "array", "items": schema}
+        if ref.node_id is not None and self.node(ref.node_id).when is not None:
+            # A skipped node's result is null (the IR has its readers bind it
+            # whole): the list of a fan that ran, or null, never one element.
+            return {"anyOf": [schema, {"type": "null"}]}
         if ref.field is not None:
             schema = dict((schema.get("properties") or {}).get(ref.field) or {})
         if node.fan_out and param == fan_out_element_param(node, self.pipeline):
@@ -538,7 +544,12 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
         if source is not None and ctx.unverified_tool_result(source):
             lines.append(UNVERIFIED_TOOL_RESULT)
         if source is not None and ctx.node(source).when is not None:
-            lines.append(SKIPPABLE_GATE.format(gate=source, when=ctx.node(source).when))
+            skipped = ctx.node(source)
+            lines.append(
+                SKIPPABLE_GATE.format(gate=source, when=skipped.when)
+                if skipped.kind is NodeKind.HITL_GATE
+                else SKIPPABLE_STEP.format(step=source, when=skipped.when)
+            )
         sample = ctx.param_sample(node, param)
         if sample is not None:
             lines.append(

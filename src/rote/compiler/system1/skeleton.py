@@ -66,7 +66,10 @@ def _output(n: NodePlan, conditions: frozenset[str] = frozenset()) -> dict[str, 
 
 
 def judge_input_schema(
-    n: NodePlan, request_schema: dict[str, Any], fanned: frozenset[str] = frozenset()
+    n: NodePlan,
+    request_schema: dict[str, Any],
+    fanned: frozenset[str] = frozenset(),
+    skippable: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """A judge's input schema, decided from its ``inputs``: one required
     property per input. ``request`` is the pipeline input. A list it reads
@@ -91,7 +94,12 @@ def judge_input_schema(
         elif ref.endswith(".output.items"):
             props[param] = {"type": "array", "description": f"the list {ref}"}
         elif ref == f"{source}.output" and source in fanned:
-            props[param] = {"type": "array", "description": f"the per-element results of {source}"}
+            # A fan that may be skipped (it has `when`) binds null then, and
+            # the IR requires a judge reading it to admit that.
+            props[param] = {
+                "type": ["array", "null"] if source in skippable else "array",
+                "description": f"the per-element results of {source}",
+            }
         else:
             props[param] = {"description": f"the result of {ref}"}
     return {"type": "object", "properties": props, "required": list(props)}
@@ -107,6 +115,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
     request_schema = input_schema(plan)
     fanned = frozenset(x.id for x in plan.nodes if x.fan_out)
     conditions = frozenset(x.when for x in plan.nodes if x.when)
+    skippable = frozenset(x.id for x in plan.nodes if x.when)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -121,6 +130,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["output_schema"] = dict(n.output_schema)
         if n.mandatory:
             node["mandatory"] = True
+        if n.when:
+            node["when"] = n.when
         if n.fan_out:
             node["fan_out"] = True
         if n.constants:
@@ -135,7 +146,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
                 node["mcp"] = dict(n.mcp)
         if n.kind == "llm_judge":
             node["signature_spec"] = {
-                "input_schema": judge_input_schema(n, request_schema, fanned),
+                "input_schema": judge_input_schema(n, request_schema, fanned, skippable),
                 "output_schema": dict(SKELETON_OUTPUT_SCHEMA),
                 "prompt": SKELETON_PROMPT,
                 "client": "anthropic",
@@ -153,8 +164,6 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
-            if n.when:
-                node["when"] = n.when
             if n.message:
                 # No channel or target: the skill names none, and the runtime
                 # that reaches the person (the compiled skill's agent) needs none.

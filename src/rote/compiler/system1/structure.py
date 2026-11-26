@@ -182,6 +182,15 @@ SCHEMA: dict[str, Any] = _obj(
                     "fan_out_over": _str(description="a node id in reads, or ''"),
                     "in_loop": _str(description="the agent_loop node that calls it, or ''"),
                     "mandatory": {"type": "boolean"},
+                    "when": _str(
+                        description="'<node id>.<output key>', a true-or-false value an "
+                        "earlier node computes, when the skill does this step (or asks "
+                        "this question) only if something holds; '' when it always runs"
+                    ),
+                    "when_quote": _str(
+                        description="the 4+ words of this node's own section that state "
+                        "the condition, or '' when when is empty"
+                    ),
                     "outputs": {
                         "type": "array",
                         "items": _str(),
@@ -274,15 +283,6 @@ SCHEMA: dict[str, Any] = _obj(
                                 description="one or two sentences to the person; each "
                                 "{name} is a name in shows"
                             ),
-                            "when": _str(
-                                description="'<node id>.<output key>', a true-or-false "
-                                "value an earlier node computes, when the skill asks "
-                                "only if something holds; '' when it always asks"
-                            ),
-                            "when_quote": _str(
-                                description="the 4+ words of this node's own section that "
-                                "state the condition, or '' when when is empty"
-                            ),
                         }
                     ),
                     "loop": _obj(
@@ -365,6 +365,18 @@ Per node:
   run to produce (a list, a report, a field such as `missing_limits_page`)
   is returned by some node, under the skill's own name; a later node that
   needs it reads that node.
+- when: if the skill does this step, or asks the person this question, only
+  when something holds ("post the summary if chat is connected", "ask who
+  owns it if that is unclear", "if anything is missing, ask for it"), the
+  earlier node and output key that is true exactly then ("<node id>.<key>",
+  a key in that node's outputs, holding true or false; that node computes
+  it, so add the key to its outputs). when_quote: at least four words
+  copied exactly from this node's own section that state the condition.
+  Both empty when the step always runs. A skipped node's result is null, so
+  a node that reads it handles null, and nothing fans out over it or sends
+  one of its fields to a tool. It is for a step the run leaves out whole: a
+  rule that treats some rows differently is that step's own logic, not a
+  when. Never on a mandatory node or one in_loop.
 - mandatory: true unless the skill makes the step conditional or optional.
   Always false for an agent_loop. A loop's agent decides what it calls, so
   nothing in_loop is guaranteed to run: a step the skill marks MANDATORY
@@ -443,14 +455,6 @@ Per node:
   is printed below the message, so name it in words ("Approve or decline
   each book purchase request below for the {{branch}} library."). The gate
   waits for every node in its reads and after, whatever it shows.
-  when: if the skill asks the person only when something holds ("ask who
-  owns it if that is unclear", "if anything is missing, ask for it"), the
-  earlier node and output key that is true exactly then ("<node id>.<key>",
-  a key in that node's outputs, holding true or false; that node computes
-  it, so add the key to its outputs). when_quote: at least four words
-  copied exactly from the gate's own section that state the condition.
-  Both empty when the skill always asks. A skipped gate's result is null,
-  so a node that reads it handles a null answer.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty. An
   agent_loop calls declared tools only. Work on a system no declared tool
@@ -854,6 +858,8 @@ def check(
             elif ref in seen and seen[ref].get("in_loop") and not n.get("in_loop"):
                 out.append(f"{where}: reads {ref!r}, which runs inside a loop, from outside it")
         out += _check_after(where, n, seen, u)
+        out += _check_when(where, n, seen, u, listing, run_outputs)
+        out += _skipped_reads(where, n, seen)
         fan = n.get("fan_out_over") or ""
         if fan == "pipeline.input":
             out.append(
@@ -929,7 +935,6 @@ def check(
             out += _check_gate_shows(
                 where, n, seen, listing, run_outputs, _input_names(answer, sample)
             )
-            out += _check_gate_when(where, n, seen, u)
         if kind == "agent_loop":
             lp = n.get("loop") or {}
             unknown = [t for t in lp.get("tools") or [] if t not in by_tool]
@@ -1001,6 +1006,8 @@ def _check_split_steps(answer: dict[str, Any]) -> list[str]:
             continue
         if bool(first.get("mandatory")) != bool(second.get("mandatory")):
             continue
+        if str(first.get("when") or "") != str(second.get("when") or ""):
+            continue  # one of them is skipped when the other is not
         if second.get("fan_out_over") == nid:
             continue  # a list builder for a fan is its own step
         if run_outputs & {str(k) for k in first.get("outputs") or []}:
@@ -1229,21 +1236,30 @@ def _message_problem(message: str, names: set[str]) -> str | None:
     )
 
 
-def _check_gate_when(
+def _check_when(
     where: str,
     n: Mapping[str, Any],
     earlier: Mapping[str, Mapping[str, Any]],
     u: Any,
+    listing: set[str],
+    run_outputs: set[str],
 ) -> list[str]:
-    """A gate's condition is a key an earlier node returns, and the gate's own
+    """A node's condition is a key an earlier node returns, and the node's own
     section states it. Evidence only, as for ``after``: whether the skill's
-    question is conditional is the model's reading; the words it cites and
-    the key it names are checked."""
-    gate = n.get("gate") or {}
-    when = str(gate.get("when") or "")
+    step is conditional is the model's reading; the words it cites, the key
+    it names and the IR's own rules for a condition are checked."""
+    when = str(n.get("when") or "")
     if not when:
         return []
     out: list[str] = []
+    if n.get("mandatory") and n.get("kind") not in ("hitl_gate", "agent_loop"):
+        # A gate and a loop take no mandatory flag (`to_plan`), so theirs is noise.
+        out.append(
+            f"{where}: a mandatory node runs on every run, so it cannot have when; "
+            "set mandatory false if the skill makes the step conditional, else clear when"
+        )
+    if n.get("in_loop"):
+        out.append(f"{where}: a node in_loop runs when its loop calls it; clear when")
     node_id, _, key = when.partition(".")
     source = earlier.get(node_id)
     if source is None or not key:
@@ -1253,10 +1269,10 @@ def _check_gate_when(
         )
     elif source.get("kind") == "hitl_gate":
         out.append(f"{where}: when {when!r} reads a gate; name the node that computes it")
-    elif key not in [str(k) for k in source.get("outputs") or []]:
+    elif source.get("when"):
         out.append(
-            f"{where}: when {when!r} names a key {node_id!r} does not return (its outputs: "
-            f"{[str(k) for k in source.get('outputs') or []]}); add {key!r} to its outputs"
+            f"{where}: when {when!r} reads {node_id!r}, which may itself be skipped; "
+            "name a node that always runs"
         )
     elif source.get("in_loop"):
         out.append(f"{where}: when {when!r} reads a node that runs inside a loop")
@@ -1265,13 +1281,60 @@ def _check_gate_when(
             f"{where}: when {when!r} reads a node that fans out, whose result is a list "
             "with no keys; compute the condition in a node that reads that list"
         )
-    quote = str(gate.get("when_quote") or "")
+    else:
+        # The keys the skeleton renders, not the ones the model named: a tool
+        # call returns the server's own shape, and a node another fans out
+        # over keeps only its list.
+        keys = result_keys(source, listing, run_outputs)
+        if keys is None:
+            out.append(
+                f"{where}: when {when!r} names a key of {node_id!r}, whose result is the "
+                "tool's own and has no key rote decides; compute the condition in a "
+                f"pure_function that reads {node_id!r}"
+            )
+        elif key not in keys:
+            out.append(
+                f"{where}: when {when!r} names a key {node_id!r} does not return (its result "
+                f"keys: {keys}); add {key!r} to its outputs, or, when another node fans out "
+                f"over {node_id!r}, compute the condition in a pure_function that reads it"
+            )
+    quote = str(n.get("when_quote") or "")
     if u is None or len(quote.split()) < AFTER_QUOTE_MIN_WORDS or not _appears(quote, u.text):
         out.append(
             f"{where}: when needs when_quote, at least {AFTER_QUOTE_MIN_WORDS} words copied "
             "exactly from the text under its own heading that state the condition"
         )
     return out
+
+
+def _field_reads(n: Mapping[str, Any]) -> dict[str, str]:
+    """``{node id: how}`` for each earlier node ``n`` needs more than whole:
+    it fans out over the node's list, sends one of its fields to a tool, or
+    (a gate) shows one of its fields. A node that may be skipped returns
+    null, which has no list and no fields, so the IR refuses each of these."""
+    out: dict[str, str] = {}
+    if n.get("fan_out_over"):
+        out[str(n["fan_out_over"])] = "fans out over it"
+    for arg in n.get("args") or []:
+        if arg.get("source") == "upstream_field":
+            out.setdefault(
+                str(arg.get("value")).partition(".")[0], "sends one of its fields to a tool"
+            )
+    for show in (n.get("gate") or {}).get("shows") or []:
+        head, _, key = str(show.get("from") or "").partition(".")
+        if key and head != "pipeline":
+            out.setdefault(head, "shows one of its fields")
+    return out
+
+
+def _skipped_reads(where: str, n: Mapping[str, Any], earlier: Mapping[str, Any]) -> list[str]:
+    """Why ``n`` cannot read an earlier node that has a ``when`` the way it does."""
+    return [
+        f"{where}: {how}, but {src!r} has when and is null when skipped. Read {src!r} "
+        f"whole and handle null in a pure_function, or clear its when"
+        for src, how in _field_reads(n).items()
+        if (earlier.get(src) or {}).get("when")
+    ]
 
 
 def _check_gate_shows(
@@ -1873,18 +1936,26 @@ def resolve(
                 + "; ".join(w.removeprefix(f"`{nid}`: ") for w in why_not)
             )
             n["after"], n["after_quote"] = [], ""
-        gate = n.get("gate") or {}
-        if n.get("kind") == "hitl_gate" and gate.get("when"):
-            why_not = _check_gate_when(f"`{nid}`", n, {m["id"]: m for m in nodes}, u)
+        if n.get("when"):
+            why_not = _check_when(
+                f"`{nid}`",
+                n,
+                {m["id"]: m for m in nodes},
+                u,
+                listing_nodes(list(answer.get("nodes") or [])),
+                {str(k) for k in answer.get("run_outputs") or []},
+            )
             if why_not:
-                # Never a guessed condition: the gate asks on every run, and the
-                # note says the skill's question was conditional (#309).
+                # Never a guessed condition: the step runs (a gate asks) on
+                # every run, and the note says the skill's step was
+                # conditional (#309).
+                does = "the gate asks" if n.get("kind") == "hitl_gate" else "the step runs"
                 notes.append(
-                    f"`{nid}`: the skill may ask this only sometimes, but its condition "
-                    f"{gate['when']!r} did not check, so the gate asks on every run: "
+                    f"`{nid}`: the skill may do this only sometimes, but its condition "
+                    f"{n['when']!r} did not check, so {does} on every run: "
                     + "; ".join(w.removeprefix(f"`{nid}`: ") for w in why_not)
                 )
-                n["gate"] = {**gate, "when": "", "when_quote": ""}
+                n["when"], n["when_quote"] = "", ""
         if n.get("fan_out_over") and n["fan_out_over"] not in ids:
             # A fan runs over an earlier node's list; the pipeline input is not one.
             notes.append(f"`{nid}`: dropped its fan_out over {n['fan_out_over']!r}")
@@ -2052,6 +2123,21 @@ def resolve(
             )
     if sample is not None and sample.gates:
         notes += _gates_from_sample(nodes, sample)
+    # A later node that needs a skippable step's list or one of its fields
+    # cannot take null. Settled once every node is final, since the reader
+    # comes after the step, and before a gate's shows are resolved.
+    by_id = {str(m["id"]): m for m in nodes}
+    for m in nodes:
+        for src, how in _field_reads(m).items():
+            skipped = by_id.get(src)
+            if skipped is None or not skipped.get("when"):
+                continue
+            does = "the gate asks" if skipped.get("kind") == "hitl_gate" else "the step runs"
+            notes.append(
+                f"`{src}`: the skill may do this only sometimes, but `{m['id']}` {how}, which "
+                f"a skipped step cannot give, so {does} on every run"
+            )
+            skipped["when"], skipped["when_quote"] = "", ""
     notes += _resolve_gate_shows(nodes, answer, sample)
     # Which step a gate guards is a reading of the skill, so no ordering is
     # added here; the gap is listed for a reviewer.
@@ -2410,6 +2496,13 @@ def to_plan(
             if stop and bound > 0:
                 node.termination = {"condition": _one_line(stop, 300), "max_iterations": bound}
                 node.decide("termination", dict(node.termination), conf, rule)
+        when = str(n.get("when") or "")
+        if when:
+            source, _, key = when.partition(".")
+            node.when = f"{source}.output.{key}"
+            node.decide("when", node.when, conf, rule)
+            if source not in node.after:
+                node.after.append(source)
         if kind == "hitl_gate":
             gate = n.get("gate") or {}
             node.signal = gate["signal"]
@@ -2417,13 +2510,6 @@ def to_plan(
             node.output_schema = gate_answer_schema(gate)
             node.timeout = gate.get("timeout") or None
             node.message = str(gate.get("message") or "").strip() or None
-            when = str(gate.get("when") or "")
-            if when:
-                source, _, key = when.partition(".")
-                node.when = f"{source}.output.{key}"
-                node.decide("when", node.when, conf, rule)
-                if source not in node.after:
-                    node.after.append(source)
             node.decide("signal", node.signal, conf, rule)
             node.decide("payload", node.payload, conf, rule)
             if node.message is not None:

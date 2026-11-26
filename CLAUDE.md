@@ -2279,10 +2279,25 @@ sub-node. Rules to keep:
 - **The compiled skill writes nothing for a skip.** The driver derives it
   again from the result it depends on, so no file can stand in for a gate
   a person never answered.
-- **The structure pass decides it from evidence** (`gate.when` and a
-  verbatim `when_quote`, `_check_gate_when`). One that still fails after
-  the repairs is dropped, so the gate asks every run, and an Open question
-  says so: never a guessed condition. The skeleton types the key `bool`.
+- **The structure pass decides it from evidence**, for every kind (a
+  node's `when` and a verbatim `when_quote`, `_check_when`). Code checks
+  the key an earlier node returns, the quote, and what the IR would refuse:
+  a mandatory node, a node in_loop, a source that may itself be skipped, and
+  a later node that fans out over the step or takes one of its fields
+  (`_skipped_reads`). The key is checked against what the skeleton renders
+  (`result_keys`), not the model's own `outputs`: a tool call returns the
+  server's shape and a node another fans out over keeps only its list, so
+  a condition on either goes back asking for a pure_function that computes
+  it. A reader's problem is settled after every node is final, because the
+  reader comes after the step. One that still fails after the repairs is dropped, so
+  the step runs (the gate asks) every run, and an Open question says so:
+  never a guessed condition. The skeleton types the key `bool`. Two pure
+  functions of one section are not merged when one has a `when` the other
+  lacks (`_check_split_steps`). Measured on ten skills, two passes each
+  (Haiku 5.5): no condition on the five skills that have no conditional
+  step, and on the others ones the skill states (a roster skill's INSERT
+  only when there are new people, a routing skill's read-back only when
+  writes are available).
 
 - **The Cloudflare runner answers only a gate that announced itself.** It
   infers a park from step-output stability, so a slow step after a skipped

@@ -62,7 +62,7 @@ Asked for a node's interface entry, you answer:
   - on a `pure_function` or `external_call`, a condition the skill says
     ends the run is never an output field (no `has_missing_rate`, no
     `missing_rates`). The step's code raises instead, so nothing after it
-    runs. A boolean a gate's `when` reads is not one of these: keep it.
+    runs. A boolean a node's `when` reads is not one of these: keep it.
   - a node that keeps, filters, flags or lists rows of a table (a sheet,
     a query result, a list of records) returns each of those rows whole.
     Besides the fields the skill names, give each item a required `row`
