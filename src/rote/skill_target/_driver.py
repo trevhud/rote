@@ -112,6 +112,10 @@ SKILL_NAME_MAX = 64
 
 #: Answers per step before the run stops with an ERROR (still resumable).
 MAX_ANSWER_ATTEMPTS = 3
+# The longest command a block asks the agent to send. Claude Code stops matching
+# a Bash allow rule near 10,000 characters (measured 2026-11-24: 9,893 ran,
+# 10,525 was denied), and the command carries more than the JSON.
+MAX_ARGUMENT_CHARS = 8000
 
 #: The most decisions one DECIDE block asks for at once (#344), and the most
 #: DO steps one DO block hands over. Every block is a round trip that
@@ -824,18 +828,30 @@ class Driver:
     def _next(self, *args: str) -> list[str]:
         return ["--- NEXT ---", " ".join([self.command, *args])]
 
-    def _next_do(self, run: str, step: str) -> list[str]:
+    def _next_do(self, run: str, step: str, *, several: bool = False) -> list[str]:
         """A DO answer's command, and how to pass an answer that long.
 
         A DO answer carries what a tool returned, so it is long and holds
         quotes. Measured agents first staged it in a file or a script their
         client refused (two refused calls, each retyping the answer) before
         passing it as the argument. A heredoc on stdin is refused the same
-        way: a client's allow rule for this command matches neither."""
+        way: a client's allow rule for this command matches neither. The
+        argument has a ceiling of its own (:data:`MAX_ARGUMENT_CHARS`), so a
+        block of ``several`` steps says to answer some of them at a time, and
+        a single step names the file form for that case only."""
+        limit = f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: "
+        long = limit + (
+            "if your JSON would be longer, answer only some of the steps now (an object with "
+            "just their ids), and this block asks for the rest."
+            if several
+            else "only then, write the JSON to a file in the current directory and pass "
+            "--file <path> instead."
+        )
         return [
-            "Pass your JSON as the one single-quoted argument of the command below, however "
-            "long it is. Only that form is approved for you: no file, no heredoc, no other "
-            "command. Inside the JSON, write an apostrophe as \\u0027.",
+            "Pass your JSON as the one single-quoted argument of the command below. Only that "
+            "form is approved for you: no heredoc, no other command. Inside the JSON, write "
+            "an apostrophe as \\u0027.",
+            long,
             *self._next("answer", run, step, "'<your JSON>'"),
         ]
 
@@ -1937,7 +1953,6 @@ class Driver:
         left: list[str] = []
         for step_id in ids:
             if step_id not in value:
-                problems.append(f"- answer: missing {step_id}")
                 left.append(step_id)
                 continue
             output = self.by_id[step_id]["output_schema"]
@@ -1951,13 +1966,21 @@ class Driver:
             )
         if not left:
             return None
-        if attempts >= MAX_ANSWER_ATTEMPTS:
-            return self._too_many(path, state, left[0], [p.removeprefix("- ") for p in problems])
         kept = [i for i in ids if i not in left]
+        # Some steps answered and nothing wrong with them: the agent is passing
+        # a long answer in parts, as the block says to. Not a failed attempt.
+        in_parts = bool(kept) and not problems
+        if not kept:
+            problems += [f"- answer: missing {i}" for i in left]
+        if in_parts:
+            attempts -= 1
+        elif attempts >= MAX_ANSWER_ATTEMPTS:
+            return self._too_many(path, state, left[0], [p.removeprefix("- ") for p in problems])
         note = "\n".join(
             [
                 (f"Recorded: {', '.join(kept)}. Do not do those again. " if kept else "")
-                + f"Answer only {', '.join(left)} now, with these fixed:",
+                + f"Answer only {', '.join(left)} now"
+                + (", with these fixed:" if problems else "."),
                 *problems,
             ]
         )
@@ -1971,7 +1994,8 @@ class Driver:
         state["attempts"][left[0]] = attempts
         self._write(path, state)
         block = self._pending_block(path.name, self.by_id[left[0]], again, note)
-        block.header = f"{block.header} attempt={attempts + 1}"
+        if not in_parts:
+            block.header = f"{block.header} attempt={attempts + 1}"
         return block
 
     def _take_batch(
@@ -2603,7 +2627,7 @@ class Driver:
         lines += [
             "Answer one JSON object mapping each step's id to its answer: "
             + _compact({i: "<its answer>" for i in ids}),
-            *self._next_do(run, ids[0]),
+            *self._next_do(run, ids[0], several=True),
         ]
         header = self._head(run, f"step={ids[0]}", f"steps={','.join(ids)}")
         return Block("DO", header, lines)

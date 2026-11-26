@@ -18,7 +18,12 @@ from typing import Any
 import pytest
 
 from rote.plan import build_plan
-from rote.skill_target._driver import MAX_BATCHED_DECISIONS, stops
+from rote.skill_target._driver import (
+    MAX_ANSWER_ATTEMPTS,
+    MAX_ARGUMENT_CHARS,
+    MAX_BATCHED_DECISIONS,
+    stops,
+)
 from tests._skill_driver import drive, header, journal, make_skill, result_of
 
 REPORT = """\
@@ -139,13 +144,43 @@ def test_a_section_several_steps_share_is_printed_once(tmp_path: Path) -> None:
 
 def test_a_do_block_says_how_to_pass_a_long_answer(pulse: Path) -> None:
     """Agents staged a long answer in a file or a script first, which their
-    client refused: two wasted requests in two of three measured runs."""
+    client refused: two wasted requests in two of three measured runs. And a
+    client stops approving the command near 10,000 characters, so a block of
+    several steps says to answer in parts and never names a file."""
     block = _start(pulse)
     how, command = block.split("--- NEXT ---\n")
-    assert how.rstrip().endswith("Inside the JSON, write an apostrophe as \\u0027.")
-    assert "no file, no heredoc, no other command" in how
+    assert "Inside the JSON, write an apostrophe as \\u0027." in how
+    assert "no heredoc, no other command" in how
+    assert f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: " in how
+    assert "answer only some of the steps now (an object with just their ids)" in how
+    assert "--file" not in how
     assert command.startswith("rote skill run pulse answer ")
     assert command.rstrip().endswith("'<your JSON>'")
+
+
+def test_a_block_answered_in_parts_is_not_a_failed_attempt(tmp_path: Path) -> None:
+    """Two of three measured runs lost a 10,000-character answer for three
+    steps to the client's command length limit. Answered a step at a time, each
+    part is recorded, the rest is asked for, and no attempt is spent."""
+    three = _pipeline(_pull("sales"), _pull("refunds"), _pull("fees"))
+    skill = _skill(tmp_path, three)
+    block = _start(skill)
+    rest = _answer(skill, block, {"fees": {"total": 5}})
+    fields = header(rest)
+    assert (fields["kind"], fields["step"], fields["steps"]) == ("DO", "refunds", "refunds,sales")
+    assert "attempt" not in fields
+    assert "Recorded: fees. Do not do those again. Answer only refunds, sales now." in rest
+    assert "with these fixed" not in rest and "missing" not in rest
+    assert "--- STEP fees ---" not in rest
+    last = _answer(skill, rest, {"sales": {"total": 900}})
+    assert (header(last)["step"], "attempt" in header(last)) == ("refunds", False)
+    assert set(journal(last)["answers"]) == {"fees", "sales"}
+    # Two parts spent no attempt: the first answer that fails is the first failure.
+    bad = _answer(skill, last, {"total": "lots"})
+    assert header(bad)["attempt"] == "2"
+    assert MAX_ANSWER_ATTEMPTS > 2
+    done = _answer(skill, bad, {"total": 150})
+    assert result_of(done) == {"report": {"net": 750}}
 
 
 def test_stops_lists_the_wave_as_one_do_stop() -> None:
@@ -211,7 +246,8 @@ def test_several_failures_are_asked_again_together(tmp_path: Path) -> None:
     again = _answer(skill, block, {"fees": {"total": 5}, "refunds": {"total": "x"}})
     fields = header(again)
     assert (fields["kind"], fields["step"], fields["steps"]) == ("DO", "refunds", "refunds,sales")
-    assert "- answer: missing sales" in again
+    assert "Answer only refunds, sales now, with these fixed:" in again
+    assert "- answer.refunds.total:" in again
     assert "--- STEP fees ---" not in again
     done = _answer(skill, again, {"refunds": {"total": 150}, "sales": {"total": 900}})
     assert result_of(done) == {"report": {"net": 750}}
@@ -224,9 +260,9 @@ def test_an_answer_not_keyed_by_step_is_asked_again_whole(pulse: Path) -> None:
     assert (fields["kind"], fields["step"], fields["attempt"]) == ("DO", "refunds", "2")
     assert "- answer: expected an object keyed by step id (refunds, sales)" in again
     assert journal(again)["answers"] == {}
-    missing = _answer(pulse, block, {"refunds": {"total": 150}})
-    assert (header(missing)["step"], header(missing)["attempt"]) == ("sales", "3")
-    assert set(journal(missing)["answers"]) == {"refunds"}
+    empty = _answer(pulse, block, {})
+    assert (header(empty)["step"], header(empty)["attempt"]) == ("refunds", "3")
+    assert "- answer: missing refunds" in empty and "- answer: missing sales" in empty
 
 
 def test_resume_shows_the_same_block(pulse: Path) -> None:
