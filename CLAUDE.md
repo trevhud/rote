@@ -1035,12 +1035,28 @@ fans over nothing joins the first one's block when it is in the same wave,
 so none reads another's answer and no marker is needed. It does not move the
 worthiness line either: DO steps are not counted there until an eval measures
 what a DO stop costs against the original's own tool calls.
-A DO block of several steps prints a section they share once, and every DO
+A DO block of several steps prints a section they share once, and a large
+input value two or more of them read once (`_driver._shared_inputs`). Every DO
 block says to pass the answer as the command's one single-quoted argument
 (`_next_do`). Keep that wording: without it, two of three measured runs first
 staged the answer in `/tmp` or a script, which the client refused, and a
 heredoc on stdin is refused by the same allow rule (measured: 189k to 129k
 input tokens on ops-report's four DO reads).
+The argument has a ceiling: Claude Code stops matching a Bash allow rule near
+10,000 characters (9,893 ran, 10,525 was denied), so a block names
+`MAX_ARGUMENT_CHARS` (8,000) and what to do past it. A block of several steps
+is answered one step per command, under that step's own id with its answer
+alone (`_take_do_batch`), which is what every measured agent tried first; a
+part that validates is recorded and spends no attempt. One step whose own
+answer is still too long goes by `--file` in the working directory, named
+last and only for that case. What is asked again is printed short (the note,
+the answer shapes, the command), never the whole block: `resume` prints that.
+Measured on a routing skill whose three DO steps needed about 10k characters:
+before, one of three runs finished (one malformed answer, two denied); after,
+three of three, with the block 27 KB where it was 53 KB printed up to four
+times. The run still costs 13 to 14 requests when one step's answer alone
+passes the ceiling, because the agent retypes notes the run already holds:
+that is the pipeline's shape, not the driver's.
 A DECIDE or DO block also asks the person the next gate's question when it is
 already known (`_driver.gate_ahead`: every earlier step done or in the block,
 no `when`, nothing bound from the block's steps), and the reply rides with the

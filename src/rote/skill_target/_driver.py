@@ -112,6 +112,10 @@ SKILL_NAME_MAX = 64
 
 #: Answers per step before the run stops with an ERROR (still resumable).
 MAX_ANSWER_ATTEMPTS = 3
+# The longest command a block asks the agent to send. Claude Code stops matching
+# a Bash allow rule near 10,000 characters (measured 2026-11-24: 9,893 ran,
+# 10,525 was denied), and the command carries more than the JSON.
+MAX_ARGUMENT_CHARS = 8000
 
 #: The most decisions one DECIDE block asks for at once (#344), and the most
 #: DO steps one DO block hands over. Every block is a round trip that
@@ -506,6 +510,50 @@ def do_run(
     return run
 
 
+#: A shared input shorter than this is printed with each step: a marker
+#: would save nothing.
+MIN_SHARED_INPUT_CHARS = 200
+
+
+def _shared_inputs(
+    inputs: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """``inputs`` (step id to its payload) with each large value two or more
+    steps read moved out: the values by name, and the payloads holding a
+    marker in their place.
+
+    A wave's steps often read one upstream result. Measured: three DO steps
+    each printed the same 13 KB of routings, a 53 KB block the client saved
+    to a file for the agent to read back."""
+    seen: dict[str, set[str]] = {}
+    for step_id, payload in inputs.items():
+        for value in payload.values():
+            text = _compact(value)
+            if len(text) >= MIN_SHARED_INPUT_CHARS:
+                seen.setdefault(text, set()).add(step_id)
+    names: dict[str, str] = {}
+    shared: dict[str, Any] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for step_id, payload in inputs.items():
+        out[step_id] = {}
+        for param, value in payload.items():
+            text = _compact(value)
+            if len(seen.get(text, ())) < 2:
+                out[step_id][param] = value
+                continue
+            if text not in names:
+                name = param
+                while name in shared:
+                    name += "_"
+                names[text] = name
+                shared[name] = value
+            out[step_id][param] = f"\u00ab{names[text]}, above\u00bb"
+    return shared, out
+
+
+_KEYED_ANSWER = "Answer one JSON object mapping each step's id to its answer: "
+
+
 def _joins_do(step: Mapping[str, Any]) -> bool:
     """A step that can share a DO block: a DO step that fans over nothing."""
     return step["kind"] == "do" and step.get("fan_param") is None
@@ -824,18 +872,33 @@ class Driver:
     def _next(self, *args: str) -> list[str]:
         return ["--- NEXT ---", " ".join([self.command, *args])]
 
-    def _next_do(self, run: str, step: str) -> list[str]:
+    def _next_do(self, run: str, step: str, *, several: bool = False) -> list[str]:
         """A DO answer's command, and how to pass an answer that long.
 
         A DO answer carries what a tool returned, so it is long and holds
         quotes. Measured agents first staged it in a file or a script their
         client refused (two refused calls, each retyping the answer) before
         passing it as the argument. A heredoc on stdin is refused the same
-        way: a client's allow rule for this command matches neither."""
+        way: a client's allow rule for this command matches neither. The
+        argument has a ceiling of its own (:data:`MAX_ARGUMENT_CHARS`), so a
+        block of ``several`` steps says to answer one step per command, and
+        the file form is named for an answer that is still too long: one
+        measured step's own answer was 10,952 characters, and was denied."""
+        by_file = (
+            "write the JSON to a file in the current directory and pass --file <path> instead."
+        )
+        long = f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: " + (
+            "if your JSON would be longer, answer one step per command, with that step's id in "
+            "the command and its answer alone as the JSON. You are asked for the rest. If one "
+            f"step's answer is still that long, {by_file}"
+            if several
+            else f"only then, {by_file}"
+        )
         return [
-            "Pass your JSON as the one single-quoted argument of the command below, however "
-            "long it is. Only that form is approved for you: no file, no heredoc, no other "
-            "command. Inside the JSON, write an apostrophe as \\u0027.",
+            "Pass your JSON as the one single-quoted argument of the command below. Only that "
+            "form is approved for you: no heredoc, no other command. Inside the JSON, write "
+            "an apostrophe as \\u0027.",
+            long,
             *self._next("answer", run, step, "'<your JSON>'"),
         ]
 
@@ -1103,6 +1166,10 @@ class Driver:
             state = self._read(path)
             self._claim_free(path, state)
             pending = state.get("pending")
+            named = step_id
+            if pending and pending["kind"] == "do_batch" and step_id in pending["steps"]:
+                # One step of a DO block answered by itself (:meth:`_take_do_batch`).
+                step_id = pending["step"]
             if state["state"] in _FINISHED or not pending or pending["step"] != step_id:
                 answered = step_id in (state.get("answers") or {})
                 note = (
@@ -1183,7 +1250,7 @@ class Driver:
             elif pending["kind"] == "decide_batch":
                 block = self._take_batch(path, state, value, errors)
             elif pending["kind"] == "do_batch":
-                block = self._take_do_batch(path, state, value, errors)
+                block = self._take_do_batch(path, state, value, errors, named)
             else:
                 block = self._take_decision(path, state, step, value, errors)
             if block is not None:
@@ -1851,7 +1918,7 @@ class Driver:
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
         self._write(path, state)
-        return self._batch_block(path.name, pending)
+        return self._pending_block(path.name, self.by_id[ids[0]], pending)
 
     def _batch_block(self, run: str, pending: dict[str, Any], note: str = "") -> Block:
         ids = pending["steps"]
@@ -1909,35 +1976,47 @@ class Driver:
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
         self._write(path, state)
-        return self._do_batch_block(path.name, pending)
+        return self._pending_block(path.name, self.by_id[ids[0]], pending)
 
     def _take_do_batch(
-        self, path: Path, state: dict[str, Any], value: Any, errors: list[str]
+        self, path: Path, state: dict[str, Any], value: Any, errors: list[str], named: str
     ) -> Block | None:
         """Record every answer that validates, each checked as if asked alone.
 
-        The steps read none of each other's results, so the order does not
-        matter. Only the ones that failed or are missing are asked again: a DO
-        step may write, and asking again for one already answered would have
-        the agent do it twice.
+        The answer is one object keyed by step id under the block's first
+        step, or one step's own answer under that step's id (``named``): a
+        command has a length limit (:data:`MAX_ARGUMENT_CHARS`), and in every
+        measured run the agent's first move for a long answer was a step per
+        command. The steps read none of each other's results, so the order
+        does not matter. Only the ones that failed or are missing are asked
+        again: a DO step may write, and asking again for one already answered
+        would have the agent do it twice.
         """
         schema = _schema()
         pending = state["pending"]
         ids: list[str] = list(pending["steps"])
         first = ids[0]
         attempts = state["attempts"][first]
-        if not errors and not isinstance(value, dict):
-            errors = _keyed_answer_errors(value, ids, "step")
         if errors:
             if attempts >= MAX_ANSWER_ATTEMPTS:
                 return self._too_many(path, state, first, errors)
             self._write(path, state)
-            return self._reask(path.name, first, attempts + 1, errors, [], {}, "DO")
+            note = "\n".join(
+                [
+                    "Your answer did not validate. Answer again with only these fixed:",
+                    *(f"- {e}" for e in errors),
+                ]
+            )
+            return self._do_rest_block(path.name, pending, note, attempts + 1)
+        # Keyed by step when sent under the block's first id with a step's id
+        # among its keys; a key that is no step is then named, not guessed at.
+        keyed = named == first and isinstance(value, dict) and any(k in ids for k in value)
+        if not keyed:
+            value = {named: value}
         problems = [f"- answer: {k!r} is not a step of this block" for k in value if k not in ids]
         left: list[str] = []
         for step_id in ids:
             if step_id not in value:
-                problems.append(f"- answer: missing {step_id}")
                 left.append(step_id)
                 continue
             output = self.by_id[step_id]["output_schema"]
@@ -1951,27 +2030,64 @@ class Driver:
             )
         if not left:
             return None
-        if attempts >= MAX_ANSWER_ATTEMPTS:
-            return self._too_many(path, state, left[0], [p.removeprefix("- ") for p in problems])
         kept = [i for i in ids if i not in left]
+        # Some steps answered and nothing wrong with them: the agent is passing
+        # a long answer in parts, as the block says to. Not a failed attempt.
+        in_parts = bool(kept) and not problems
+        if in_parts:
+            attempts -= 1
+        elif attempts >= MAX_ANSWER_ATTEMPTS:
+            return self._too_many(path, state, left[0], [p.removeprefix("- ") for p in problems])
         note = "\n".join(
             [
                 (f"Recorded: {', '.join(kept)}. Do not do those again. " if kept else "")
-                + f"Answer only {', '.join(left)} now, with these fixed:",
+                + f"Answer only {', '.join(left)} now"
+                + (", with these fixed:" if problems else "."),
                 *problems,
             ]
         )
         inputs = {i: pending["inputs"][i] for i in left}
+        again: dict[str, Any]
         if len(left) == 1:
             again = {"step": left[0], "kind": "do", "inputs": inputs[left[0]]}
         else:
             again = {"step": left[0], "kind": "do_batch", "steps": left, "inputs": inputs}
+        if pending.get("ahead"):
+            # Still unanswered: a reply sent with this command was taken, and
+            # removed from ``pending``, before the answer was read.
+            again["ahead"] = pending["ahead"]
         state["pending"] = again
         state["state"] = "waiting"
         state["attempts"][left[0]] = attempts
         self._write(path, state)
-        block = self._pending_block(path.name, self.by_id[left[0]], again, note)
-        block.header = f"{block.header} attempt={attempts + 1}"
+        return self._do_rest_block(path.name, again, note, None if in_parts else attempts + 1)
+
+    def _do_rest_block(
+        self, run: str, pending: dict[str, Any], note: str, attempt: int | None
+    ) -> Block:
+        """A DO block asked again, in short: the agent has each step's text and
+        inputs from the block before, and three steps reading one large result
+        printed again were 53 KB a time (``resume`` prints the whole block)."""
+        left: list[str] = list(pending.get("steps") or [pending["step"]])
+        lines = [
+            note,
+            "Each step's text and inputs are in the block above "
+            f"({self.command} resume {run} prints them again).",
+        ]
+        for step_id in left:
+            lines += [
+                f"--- {step_id} ANSWER SHAPE (key? = optional) ---",
+                _brief(self.by_id[step_id]["output_schema"]),
+            ]
+        if len(left) > 1:
+            lines.append(_KEYED_ANSWER + _compact({i: "<its answer>" for i in left}))
+        lines += self._next_do(run, left[0], several=len(left) > 1)
+        extra = [f"steps={','.join(left)}"] if len(left) > 1 else []
+        if attempt is not None:
+            extra.append(f"attempt={attempt}")
+        block = Block("DO", self._head(run, f"step={left[0]}", *extra), lines)
+        if pending.get("ahead"):
+            self._add_ahead(block, run, left[0], pending["ahead"])
         return block
 
     def _take_batch(
@@ -2588,6 +2704,9 @@ class Driver:
             sharing.setdefault(str(self.by_id[step_id].get("instructions") or ""), []).append(
                 step_id
             )
+        shared, inputs = _shared_inputs({i: pending["inputs"][i] for i in ids})
+        if shared:
+            lines += ["--- INPUTS SEVERAL STEPS READ (json) ---", _compact(shared)]
         for step_id in ids:
             step = self.by_id[step_id]
             names = sharing[str(step.get("instructions") or "")]
@@ -2596,14 +2715,13 @@ class Driver:
             lines += [
                 *_do_context(step, step_id, section=False),
                 f"--- {step_id} INPUTS (json) ---",
-                _compact(pending["inputs"][step_id]),
+                _compact(inputs[step_id]),
                 f"--- {step_id} ANSWER SHAPE (key? = optional) ---",
                 _brief(step["output_schema"]),
             ]
         lines += [
-            "Answer one JSON object mapping each step's id to its answer: "
-            + _compact({i: "<its answer>" for i in ids}),
-            *self._next_do(run, ids[0]),
+            _KEYED_ANSWER + _compact({i: "<its answer>" for i in ids}),
+            *self._next_do(run, ids[0], several=True),
         ]
         header = self._head(run, f"step={ids[0]}", f"steps={','.join(ids)}")
         return Block("DO", header, lines)

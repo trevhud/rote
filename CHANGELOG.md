@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compiled skill's DO block of several steps can be answered one step per
+  command, and says to do so when the answer would pass about 8,000
+  characters. Claude Code stops approving `rote skill run <name> *` near
+  10,000 characters, so a long answer was denied: on a routing skill with
+  three DO steps, one of three runs finished. Now three of three do. A large
+  input several steps of the block read is printed once (53 KB to 27 KB on
+  that skill), and a block asked again prints only what is still wanted.
+
 - A `--runtime skill` compile that measured the skill (`--baseline`, or a
   `rote baseline` saved in the `--out` dir) stops before generation when the
   compiled skill is predicted to cost more than 1.5 times the measured run.
