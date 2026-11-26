@@ -206,11 +206,6 @@ def build_plan(
                 "answer_schema": declared_answer_schema(node),
                 "timeout_s": _gate_timeout_s(node, pipeline),
             }
-            if node.when is not None:
-                # Absent otherwise, so a plan with no conditional gate is byte
-                # for byte what it was.
-                ref = parse_input_ref(node.when)
-                gate["when"] = {"node": ref.node_id, "field": ref.field}
             if node.id in answers:
                 # The sample says what the person answered: the gate's
                 # result, so the nodes after it run on the sample too.
@@ -342,6 +337,11 @@ def build_plan(
                 "wave": index,
                 "bindings": _bindings(node),
             }
+            if node.when is not None:
+                # Absent otherwise, so a plan with no conditional node is byte
+                # for byte what it was.
+                ref = parse_input_ref(node.when)
+                step["when"] = {"node": ref.node_id, "field": ref.field}
             kind = _step_kind(node, live, backend, implementations or {}, answers)
             if kind is None:
                 raise PlanError(_no_body(node, backend))

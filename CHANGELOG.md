@@ -11,6 +11,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- `when:` works on any node, not only a gate. A step with
+  `when: <node>.output.<field>` runs only when that boolean is true; when it
+  is false the step is skipped and its result is null, which a later node
+  reads whole. Any other value fails the run naming the step. All six
+  workflow runtimes and the compiled skill honor it: a skipped DO step is
+  never handed to the agent, and a skipped code step never runs. A mandatory
+  node cannot have `when:`. The compiler does not write it for steps yet;
+  a hand-edited or agent-written `pipeline.yaml` can.
+
 - A fidelity case can answer a SQL tool from a seeded SQLite database
   (`sqlite:` in place of a list of responses in `cases.yaml`). The fixture
   server runs each statement against its own in-memory database and answers

@@ -1893,3 +1893,32 @@ def test_fields_past_the_cap_are_an_open_question(
     found, [question] = _probe(root, _SAMPLE)
     assert found == []
     assert question.text.endswith("not checked: `dashboard_url`")
+
+
+def test_the_prefix_decides_a_skip_before_it_binds_the_steps_inputs(tmp_path: Path) -> None:
+    """Found by review: a step that runs only when X often reads a field that
+    exists only when X. Every runtime skips it without building its payload;
+    the prefix bound the inputs first and reported a correct pipeline as a
+    binding failure, which goes back to the agent as an error."""
+    import yaml
+
+    from tests.test_conditional_step_parity import PIPELINE, STEPS
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    # The channel exists only when chat is connected.
+    steps = STEPS.replace(
+        "    return {'connected': flag, 'channel': '#ops', 'people': ",
+        "    if not flag:\n        return {'connected': False}\n"
+        "    return {'connected': flag, 'channel': '#ops', 'people': ",
+    )
+    assert steps != STEPS
+    root = _write(tmp_path, {"pipeline.yaml": yaml.safe_dump(raw), "extracted/steps.py": steps})
+    run = _run(root, {"notes": "kickoff", "flag": False})
+    assert run.findings == []
+    assert run.steps["post"] == {"status": "ok", "skipped": True}
+    # The step after it ran on the null result.
+    assert run.steps["recap"]["status"] == "ok"
+    # The other half: connected, the step runs on the field it reads.
+    ran = _run(root, {"notes": "kickoff", "flag": True})
+    assert ran.findings == []
+    assert ran.steps["post"] == {"status": "ok"}

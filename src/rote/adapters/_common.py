@@ -889,6 +889,33 @@ def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
     return pipeline.execution_waves()
 
 
+def emission_waves(pipeline: Pipeline) -> list[list[Node]]:
+    """The waves an emitter walks: each conditional step in a wave of its own.
+
+    A step with a ``when`` is emitted as a branch around its single-node call,
+    so it leaves the wave it shared and runs right after it. A wave's other
+    nodes keep their parallel form untouched, and no emitter needs a
+    conditional variant of ``gather`` or ``Promise.all``. Every emitter runs a
+    wave's gates one by one, last, so a wave that loses a conditional step
+    gives up its gates too, to a wave after that step: a step that waits on
+    no gate must not sit behind a person's answer."""
+    out: list[list[Node]] = []
+    for wave in pipeline.execution_waves():
+        alone = [n for n in wave if n.when is not None and n.kind is not NodeKind.HITL_GATE]
+        if not alone:
+            out.append(wave)
+            continue
+        gates = [n for n in wave if n.kind is NodeKind.HITL_GATE]
+        rest = [n for n in wave if n not in alone and n not in gates]
+        out.extend(w for w in (rest, *([n] for n in alone), gates) if w)
+    return out
+
+
+def is_conditional_step(wave: list[Node]) -> bool:
+    """True for a wave :func:`emission_waves` made of one conditional step."""
+    return len(wave) == 1 and wave[0].when is not None and wave[0].kind is not NodeKind.HITL_GATE
+
+
 # ───────── Data-flow threading ─────────
 
 

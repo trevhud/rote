@@ -755,7 +755,7 @@ def _gate_skipped(plan: Mapping[str, Any], gate: str, folder: Path) -> bool:
 
     The driver writes nothing for a gate whose ``when`` is false, so the
     condition is read again from the result it names, by the driver's rule."""
-    from rote.skill_target._driver import _gate_waits
+    from rote.skill_target._driver import _step_runs
 
     step = next(s for s in plan.get("steps") or [] if s.get("id") == gate)
     when = step.get("when")
@@ -765,7 +765,7 @@ def _gate_skipped(plan: Mapping[str, Any], gate: str, folder: Path) -> bool:
     if not source.is_file():
         return False
     result = json.loads(source.read_text(encoding="utf-8")).get("result")
-    return _gate_waits(step, {when["node"]: result}) is False
+    return _step_runs(step, {when["node"]: result}) is False
 
 
 def driver_evidence(

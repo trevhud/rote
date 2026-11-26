@@ -42,8 +42,9 @@ from types import ModuleType
 
 import pytest
 
+from rote.adapters._common import _execution_waves
 from rote.adapters.dbos import DbosAdapter, _extracted_layout
-from rote.adapters.temporal import _execution_waves, _impl_path_parts, _to_pascal_case
+from rote.adapters.temporal import _impl_path_parts, _to_pascal_case
 from rote.ir import NodeKind, Pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

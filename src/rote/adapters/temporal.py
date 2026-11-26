@@ -31,10 +31,11 @@ from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
     EmitWriter,
-    _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
+    emission_waves,
     fan_out_nodes,
+    is_conditional_step,
     refuse_mcp_only_nodes,
     safe_docstring_line,
 )
@@ -44,10 +45,10 @@ from rote.adapters._py_common import (
     _signature_path_parts,
     agent_loop_call,
     call_impl_helper,
-    conditional_gate_py,
+    condition_helper,
+    conditional_py,
     fan_out_binding,
     fan_out_list_helper,
-    gate_condition_helper,
     gate_message_helper,
     gate_report_py,
     impl_kwargs_expr,
@@ -506,7 +507,10 @@ def _emit_hitl_block(node: Node) -> str:
 
 
 def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
+    # Non-retryable, as for missing inputs: a plain exception in workflow
+    # code fails the workflow task, which Temporal retries forever.
+    refuse = "raise ApplicationError(_when_error, non_retryable=True)"
 
     body_lines: list[str] = [
         "    @workflow.run",
@@ -530,6 +534,7 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
 
         body_lines.append("")
         body_lines.append(f"        # ─── Wave {wave_idx} ───")
+        block_start = len(body_lines)
 
         # fan_out nodes dispatch once per element of their bound list —
         # they never share the single/parallel payload shapes below.
@@ -552,15 +557,14 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
         for n in fanned:
             body_lines.append(_emit_fan_out_call(n, pipeline, cfg))
 
+        if is_conditional_step(wave):
+            block = "\n".join(body_lines[block_start:]) + "\n"
+            body_lines[block_start:] = [
+                conditional_py(wave[0], block, refuse, " " * 8).rstrip("\n")
+            ]
+
         for h in hitl:
-            # Non-retryable, as for missing inputs: a plain exception in
-            # workflow code fails the workflow task, retried forever.
-            block = conditional_gate_py(
-                h,
-                _emit_hitl_block(h),
-                "raise ApplicationError(_when_error, non_retryable=True)",
-                " " * 8,
-            )
+            block = conditional_py(h, _emit_hitl_block(h), refuse, " " * 8)
             body_lines.append(block.rstrip("\n"))
 
     body_lines.append("")
@@ -634,11 +638,11 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
         parts.append("\n" + fan_out_list_helper() + "\n")
     if gate_helper := gate_message_helper(pipeline):
         parts.append("\n" + gate_helper + "\n")
-    if condition_helper := gate_condition_helper(pipeline):
-        parts.append("\n" + condition_helper + "\n")
+    if when_helper := condition_helper(pipeline):
+        parts.append("\n" + when_helper + "\n")
     if pipeline.needs_input_check:
         parts.append("\n" + missing_inputs_helper(pipeline) + "\n")
-    if pipeline.needs_input_check or pipeline.conditional_gates:
+    if pipeline.needs_input_check or pipeline.conditional_nodes:
         parts[0] = parts[0].replace(
             "from temporalio.common import RetryPolicy\n",
             "from temporalio.common import RetryPolicy\n"

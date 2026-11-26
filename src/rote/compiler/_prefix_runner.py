@@ -74,22 +74,23 @@ class BindingError(Exception):
     """An ``inputs:`` reference that the upstream result cannot satisfy."""
 
 
-def _gate_waits(step: dict[str, Any], results: dict[str, Any]) -> bool:
-    """Whether a gate with a ``when`` asks, by every runtime's rule: the field
-    must be exactly true or false (``_gate_condition_error`` in the emitted
-    Python, ``gateConditionError`` in TS, ``_gate_waits`` in the skill driver)."""
+def _step_runs(step: dict[str, Any], results: dict[str, Any]) -> bool:
+    """Whether a step with a ``when`` runs, by every runtime's rule: the field
+    must be exactly true or false (``_condition_error`` in the emitted
+    Python, ``conditionError`` in TS, ``_step_runs`` in the skill driver)."""
     when = step["when"]
+    verb = "waits" if step["kind"] == "gate" else "runs"
+    subject = f"{step['node_kind']} {step['id']!r} {verb}"
     ref = f"{when['node']}.output.{when['field']}"
     result = results.get(when["node"])
     if not isinstance(result, dict) or when["field"] not in result:
         raise BindingError(
-            f"hitl_gate {step['id']!r} waits only when {ref} is true, "
-            f"but that result has no {when['field']!r}"
+            f"{subject} only when {ref} is true, but that result has no {when['field']!r}"
         )
     value = result[when["field"]]
     if not isinstance(value, bool):
         raise BindingError(
-            f"hitl_gate {step['id']!r} waits only when {ref} is true, and it is "
+            f"{subject} only when {ref} is true, and it is "
             f"{type(value).__name__}, not true or false"
         )
     return value
@@ -248,7 +249,7 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             report[node_id] = {"status": "not_deterministic", "reason": step["reason"]}
             continue
         not_run = [b[2] for b in step["bindings"] if b[1] == "node" and b[2] not in results]
-        when = step.get("when") if step["kind"] == "gate" else None
+        when = step.get("when")
         if when is not None and when["node"] not in results:
             not_run.append(when["node"])
         if not_run:
@@ -258,17 +259,21 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             }
             continue
         try:
+            if when is not None and not _step_runs(step, results):
+                # Skipped, as every runtime skips it: its result is null. Decided
+                # before its inputs are bound, as every runtime does: a step
+                # that runs only when X often reads a field that exists only
+                # when X, and binding it first reported a correct pipeline as
+                # a binding failure.
+                results[node_id] = None
+                report[node_id] = {"status": "ok", "skipped": True, "output": None}
+                continue
             payload = {}
             for binding in step["bindings"]:
                 value = _resolve(binding, sample, results)
                 if value is not _MISSING:
                     payload[binding[0]] = value
             if step["kind"] == "gate":
-                if when is not None and not _gate_waits(step, results):
-                    # Skipped, as every runtime skips it: its result is null.
-                    results[node_id] = None
-                    report[node_id] = {"status": "ok", "skipped": True, "output": None}
-                    continue
                 if "payload" not in step:
                     report[node_id] = {
                         "status": "not_deterministic",
