@@ -647,6 +647,8 @@ def replay_accounting(
             "tool": c.get("tool"),
             "arguments": c.get("arguments"),
             "answered": bool(c.get("matched")),
+            # A SQL fixture's write: the rows it changed (rote.bench.fixture_mcp).
+            **({"effect": c["effect"]} if c.get("effect") is not None else {}),
         }
         for c in calls
         if c.get("side_effect")
@@ -1642,7 +1644,11 @@ def render_markdown(
         if report.stopped:
             lines.append(f"- {report.subject.label}: stopped early: {report.stopped}")
         if report.subject.replay:
-            lines += _replay_lines(report)
+            lines.append(
+                f"- {report.subject.label}: replayed against recorded responses; wall times "
+                "are against local fixture servers, not live service latency"
+            )
+        lines += _write_lines(report)
     if clean:
         lines.append(
             "- every compiled trial ran through the driver, and every gate was answered "
@@ -1652,22 +1658,29 @@ def render_markdown(
 
 
 def _write_key(write: Mapping[str, Any]) -> str:
-    return json.dumps([write["server"], write["tool"], write["arguments"]], sort_keys=True)
+    """A write's identity: the rows it changed when a SQL fixture ran it (two
+    wordings of one change are one write), else its arguments."""
+    what = {"changed": write["effect"]} if "effect" in write else write["arguments"]
+    return json.dumps([write["server"], write["tool"], what], sort_keys=True)
 
 
-def _replay_lines(report: SubjectReport) -> list[str]:
-    """A replay's proposed writes, side by side per pair, and its timing caveat."""
+def _write_lines(report: SubjectReport) -> list[str]:
+    """The writes each side made to a fixture, side by side per pair.
+
+    A replay's fixtures answer a write with an error and a SQL fixture runs
+    it against its own throwaway database, so nothing here reached a real
+    service either way. A replay says so for every pair; any other case
+    only for a pair where a side wrote."""
     from rote.adapters._common import escape_invisible
 
-    lines = [
-        f"- {report.subject.label}: replayed against recorded responses; wall times are "
-        "against local fixture servers, not live service latency"
-    ]
+    lines: list[str] = []
+    where = "none sent" if report.subject.replay else "fixture database only"
     originals = report.sides["original"].trials
     compiled = report.sides["compiled"].trials
     for i, (o, c) in enumerate(zip(originals, compiled, strict=False), 1):
         if not o.writes and not c.writes:
-            lines.append(f"- {report.subject.label} pair {i}: neither side proposed a write")
+            if report.subject.replay:
+                lines.append(f"- {report.subject.label} pair {i}: neither side proposed a write")
             continue
         # What each side asked to write, and how often: a compiled step that
         # retries a failed write proposes the same call again, which is a
@@ -1683,7 +1696,7 @@ def _replay_lines(report: SubjectReport) -> list[str]:
         )
         lines.append(
             f"- {report.subject.label} pair {i}: proposed writes {verdict} "
-            f"(original {len(o.writes)}, compiled {len(c.writes)}; none sent)"
+            f"(original {len(o.writes)}, compiled {len(c.writes)}; {where})"
         )
         if same_counts:
             continue
@@ -1692,10 +1705,11 @@ def _replay_lines(report: SubjectReport) -> list[str]:
             for w in trial.writes:
                 counts[_write_key(w)] = counts.get(_write_key(w), 0) + 1
             for key, n in counts.items():
-                server, tool, arguments = json.loads(key)
+                server, tool, what = json.loads(key)
                 times = f" x{n}" if n > 1 else ""
                 name = f"{escape_invisible(str(server))}.{escape_invisible(str(tool))}"
-                lines.append(f"  - {side}: {name} {json.dumps(arguments, sort_keys=True)}{times}")
+                shown = escape_invisible(json.dumps(what, sort_keys=True))
+                lines.append(f"  - {side}: {name} {shown}{times}")
     return lines
 
 
