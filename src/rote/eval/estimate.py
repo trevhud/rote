@@ -243,6 +243,41 @@ def estimate_compiled_skill(
     )
 
 
+_RUN_BUCKETS = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
+
+
+def median_measured_run(
+    runs: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]] | None:
+    """The median run by total tokens, and every run that counts, or None.
+
+    A run counts when it succeeded with nothing flagged and reported its
+    usage: a truncated run, or one missing its tools, is not the skill's cost.
+    """
+    usable = [
+        r
+        for r in runs
+        if r.get("succeeded")
+        and not r.get("flags")
+        and r.get("turns")
+        and all(r.get(b) is not None for b in _RUN_BUCKETS)
+    ]
+    if not usable:
+        return None
+    by_total = sorted(usable, key=run_total_tokens)
+    return by_total[(len(by_total) - 1) // 2], usable
+
+
+def run_total_tokens(run: Mapping[str, Any]) -> float:
+    """Every token a measured run reported, cache reads and writes included."""
+    return float(sum(run[b] for b in _RUN_BUCKETS))
+
+
+def total_tokens(estimate: AgentRunEstimate) -> Range:
+    """Every token of an agent run, the figure :func:`run_total_tokens` measures."""
+    return estimate.fresh_input_tokens + estimate.cached_read_tokens + estimate.output_tokens
+
+
 def measured_agent_run(
     estimate: AgentRunEstimate, runs: Sequence[Mapping[str, Any]]
 ) -> AgentRunEstimate | None:
@@ -262,17 +297,10 @@ def measured_agent_run(
     median by total tokens: a low built from one run's cache reads and
     another's cache writes would be below anything a run cost.
     """
-    buckets = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
-    usable = [
-        r
-        for r in runs
-        if r.get("succeeded")
-        and not r.get("flags")
-        and r.get("turns")
-        and all(r.get(b) is not None for b in buckets)
-    ]
-    if not usable:
+    picked = median_measured_run(runs)
+    if picked is None:
         return None
+    run, usable = picked
 
     def span(key: str) -> Range:
         values = [float(r[key]) for r in usable]
@@ -281,8 +309,6 @@ def measured_agent_run(
     def one(value: float) -> Range:
         return Range(float(value), float(value))
 
-    by_total = sorted(usable, key=lambda r: sum(r[b] for b in buckets))
-    run = by_total[(len(by_total) - 1) // 2]
     models = sorted({str(r["model"]) for r in usable if r.get("model")})
     where = f" on {', '.join(models)}" if models else ""
     how = f"measured, {len(usable)} baseline run(s) of the skill{where}"

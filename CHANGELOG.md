@@ -19,6 +19,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   input several steps of the block read is printed once (53 KB to 27 KB on
   that skill), and a block asked again prints only what is still wanted.
 
+- A `--runtime skill` compile that measured the skill (`--baseline`, or a
+  `rote baseline` saved in the `--out` dir) stops before generation when the
+  compiled skill is predicted to cost more than 1.5 times the measured run.
+  The prediction prices the plan as a conversation; the count of judges and
+  loops is used only when no run was measured. A routing skill with one judge
+  passed the count, cost 34k tokens a run as written and 138k to 179k
+  compiled, and is now refused for cents (predicted 93k to 216k).
+  expense-audit (predicted 65k against 114k) and ops-report (82k against 62k)
+  still compile. `--compile-anyway` overrides it.
+
 - `rote bench --fidelity` counts a breakdown written as a map. One compile
   writes open rows per site as records (`[{"site": "EAST1", "open": 2}]`)
   and the next as `{"EAST1": 2}`; the scorer saw only the records, so the
