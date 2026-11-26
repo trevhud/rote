@@ -740,7 +740,7 @@ class Compiler:
                     grounding.unlisted[server] = "no step uses its tools"
                     self._emit("log", f"tool schemas: not using {server!r}: no step uses it")
                 grounding.tools.update(adopted)
-                self._refuse_if_not_worth_it(s1_plan, work_dir, measured_runs)
+                self._refuse_if_not_worth_it(s1_plan, work_dir, measured_runs, driver)
                 st = s1_plan.structure
                 if st is not None:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
@@ -1196,48 +1196,57 @@ class Compiler:
         plan: system1.Plan,
         work_dir: Path | None = None,
         measured_runs: Sequence[Mapping[str, Any]] = (),
+        driver: Any = None,
     ) -> None:
         """Stop a skill-runtime compile that would not pay off, before
         generation spends anything more. Only the structure pass (cents) has
         run; its cost is in the error.
 
         With the skill's own ``measured_runs``, the skeleton in ``work_dir`` is
-        priced as a conversation and compared with them. Without, the plan's
-        model stops are counted."""
+        priced as a conversation and compared with them. Without, or when it
+        cannot be priced, the plan's model stops are counted."""
         from rote.compiler.system1.generate import LOCAL_FILE_HOWS
-        from rote.compiler.worth import predict, worth
+        from rote.compiler.worth import NoPrediction, predict, worth
 
         target = self.emit_target
         if target is None or target.runtime != "skill" or self.compile_anyway:
             return
         st = plan.structure
         spent = "" if st is None or st.cost_usd is None else f" (spent so far: ${st.cost_usd:.4f})"
-        prediction = None
         if work_dir is not None and measured_runs:
-            # A step that only saves a local file is written as code.
-            code = {
-                n.id
-                for n in plan.nodes
-                if n.mcp is None
-                and any(
-                    d.field == "system"
-                    and isinstance(d.value, dict)
-                    and d.value.get("how") in LOCAL_FILE_HOWS
-                    for d in n.decisions
-                )
-            }
-            prediction = predict(
-                work_dir / "pipeline.yaml",
-                measured_runs,
-                judges=target.judges,
-                backend="api" if target.external_backend == "api" else "mcp",
-                code=code,
+            # A step that only saves a local file is written as code, by the
+            # parallel pieces only (generate.local_file_how): a single
+            # session leaves it a stub, which is the agent's work.
+            code = (
+                {
+                    n.id
+                    for n in plan.nodes
+                    if n.mcp is None
+                    and any(
+                        d.field == "system"
+                        and isinstance(d.value, dict)
+                        and d.value.get("how") in LOCAL_FILE_HOWS
+                        for d in n.decisions
+                    )
+                }
+                if callable(getattr(driver, "generate", None))
+                else set()
             )
-        if prediction is not None:
-            if not prediction.pays_off:
-                raise CompilerError(prediction.explain() + spent)
-            self._emit("log", f"worth compiling: {prediction.summary()}")
-            return
+            try:
+                prediction = predict(
+                    work_dir / "pipeline.yaml",
+                    measured_runs,
+                    judges=target.judges,
+                    backend="api" if self.api_backend else "mcp",
+                    code=code,
+                )
+            except NoPrediction as e:
+                self._emit("log", f"worth compiling: not predicted, counting model stops: {e}")
+            else:
+                if not prediction.pays_off:
+                    raise CompilerError(prediction.explain() + spent)
+                self._emit("log", f"worth compiling: {prediction.summary()}")
+                return
         verdict = worth(plan.nodes, target.judges)
         if not verdict.pays_off:
             raise CompilerError(verdict.explain() + spent)

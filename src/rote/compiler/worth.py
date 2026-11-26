@@ -149,6 +149,10 @@ def _k(tokens: float) -> str:
     return f"{tokens / 1000:.0f}k"
 
 
+class NoPrediction(Exception):
+    """Why a plan could not be priced against the measured runs."""
+
+
 def predict(
     pipeline_yaml: Path,
     runs: Sequence[Mapping[str, Any]],
@@ -156,15 +160,24 @@ def predict(
     judges: str | None,
     backend: Literal["mcp", "api"],
     code: Collection[str],
-) -> Prediction | None:
+) -> Prediction:
     """Price the skeleton at ``pipeline_yaml`` as a compiled skill against the
     skill's measured ``runs`` (``measured_run_record`` dicts).
 
-    None when no run counts or the skill runtime cannot run the plan: the
-    caller falls back to counting stops. ``code`` names the external calls
+    Raises :class:`NoPrediction`, saying why, when no run counts, the
+    skeleton does not load, or the skill runtime cannot plan it yet (an agent
+    loop's tools are not pinned to a server before generation): the caller
+    counts stops instead and says so. ``code`` names the external calls
     generation writes as code (:func:`rote.adapters.skill.planned_stops`).
     Nothing here makes a call: tokens are counted by the character heuristic.
+
+    The figure leans low. The skeleton's judge prompts are placeholders, and
+    a compiled run in the person's own client carries more fixed context than
+    the isolated baseline did. Both sides are raw token totals of one model
+    family, not dollars.
     """
+    from pydantic import ValidationError
+
     from rote.adapters.skill import planned_stops
     from rote.eval.estimate import (
         estimate_compiled_skill,
@@ -174,15 +187,19 @@ def predict(
         total_tokens,
     )
     from rote.eval.priors import Priors
+    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
     from rote.eval.tokens import HeuristicTokenCounter
     from rote.ir import load_pipeline
     from rote.plan import PlanError
 
     picked = median_measured_run(runs)
     if picked is None:
-        return None
+        raise NoPrediction("no baseline run succeeded with its usage and nothing flagged")
     run, usable = picked
-    pipeline = load_pipeline(pipeline_yaml)
+    try:
+        pipeline = load_pipeline(pipeline_yaml)
+    except (ValidationError, ValueError) as e:
+        raise NoPrediction(f"the skeleton is not valid IR yet ({type(e).__name__})") from e
     try:
         stops = planned_stops(
             pipeline,
@@ -190,11 +207,15 @@ def predict(
             backend=backend,
             code=code,
         )
-    except PlanError:
-        return None
+    except PlanError as e:
+        raise NoPrediction(f"the skill runtime cannot plan the skeleton yet ({e})") from e
     priors = Priors()
+    sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
+    sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
     estimate = estimate_compiled_skill(
-        stops, estimate_pipeline(pipeline, HeuristicTokenCounter(priors), priors), priors
+        stops,
+        estimate_pipeline(pipeline, HeuristicTokenCounter(priors), priors, sidecar=sidecar),
+        priors,
     )
     total = total_tokens(estimate)
     return Prediction(

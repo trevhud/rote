@@ -1224,7 +1224,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 sample_input=args.sample_input,
                 # What the skill costs as written: this compile's baseline,
                 # or one `rote baseline --out` saved here.
-                measured_runs=recorded_runs(out_dir),
+                measured_runs=recorded_runs(out_dir, skill_path),
             )
         )
     except CompilerError as e:
