@@ -2683,7 +2683,19 @@ text answer only the wordings someone thought of. A case gives such a tool
   (`response: rows:<digest>`, `effect`; `fidelity_score.call_key`,
   `skill_ab._write_key`). Keyed on the SQL text, no two runs would agree.
 - **ATTACH is refused**: it is the one statement that opens a file by
-  path. `VACUUM INTO` goes through the same authorizer action.
+  path. `VACUUM INTO` goes through the same authorizer action. So are
+  transactions and savepoints (each call is one statement; a logged write
+  must not be rolled back later) and every PRAGMA but the ones that
+  describe the schema.
+- **A statement has a time limit and a row cap** (`SQL_SECONDS`,
+  `SQL_MAX_ROWS`). The tool runs on the server's event loop, so an
+  unbounded recursive query held every tool on it until the trial timed out.
+- **An effect names every table the statement wrote, changed or not, and
+  counts rows as a multiset.** With a set difference a second copy of a row
+  was no change, and every write that changed nothing shared one empty
+  effect, so a miss on one table matched a miss on another. A read's digest
+  covers its column names for the same reason: every empty result is not
+  one read.
 - One statement per call. A case whose tool takes several needs more than
   this does today; say so in the case rather than widening the fixture
   on a guess.

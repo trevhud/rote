@@ -64,6 +64,7 @@ import json
 import sqlite3
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -130,32 +131,62 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-#: What a statement may do. A fixture database is in memory and holds only
-#: the case's rows, so the statement is the one thing that could reach
-#: outside it: ATTACH opens (or creates) any file by path.
+#: Statements refused outright. A fixture database is in memory and holds
+#: only the case's rows, so the statement is the one thing that could reach
+#: outside it (ATTACH opens or creates any file by path, which VACUUM INTO
+#: goes through too). Each tool call is one statement that stands alone, so
+#: a transaction would log a write a later ROLLBACK undoes.
 _REFUSED_SQL = {
     sqlite3.SQLITE_ATTACH: "ATTACH",
     sqlite3.SQLITE_DETACH: "DETACH",
+    sqlite3.SQLITE_TRANSACTION: "a transaction (each call is one statement)",
+    sqlite3.SQLITE_SAVEPOINT: "a savepoint (each call is one statement)",
 }
 
-#: Authorizer actions that change the database: rows, or its schema.
-_WRITE_SQL = frozenset(
-    getattr(sqlite3, name)
-    for name in (
-        "SQLITE_INSERT",
-        "SQLITE_UPDATE",
-        "SQLITE_DELETE",
-        "SQLITE_CREATE_TABLE",
-        "SQLITE_CREATE_INDEX",
-        "SQLITE_CREATE_VIEW",
-        "SQLITE_CREATE_TRIGGER",
-        "SQLITE_DROP_TABLE",
-        "SQLITE_DROP_INDEX",
-        "SQLITE_DROP_VIEW",
-        "SQLITE_DROP_TRIGGER",
-        "SQLITE_ALTER_TABLE",
-    )
+#: PRAGMAs that only describe the schema. Every other one is refused: some
+#: change the database or the connection with no row to show for it.
+_READ_PRAGMAS = frozenset(
+    {
+        "table_info",
+        "table_xinfo",
+        "table_list",
+        "index_list",
+        "index_info",
+        "index_xinfo",
+        "foreign_key_list",
+    }
 )
+
+#: Authorizer actions that change rows, and those that change the schema.
+_ROW_WRITES = frozenset({sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE})
+_SCHEMA_WRITES = {
+    getattr(sqlite3, f"SQLITE_{name}"): name.lower()
+    for name in (
+        "CREATE_TABLE",
+        "CREATE_TEMP_TABLE",
+        "CREATE_INDEX",
+        "CREATE_TEMP_INDEX",
+        "CREATE_VIEW",
+        "CREATE_TEMP_VIEW",
+        "CREATE_TRIGGER",
+        "CREATE_TEMP_TRIGGER",
+        "DROP_TABLE",
+        "DROP_TEMP_TABLE",
+        "DROP_INDEX",
+        "DROP_TEMP_INDEX",
+        "DROP_VIEW",
+        "DROP_TEMP_VIEW",
+        "DROP_TRIGGER",
+        "DROP_TEMP_TRIGGER",
+        "ALTER_TABLE",
+    )
+}
+
+#: How long one statement may run, and how many rows it may return. An
+#: agent's recursive query with no bound would otherwise hold the server,
+#: and every other tool on it, until the trial's own timeout.
+SQL_SECONDS = 5.0
+SQL_MAX_ROWS = 5000
 
 
 class SqlDatabase:
@@ -171,24 +202,38 @@ class SqlDatabase:
         # Autocommit: each statement stands alone, as each tool call does.
         self.conn = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
         self.conn.executescript(str(spec["seed"]))
-        self._seen: list[int] = []
+        self._seen: list[tuple[int, str | None]] = []
+        self._refused: str | None = None
+        self._deadline = 0.0
+        self._rows = self._tables()
         self.conn.set_authorizer(self._authorize)
+        self.conn.set_progress_handler(lambda: int(time.monotonic() > self._deadline), 10_000)
 
-    def _authorize(self, action: int, *_: Any) -> int:
-        self._seen.append(action)
-        return sqlite3.SQLITE_DENY if action in _REFUSED_SQL else sqlite3.SQLITE_OK
+    def _authorize(self, action: int, first: str | None, *_: Any) -> int:
+        self._seen.append((action, first))
+        if action in _REFUSED_SQL:
+            self._refused = _REFUSED_SQL[action]
+        elif action == sqlite3.SQLITE_PRAGMA and first not in _READ_PRAGMAS:
+            self._refused = f"PRAGMA {first}"
+        else:
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
 
     def _tables(self) -> dict[str, list[str]]:
         """Every table's rows, each as canonical JSON, sorted."""
         names = [
             r[0]
             for r in self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "UNION SELECT name FROM sqlite_temp_master WHERE type = 'table'"
             )
+            # `sqlite_` names are SQLite's own. Not LIKE: `_` is its wildcard.
+            if not r[0].startswith("sqlite_")
         ]
         out: dict[str, list[str]] = {}
         for name in sorted(names):
-            cursor = self.conn.execute(f'SELECT * FROM "{name}"')  # noqa: S608 (a schema name)
+            quoted = name.replace('"', '""')
+            cursor = self.conn.execute(f'SELECT * FROM "{quoted}"')  # noqa: S608 (a schema name)
             columns = [d[0] for d in cursor.description]
             out[name] = sorted(
                 json.dumps(dict(zip(columns, row, strict=True)), sort_keys=True, default=str)
@@ -205,18 +250,34 @@ class SqlDatabase:
         if not isinstance(sql, str):
             raise ValueError(f"{self.sql_argument} must be a SQL string")
         params = arguments.get(self.params_argument) if self.params_argument else None
-        before = self._tables()
-        self._seen = []
+        if params is not None and not isinstance(params, list):
+            # sqlite3 would bind a mapping's keys or a string's characters.
+            raise ValueError(f"{self.params_argument} must be a list of values")
+        self._seen, self._refused = [], None
+        self._deadline = time.monotonic() + SQL_SECONDS
         changes = self.conn.total_changes
         try:
-            cursor = self.conn.execute(sql, list(params or []))
+            cursor = self.conn.execute(sql, params or [])
             columns = [d[0] for d in cursor.description or []]
-            rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+            fetched = cursor.fetchmany(SQL_MAX_ROWS + 1)
         except (sqlite3.Error, sqlite3.Warning) as exc:
-            refused = next((_REFUSED_SQL[a] for a in self._seen if a in _REFUSED_SQL), None)
-            why = f"{refused} is not allowed here" if refused else str(exc)
+            late = time.monotonic() > self._deadline
+            why = (
+                f"{self._refused} is not allowed here"
+                if self._refused
+                else f"the statement ran longer than {SQL_SECONDS:g} seconds"
+                if late
+                else str(exc)
+            )
+            self._after_failure()
             raise ValueError(f"SQL error: {why}") from exc
-        wrote = any(a in _WRITE_SQL for a in self._seen)
+        if len(fetched) > SQL_MAX_ROWS:
+            self._after_failure()
+            raise ValueError(f"SQL error: more than {SQL_MAX_ROWS} rows; narrow the query")
+        rows = [dict(zip(columns, row, strict=True)) for row in fetched]
+        written = sorted({str(t) for a, t in self._seen if a in _ROW_WRITES and t is not None})
+        schema = sorted({_SCHEMA_WRITES[a] for a, _ in self._seen if a in _SCHEMA_WRITES})
+        wrote = bool(written or schema)
         fill = {
             "$rows": rows,
             "$changes": self.conn.total_changes - changes,
@@ -225,18 +286,40 @@ class SqlDatabase:
         }
         result = _filled(self.answer, fill)
         if not wrote:
-            return result, {"side_effect": False, "response": f"rows:{_digest(rows)}"}
-        after = self._tables()
-        effect: dict[str, dict[str, Any]] = {
-            table: {
-                "added": [json.loads(r) for r in sorted(set(now) - set(before.get(table, [])))],
-                "removed": [json.loads(r) for r in sorted(set(before.get(table, [])) - set(now))],
-            }
-            for table, now in after.items()
-            if now != before.get(table)
+            # Keyed on the columns too: every empty result is not one read.
+            return result, {"side_effect": False, "response": f"rows:{_digest([columns, rows])}"}
+        return result, {
+            "side_effect": True,
+            "response": None,
+            "effect": self._effect(written, schema),
         }
-        effect |= {t: {"dropped": True} for t in before if t not in after}
-        return result, {"side_effect": True, "response": None, "effect": effect}
+
+    def _after_failure(self) -> None:
+        """A statement that failed part way may still have changed rows."""
+        self._rows = self._tables()
+
+    def _effect(self, written: list[str], schema: list[str]) -> dict[str, Any]:
+        """What a write changed: per table the statement wrote, the rows it
+        added and removed (as multisets, so a second copy of a row counts),
+        and the kinds of schema change it made. A table it wrote without
+        changing a row (an UPDATE that matched nothing) is listed with no
+        rows, so two such writes to different tables are different writes."""
+        before, after = self._rows, self._tables()
+        self._rows = after
+        effect: dict[str, Any] = {}
+        for table in sorted(set(before) | set(after) | {t for t in written if t in after}):
+            was, now = Counter(before.get(table, [])), Counter(after.get(table, []))
+            if table not in written and was == now and table in before and table in after:
+                continue
+            effect[table] = {
+                "added": [json.loads(r) for r in sorted((now - was).elements())],
+                "removed": [json.loads(r) for r in sorted((was - now).elements())],
+            }
+            if table not in after:
+                effect[table]["dropped"] = True
+        if schema:
+            effect["$schema"] = schema
+        return effect
 
 
 def _filled(template: Any, values: dict[str, Any]) -> Any:
@@ -327,9 +410,10 @@ class FixtureTool(Tool):
             raise ValueError(f"invalid arguments for {self.name}: {invalid}")
         try:
             result, record = self.database.run(arguments)
-        except ValueError as exc:
+        except (ValueError, sqlite3.Error) as exc:
+            # Logged whatever failed: a call that left no line reads as never made.
             self._log(arguments, refused | {"invalid_arguments": None, "error": str(exc)})
-            raise
+            raise ValueError(str(exc)) from exc
         self._log(arguments, {"matched": True, "invalid_arguments": None} | record)
         return ToolResult(content=[TextContent(type="text", text=json.dumps(result, default=str))])
 

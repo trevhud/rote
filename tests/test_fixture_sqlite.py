@@ -159,7 +159,10 @@ async def test_a_write_that_matches_no_row_is_still_a_write(tmp_path: Path) -> N
     async with Client(build_server(_spec(), log)) as client:
         await _ask(client, "DELETE FROM reminders WHERE email = 'nobody@x.test'")
     (call,) = _calls(log)
-    assert (call["side_effect"], call["effect"]) == (True, {})
+    assert call["side_effect"] is True
+    # The table it wrote is named even with no row changed, so the same miss
+    # against another table is another write.
+    assert call["effect"] == {"reminders": {"added": [], "removed": []}}
 
 
 @pytest.mark.anyio
@@ -185,6 +188,153 @@ async def test_a_statement_cannot_reach_a_file(sql: str, tmp_path: Path) -> None
         with pytest.raises(ToolError):
             await _ask(client, sql.format(path=target))
     assert not target.exists()
+
+
+async def _effects(tmp_path: Path, *statements: str, seed: str = SEED) -> list[Any]:
+    log = tmp_path / "calls.jsonl"
+    async with Client(build_server(_spec(seed=seed), log)) as client:
+        for sql in statements:
+            await _ask(client, sql)
+    return [c.get("effect") for c in _calls(log)]
+
+
+@pytest.mark.anyio
+async def test_writes_that_change_no_row_are_told_apart_by_what_they_wrote(
+    tmp_path: Path,
+) -> None:
+    """Found by review: every write that left the rows as they were logged
+    the same empty effect, so a miss on one table matched a miss on another."""
+    miss_reminders, miss_people, trigger = await _effects(
+        tmp_path,
+        "DELETE FROM reminders WHERE email = 'nobody@x.test'",
+        "UPDATE people SET cohort = 9 WHERE email = 'nobody@x.test'",
+        "CREATE TRIGGER t AFTER INSERT ON people BEGIN SELECT 1; END",
+    )
+    assert miss_reminders != miss_people
+    assert trigger == {"$schema": ["create_trigger"]}
+
+
+@pytest.mark.anyio
+async def test_a_second_copy_of_a_row_is_a_change(tmp_path: Path) -> None:
+    """Found by review: the diff was a set difference, so inserting or
+    deleting one of two equal rows changed nothing it could see."""
+    seed = "CREATE TABLE d (x); INSERT INTO d VALUES (1);"
+    added, removed = await _effects(
+        tmp_path,
+        "INSERT INTO d VALUES (1)",
+        "DELETE FROM d WHERE rowid = 1",
+        seed=seed,
+    )
+    assert added == {"d": {"added": [{"x": 1}], "removed": []}}
+    assert removed == {"d": {"added": [], "removed": [{"x": 1}]}}
+
+
+@pytest.mark.anyio
+async def test_two_empty_results_are_not_the_same_read(tmp_path: Path) -> None:
+    """Found by review: every statement that returned no rows shared one
+    digest, so an empty read of the wrong table matched the right one. The
+    same columns with no rows is still the same read."""
+    log = tmp_path / "calls.jsonl"
+    async with Client(build_server(_spec(), log)) as client:
+        await _ask(client, "SELECT email FROM people WHERE cohort = 99")
+        await _ask(client, "SELECT stage FROM reminders WHERE stage = 'none'")
+        await _ask(client, "select p.email from people p where 1 = 0")
+    people, reminders, reworded = (call_key(c) for c in _calls(log))
+    assert people != reminders
+    assert people == reworded
+
+
+@pytest.mark.anyio
+async def test_a_table_whose_name_needs_quoting_does_not_break_the_server(tmp_path: Path) -> None:
+    """Found by review: a quote in a table name broke the row dump, and every
+    later call failed without a line in the log."""
+    log = tmp_path / "calls.jsonl"
+    async with Client(build_server(_spec(), log)) as client:
+        await _ask(client, 'CREATE TABLE "q""x" (a)')
+        await _ask(client, 'INSERT INTO "q""x" VALUES (1)')
+        answer = await _ask(client, "SELECT COUNT(*) AS n FROM people")
+    assert answer[0]["results"] == [{"n": 3}]
+    assert _calls(log)[1]["effect"] == {'q"x': {"added": [{"a": 1}], "removed": []}}
+    assert len(_calls(log)) == 3
+
+
+@pytest.mark.anyio
+async def test_a_user_table_named_like_sqlites_own_is_still_seen(tmp_path: Path) -> None:
+    """Found by review: `NOT LIKE 'sqlite_%'` hid `sqlitelog`, since `_` is
+    LIKE's wildcard."""
+    (effect,) = await _effects(
+        tmp_path, "INSERT INTO sqlitelog VALUES (1)", seed="CREATE TABLE sqlitelog (x);"
+    )
+    assert effect == {"sqlitelog": {"added": [{"x": 1}], "removed": []}}
+
+
+@pytest.mark.anyio
+async def test_a_statement_that_never_ends_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: an unbounded recursive query held the server, and
+    every other tool on it, until the trial's own timeout."""
+    from rote.bench import fixture_mcp
+
+    monkeypatch.setattr(fixture_mcp, "SQL_SECONDS", 0.2)
+    log = tmp_path / "calls.jsonl"
+    forever = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c"
+    )
+    async with Client(build_server(_spec(), log)) as client:
+        with pytest.raises(ToolError, match="ran longer than"):
+            await _ask(client, forever)
+        # The server still answers.
+        after = await _ask(client, "SELECT COUNT(*) AS n FROM people")
+    assert after[0]["results"] == [{"n": 3}]
+    assert [c["matched"] for c in _calls(log)] == [False, True]
+
+
+@pytest.mark.anyio
+async def test_a_result_past_the_row_cap_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.bench import fixture_mcp
+
+    monkeypatch.setattr(fixture_mcp, "SQL_MAX_ROWS", 2)
+    async with Client(build_server(_spec(), tmp_path / "calls.jsonl")) as client:
+        assert len((await _ask(client, "SELECT * FROM people LIMIT 2"))[0]["results"]) == 2
+        with pytest.raises(ToolError, match="more than 2 rows"):
+            await _ask(client, "SELECT * FROM people")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("sql", "why"),
+    [
+        ("BEGIN", "a transaction"),
+        ("SAVEPOINT s", "a savepoint"),
+        ("PRAGMA user_version = 5", "PRAGMA user_version"),
+        ("PRAGMA writable_schema = ON", "PRAGMA writable_schema"),
+    ],
+)
+async def test_a_statement_that_changes_state_without_a_row_is_refused(
+    sql: str, why: str, tmp_path: Path
+) -> None:
+    """Found by review: BEGIN opened a real transaction, so a logged write
+    could be rolled back, and a PRAGMA that sets something logged as a read."""
+    async with Client(build_server(_spec(), tmp_path / "calls.jsonl")) as client:
+        with pytest.raises(ToolError, match=f"{why}.* is not allowed here"):
+            await _ask(client, sql)
+        # A PRAGMA that only describes the schema is a read, as a skill uses it.
+        info = await _ask(client, "PRAGMA table_info(reminders)")
+    assert [c["name"] for c in info[0]["results"]] == ["email", "stage", "at"]
+
+
+@pytest.mark.anyio
+async def test_params_that_are_not_a_list_are_refused(tmp_path: Path) -> None:
+    """Found by review: sqlite3 binds a string's characters, so a mistyped
+    params answered with the wrong value instead of an error."""
+    spec = _spec()
+    spec["tools"]["query"]["parameters"]["properties"]["params"] = {}
+    async with Client(build_server(spec, tmp_path / "calls.jsonl")) as client:
+        with pytest.raises(ToolError, match="params must be a list"):
+            await client.call_tool("query", {"sql": "SELECT ?", "params": "z"})
 
 
 def test_a_seed_that_does_not_run_fails_the_server_not_the_first_call(tmp_path: Path) -> None:

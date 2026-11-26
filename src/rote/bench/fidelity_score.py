@@ -407,7 +407,9 @@ def write_arguments(runs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]
     tools: dict[str, set[str]] = {}
     for run in runs:
         for c in run.get("calls", []):
-            if c.get("side_effect"):
+            # A SQL fixture's write is matched on the rows it changed
+            # (`effect_key`), never on its arguments.
+            if c.get("side_effect") and c.get("effect") is None:
                 tools.setdefault(f"{c['server']}.{c['tool']}", set()).update(c["arguments"])
     out: dict[str, dict[str, list[str]]] = {}
     for tool, names in sorted(tools.items()):
