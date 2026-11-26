@@ -19,7 +19,6 @@ import pytest
 
 from rote.plan import build_plan
 from rote.skill_target._driver import (
-    MAX_ANSWER_ATTEMPTS,
     MAX_ARGUMENT_CHARS,
     MAX_BATCHED_DECISIONS,
     MIN_SHARED_INPUT_CHARS,
@@ -181,7 +180,6 @@ def test_a_block_answered_in_parts_is_not_a_failed_attempt(tmp_path: Path) -> No
     # Two parts spent no attempt: the first answer that fails is the first failure.
     bad = _answer(skill, last, {"total": "lots"})
     assert header(bad)["attempt"] == "2"
-    assert MAX_ANSWER_ATTEMPTS > 2
     done = _answer(skill, bad, {"total": 150})
     assert result_of(done) == {"report": {"net": 750}}
 
@@ -315,6 +313,104 @@ def test_a_value_several_steps_read_is_printed_once(tmp_path: Path) -> None:
     assert '--- refunds INPUTS (json) ---\n{"rows":"\u00abrows, above\u00bb"}' in block
     # A short value stays with its step: a marker would save nothing.
     assert '"month":"2026-10"' in block.split("--- sales INPUTS (json) ---\n")[1].split("\n")[0]
+
+
+def test_a_mistyped_step_id_is_named_and_the_valid_part_is_kept(pulse: Path) -> None:
+    block = _start(pulse)
+    again = _answer(pulse, block, {"refunds": {"total": 150}, "slaes": {"total": 900}})
+    assert "- answer: 'slaes' is not a step of this block" in again
+    assert "Recorded: refunds." in again and header(again)["attempt"] == "2"
+    assert set(journal(again)["answers"]) == {"refunds"}
+
+
+def test_an_answer_that_does_not_parse_after_a_part_names_what_is_left(tmp_path: Path) -> None:
+    three = _pipeline(_pull("sales"), _pull("refunds"), _pull("fees"))
+    skill = _skill(tmp_path, three)
+    block = _start(skill)
+    run = header(block)["run"]
+    drive(skill, "answer", run, "fees", json.dumps({"total": 5}))
+    _, again = drive(skill, "answer", run, "refunds", "{not json")
+    fields = header(again)
+    assert (fields["step"], fields["steps"], fields["attempt"]) == ("refunds", "refunds,sales", "2")
+    assert "- not JSON" in again
+    assert "--- sales ANSWER SHAPE (key? = optional) ---" in again
+    assert "answer one step per command" in again
+
+
+def test_two_inputs_of_one_step_are_not_several_steps(tmp_path: Path) -> None:
+    rows = "pipeline.input.rows"
+    two = _pipeline(_pull("sales", {"rows": rows, "again": rows}), _pull("refunds"))
+    two["input"] = {"type": "In", "required": ["month", "rows"]}
+    big = ["x" * MIN_SHARED_INPUT_CHARS]
+    status, block = drive(
+        _skill(tmp_path, two), "start", json.dumps({"month": "2026-10", "rows": big})
+    )
+    assert status == 0, block
+    assert "INPUTS SEVERAL STEPS READ" not in block and "above\u00bb" not in block
+
+
+def _with_gate() -> dict[str, Any]:
+    """sales, refunds (one DO block) -> ask (a gate showing no result of theirs) -> report."""
+    pipeline = _pipeline(_pull("sales"), _pull("refunds"))
+    pipeline["nodes"].insert(
+        2,
+        {
+            "id": "ask",
+            "kind": "hitl_gate",
+            "description": "Ask the manager to confirm the month.",
+            "signal": "confirm",
+            "timeout": "1h",
+            "output": {"ok": "bool"},
+            "inputs": {"month": "pipeline.input.month"},
+            "notify": {"channel": "x", "target": "y", "message_template": "Close {month}?"},
+        },
+    )
+    pipeline["edges"] += [
+        {"from": "sales", "to": "ask"},
+        {"from": "refunds", "to": "ask"},
+        {"from": "ask", "to": "report"},
+    ]
+    return pipeline
+
+
+def test_the_first_print_of_a_block_of_several_asks_the_person_too(tmp_path: Path) -> None:
+    """Only `resume` printed the question: the block a run stops at did not,
+    so the agent never asked and the run stopped again at the gate."""
+    skill = _skill(tmp_path, _with_gate())
+    block = _start(skill)
+    assert header(block)["steps"] == "refunds,sales"
+    assert "--- ALSO ASK THE PERSON (ask) ---" in block
+    assert "--with ask '<their reply as JSON>'" in block
+    _, again = drive(skill, "resume", header(block)["run"])
+    assert again == block
+
+
+def test_answering_in_parts_keeps_the_question_for_the_person(tmp_path: Path) -> None:
+    """The agent asks while it works, and sends the reply with its last part."""
+    skill = _skill(tmp_path, _with_gate())
+    run = header(_start(skill))["run"]
+    _, rest = drive(skill, "answer", run, "sales", json.dumps({"total": 900}))
+    assert header(rest)["step"] == "refunds"
+    assert "--- ALSO ASK THE PERSON (ask) ---" in rest
+    status, done = drive(
+        skill, "answer", run, "refunds", json.dumps({"total": 150}),
+        "--with", "ask", json.dumps({"ok": True}), "--said", "yes, close it",
+    )  # fmt: skip
+    assert status == 0 and header(done)["kind"] == "DONE", done
+    assert journal(done)["answers"]["ask"]["said"] == "yes, close it"
+
+
+def test_a_reply_sent_with_the_first_part_is_not_asked_for_again(tmp_path: Path) -> None:
+    skill = _skill(tmp_path, _with_gate())
+    run = header(_start(skill))["run"]
+    _, rest = drive(
+        skill, "answer", run, "sales", json.dumps({"total": 900}),
+        "--with", "ask", json.dumps({"ok": True}), "--said", "yes",
+    )  # fmt: skip
+    assert header(rest)["step"] == "refunds"
+    assert "ALSO ASK THE PERSON" not in rest and "--with" not in rest
+    _, done = drive(skill, "answer", run, "refunds", json.dumps({"total": 150}))
+    assert header(done)["kind"] == "DONE", done
 
 
 def test_resume_shows_the_same_block(pulse: Path) -> None:

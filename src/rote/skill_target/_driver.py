@@ -525,12 +525,12 @@ def _shared_inputs(
     A wave's steps often read one upstream result. Measured: three DO steps
     each printed the same 13 KB of routings, a 53 KB block the client saved
     to a file for the agent to read back."""
-    seen: dict[str, list[str]] = {}
-    for payload in inputs.values():
+    seen: dict[str, set[str]] = {}
+    for step_id, payload in inputs.items():
         for value in payload.values():
             text = _compact(value)
             if len(text) >= MIN_SHARED_INPUT_CHARS:
-                seen.setdefault(text, []).append(text)
+                seen.setdefault(text, set()).add(step_id)
     names: dict[str, str] = {}
     shared: dict[str, Any] = {}
     out: dict[str, dict[str, Any]] = {}
@@ -1918,7 +1918,7 @@ class Driver:
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
         self._write(path, state)
-        return self._batch_block(path.name, pending)
+        return self._pending_block(path.name, self.by_id[ids[0]], pending)
 
     def _batch_block(self, run: str, pending: dict[str, Any], note: str = "") -> Block:
         ids = pending["steps"]
@@ -1976,7 +1976,7 @@ class Driver:
         state["state"] = "waiting"
         state["attempts"][ids[0]] = 0
         self._write(path, state)
-        return self._do_batch_block(path.name, pending)
+        return self._pending_block(path.name, self.by_id[ids[0]], pending)
 
     def _take_do_batch(
         self, path: Path, state: dict[str, Any], value: Any, errors: list[str], named: str
@@ -2001,9 +2001,17 @@ class Driver:
             if attempts >= MAX_ANSWER_ATTEMPTS:
                 return self._too_many(path, state, first, errors)
             self._write(path, state)
-            return self._reask(path.name, first, attempts + 1, errors, [], {}, "DO")
-        keyed = isinstance(value, dict) and bool(value) and all(k in ids for k in value)
-        if named != first or not keyed:
+            note = "\n".join(
+                [
+                    "Your answer did not validate. Answer again with only these fixed:",
+                    *(f"- {e}" for e in errors),
+                ]
+            )
+            return self._do_rest_block(path.name, pending, note, attempts + 1)
+        # Keyed by step when sent under the block's first id with a step's id
+        # among its keys; a key that is no step is then named, not guessed at.
+        keyed = named == first and isinstance(value, dict) and any(k in ids for k in value)
+        if not keyed:
             value = {named: value}
         problems = [f"- answer: {k!r} is not a step of this block" for k in value if k not in ids]
         left: list[str] = []
@@ -2026,8 +2034,6 @@ class Driver:
         # Some steps answered and nothing wrong with them: the agent is passing
         # a long answer in parts, as the block says to. Not a failed attempt.
         in_parts = bool(kept) and not problems
-        if not kept:
-            problems += [f"- answer: missing {i}" for i in left]
         if in_parts:
             attempts -= 1
         elif attempts >= MAX_ANSWER_ATTEMPTS:
@@ -2041,18 +2047,32 @@ class Driver:
             ]
         )
         inputs = {i: pending["inputs"][i] for i in left}
+        again: dict[str, Any]
         if len(left) == 1:
             again = {"step": left[0], "kind": "do", "inputs": inputs[left[0]]}
         else:
             again = {"step": left[0], "kind": "do_batch", "steps": left, "inputs": inputs}
+        if pending.get("ahead"):
+            # Still unanswered: a reply sent with this command was taken, and
+            # removed from ``pending``, before the answer was read.
+            again["ahead"] = pending["ahead"]
         state["pending"] = again
         state["state"] = "waiting"
         state["attempts"][left[0]] = attempts
         self._write(path, state)
+        return self._do_rest_block(path.name, again, note, None if in_parts else attempts + 1)
+
+    def _do_rest_block(
+        self, run: str, pending: dict[str, Any], note: str, attempt: int | None
+    ) -> Block:
+        """A DO block asked again, in short: the agent has each step's text and
+        inputs from the block before, and three steps reading one large result
+        printed again were 53 KB a time (``resume`` prints the whole block)."""
+        left: list[str] = list(pending.get("steps") or [pending["step"]])
         lines = [
             note,
             "Each step's text and inputs are in the block above "
-            f"({self.command} resume {path.name} prints them again).",
+            f"({self.command} resume {run} prints them again).",
         ]
         for step_id in left:
             lines += [
@@ -2061,11 +2081,14 @@ class Driver:
             ]
         if len(left) > 1:
             lines.append(_KEYED_ANSWER + _compact({i: "<its answer>" for i in left}))
-        lines += self._next_do(path.name, left[0], several=len(left) > 1)
+        lines += self._next_do(run, left[0], several=len(left) > 1)
         extra = [f"steps={','.join(left)}"] if len(left) > 1 else []
-        if not in_parts:
-            extra.append(f"attempt={attempts + 1}")
-        return Block("DO", self._head(path.name, f"step={left[0]}", *extra), lines)
+        if attempt is not None:
+            extra.append(f"attempt={attempt}")
+        block = Block("DO", self._head(run, f"step={left[0]}", *extra), lines)
+        if pending.get("ahead"):
+            self._add_ahead(block, run, left[0], pending["ahead"])
+        return block
 
     def _take_batch(
         self, path: Path, state: dict[str, Any], value: Any, errors: list[str]
