@@ -91,12 +91,13 @@ from rote.adapters._common import (
     STUB_SENTINEL,
     EmitWriter,
     _duration_to_seconds,
-    _execution_waves,
     _pipeline_hash,
     _seconds_literal,
     _to_camel_case,
     _to_pascal_case,
+    emission_waves,
     fan_out_nodes,
+    is_conditional_step,
     judge_override_readme,
     mcp_backed_nodes,
     safe_block_comment_line,
@@ -111,7 +112,9 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     SCHEMA_ERRORS_TS,
+    condition_helper_ts,
     conditional_gate_ts,
+    conditional_step_ts,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -120,7 +123,6 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
-    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -459,7 +461,7 @@ def _emit_fan_out(node: Node, pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> l
 
 def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[str, bool]:
     """Render the workflow function body; returns (body, uses_unwrap)."""
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
     lines: list[str] = []
     uses_unwrap = False
     if pipeline.nodes_by_kind(NodeKind.HITL_GATE):
@@ -472,6 +474,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
+        block_start = len(lines)
 
         # fan_out nodes dispatch once per element of their bound list —
         # they never share the single/parallel payload shapes below.
@@ -553,6 +556,12 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
 
         for node in fanned:
             lines.extend(_emit_fan_out(node, pipeline, cfg))
+
+        if is_conditional_step(wave):
+            block = "\n".join(lines[block_start:]) + "\n"
+            lines[block_start:] = [
+                conditional_step_ts(wave[0], block, "Error", " " * 8).rstrip("\n")
+            ]
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -756,7 +765,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
     if gate_helper := gate_message_helper_ts(pipeline):
         unwrap_block += f"\n{gate_helper.rstrip(chr(10))}\n"
-    if condition_helper := gate_condition_helper_ts(pipeline):
+    if condition_helper := condition_helper_ts(pipeline):
         unwrap_block += f"\n{condition_helper.rstrip(chr(10))}\n"
     impl_input = impl_input_type_block("\n".join([*step_blocks, body]))
     if impl_input:

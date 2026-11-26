@@ -203,7 +203,12 @@ def test_a_conditional_gate_the_run_skipped_needs_no_journal_entry(
     plan = {
         "steps": [
             {"id": "check", "kind": "code"},
-            {"id": "ask_scope", "kind": "gate", "when": {"node": "check", "field": "empty"}},
+            {
+                "id": "ask_scope",
+                "kind": "gate",
+                "node_kind": "hitl_gate",
+                "when": {"node": "check", "field": "empty"},
+            },
             {"id": "approve", "kind": "gate"},
         ]
     }

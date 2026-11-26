@@ -62,10 +62,11 @@ from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
     EmitWriter,
-    _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
+    emission_waves,
     fan_out_nodes,
+    is_conditional_step,
     judge_override_readme,
     refuse_mcp_only_nodes,
     safe_docstring_line,
@@ -78,6 +79,8 @@ from rote.adapters._py_common import (
     async_runner_helper,
     call_impl_helper,
     cli_input_check,
+    condition_helper,
+    conditional_py,
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
@@ -302,7 +305,7 @@ def _has_parallel_wave(pipeline: Pipeline) -> bool:
     ``fan_out`` node (whose per-element calls run on a pool even when it
     is alone in its wave).
     """
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
     return any(len(wave) > 1 for wave in waves) or any(n.fan_out for w in waves for n in w)
 
 
@@ -334,12 +337,13 @@ def _emit_fan_out_call(node: Node, pipeline: Pipeline) -> str:
 
 
 def _emit_pipeline_body(pipeline: Pipeline) -> str:
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
     lines: list[str] = []
 
     for wave_idx, wave in enumerate(waves, start=1):
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
+        block_start = len(lines)
 
         # fan_out nodes dispatch once per element of their bound list —
         # they never share the single/parallel payload shapes below.
@@ -372,6 +376,13 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
 
         for node in fanned:
             lines.append(_emit_fan_out_call(node, pipeline))
+
+        if is_conditional_step(wave):
+            # A failed workflow body is not retried, so a plain raise ends the run.
+            block = "\n".join(lines[block_start:]) + "\n"
+            lines[block_start:] = [
+                conditional_py(wave[0], block, "raise ValueError(_when_error)", "    ").rstrip("\n")
+            ]
 
     lines.append("")
     lines.append("    return {")
@@ -498,6 +509,8 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
 
     if pipeline.needs_input_check:
         serialize_block += "\n\n" + missing_inputs_helper(pipeline)
+    if when_helper := condition_helper(pipeline):
+        serialize_block += "\n\n" + when_helper
 
     node_parts: list[str] = []
     for node in pipeline.nodes:

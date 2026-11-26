@@ -314,26 +314,23 @@ def _resolve(binding: list[Any], run_input: dict[str, Any], results: dict[str, A
     return upstream[fld]
 
 
-def _gate_waits(step: dict[str, Any], results: dict[str, Any]) -> bool | str:
-    """Whether a gate with a ``when`` asks the person, or why it cannot tell.
+def _step_runs(step: Mapping[str, Any], results: Mapping[str, Any]) -> bool | str:
+    """Whether a step with a ``when`` runs (a gate: asks the person), or why
+    it cannot tell.
 
-    The same rule as every workflow runtime's (``_gate_condition_error``):
-    the field must be exactly true or false."""
+    The same rule as every workflow runtime's (``_condition_error``): the
+    field must be exactly true or false."""
     when = step["when"]
-    gate, ref = step["id"], f"{when['node']}.output.{when['field']}"
+    verb = "waits" if step["kind"] == "gate" else "runs"
+    subject = f"{step['node_kind']} {step['id']!r} {verb}"
+    ref = f"{when['node']}.output.{when['field']}"
     result = results.get(when["node"])
     if not isinstance(result, dict) or when["field"] not in result:
-        return (
-            f"hitl_gate {gate!r} waits only when {ref} is true, "
-            f"but that result has no {when['field']!r}"
-        )
+        return f"{subject} only when {ref} is true, but that result has no {when['field']!r}"
     value = result[when["field"]]
     if isinstance(value, bool):
         return value
-    return (
-        f"hitl_gate {gate!r} waits only when {ref} is true, and it is "
-        f"{type(value).__name__}, not true or false"
-    )
+    return f"{subject} only when {ref} is true, and it is {type(value).__name__}, not true or false"
 
 
 def _payload(
@@ -479,6 +476,9 @@ def decision_run(
         if step["id"] in done or step["id"] in taken or not _joins(step):
             continue
         wave = int(step["wave"])
+        if step.get("when") and wave != int(first["wave"]):
+            # Whether it runs is known only once the run reaches its wave.
+            continue
         if all(s["id"] in done or s["id"] in taken for s in steps if int(s["wave"]) < wave):
             run.append(step)
             taken.add(step["id"])
@@ -598,9 +598,9 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
     then the first step left in the wave stops the run, with the decisions
     :func:`decision_run` asks beside it. Each stop is ``{"block", "steps"}``,
     with ``ahead`` naming a gate the same block asks (:func:`gate_ahead`).
-    A fanned judge's items may take several blocks, and a gate with ``when``
-    may be skipped, so each is marked (``fanned``, ``conditional``) rather
-    than guessed. ``helper_judges``: the inference helper answers judges in
+    A fanned judge's items may take several blocks, and a block whose every
+    step has a ``when`` may never be printed, so each is marked (``fanned``,
+    ``conditional``) rather than guessed. ``helper_judges``: the inference helper answers judges in
     code, so they never stop the run.
     """
     in_code = {"call", "mcp", "skip"} | ({"judge"} if helper_judges else set())
@@ -631,7 +631,8 @@ def stops(steps: Sequence[Mapping[str, Any]], helper_judges: bool = False) -> li
         }
         if ask.get("fan_param") is not None:
             stop["fanned"] = True
-        if ask["kind"] == "gate" and ask.get("when"):
+        if all(s.get("when") for s in run):
+            # Every step may be skipped, so the stop itself may not happen.
             stop["conditional"] = True
         if ask["kind"] in ("judge", "do"):
             ahead = gate_ahead(steps, run, done)
@@ -1482,6 +1483,27 @@ class Driver:
         in_code = ("call", "mcp", "judge") if self.helper_judges else ("call", "mcp")
         for wave in sorted({int(s["wave"]) for s in self.steps}):
             in_wave = [s for s in self.steps if int(s["wave"]) == wave]
+            for step in in_wave:
+                if step["id"] in results or not step.get("when"):
+                    continue
+                runs = _step_runs(step, results)
+                if isinstance(runs, str):
+                    with self._locked(path):
+                        state = self._read(path)
+                        state["state"] = "error"
+                        state["error"] = runs
+                        self._write(path, state)
+                    return self._error(
+                        path.name,
+                        f"{runs}.",
+                        "recompile the skill (rote compile)",
+                        step=step["id"],
+                    )
+                if not runs:
+                    # Skipped: its result is null. Nothing is written, so a
+                    # resumed run derives the skip again from the result it
+                    # depends on, and no file can stand in for it.
+                    results[step["id"]] = None
             runnable = [s for s in in_wave if s["kind"] in in_code and s["id"] not in results]
             if runnable:
                 with self._locked(path):
@@ -1497,26 +1519,6 @@ class Driver:
             for step in in_wave:
                 if step["id"] in results:
                     continue
-                if step["kind"] == "gate" and step.get("when"):
-                    waits = _gate_waits(step, results)
-                    if isinstance(waits, str):
-                        with self._locked(path):
-                            state = self._read(path)
-                            state["state"] = "error"
-                            state["error"] = waits
-                            self._write(path, state)
-                        return self._error(
-                            path.name,
-                            f"{waits}.",
-                            "recompile the skill (rote compile)",
-                            step=step["id"],
-                        )
-                    if not waits:
-                        # Skipped: its result is null. Nothing is written, so
-                        # a resumed run derives the skip again from the
-                        # result it depends on, and no file can stand in for it.
-                        results[step["id"]] = None
-                        continue
                 if step["kind"] == "loop":
                     return self._ask_loop(path, step, results)
                 if step["kind"] == "judge":
@@ -2157,11 +2159,11 @@ class Driver:
         return None
 
     def _with_skips(self, results: dict[str, Any]) -> dict[str, Any]:
-        """``results`` with each skipped conditional gate as null, derived
+        """``results`` with each skipped conditional step as null, derived
         again as :meth:`_run_forward` derives it: a skip writes no file."""
         for step in self.steps:
-            conditional = step["kind"] == "gate" and step.get("when")
-            if conditional and step["id"] not in results and _gate_waits(step, results) is False:
+            conditional = step.get("when") and step["id"] not in results
+            if conditional and _step_runs(step, results) is False:
                 results[step["id"]] = None
         return results
 

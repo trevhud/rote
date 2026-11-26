@@ -969,35 +969,51 @@ class Node(BaseModel):
     when: str | None = Field(
         default=None,
         description=(
-            "hitl_gate only: `<node_id>.output.<field>`, a true-or-false value an "
-            "earlier node computes. The gate waits for the person only when it is "
-            "true. When it is false the gate is skipped and its result is null, so "
-            "a node that reads the gate binds it whole (`<gate>.output`) and "
-            "handles null. Any other value fails the run naming the gate."
+            "`<node_id>.output.<field>`, a true-or-false value an earlier node "
+            "computes. The node runs (a gate waits for the person) only when it is "
+            "true. When it is false the node is skipped and its result is null, so "
+            "a node that reads it binds it whole (`<node>.output`) and handles "
+            "null. Any other value fails the run naming the node. Not allowed on a "
+            "mandatory node or a loop_body sub-node."
         ),
     )
 
     @model_validator(mode="after")
     def _validate_when(self) -> Self:
-        """``when`` is a gate's, and names one field of an earlier node's result.
+        """``when`` names one field of an earlier node's result, and a
+        mandatory node has none.
 
         A skill that asks the person only when something holds ("ask who
         owns the meeting if that is ambiguous") compiled to a gate that
-        waited on every run (#309). The field is emitted as an expression
-        on every runtime, so its grammar is the ``inputs:`` one (invariant
-        #7), narrowed to a node's field: the pipeline input is not a
-        condition a step computes."""
+        waited on every run (#309), and a step it does only when something
+        holds ("post to the channel if chat is connected") compiled to a
+        step every run had to do. The field is emitted as an expression on
+        every runtime, so its grammar is the ``inputs:`` one (invariant #7),
+        narrowed to a node's field: the pipeline input is not a condition a
+        step computes. A mandatory node is the skill's "always do this", so
+        it never carries a condition (invariant #4)."""
         if self.when is None:
             return self
-        if self.kind is not NodeKind.HITL_GATE:
-            raise ValueError(f"Node {self.id!r}: when is only allowed on hitl_gate nodes")
+        if self.mandatory:
+            raise ValueError(
+                f"Node {self.id!r}: a mandatory node runs on every run, so it cannot "
+                "have when. Drop one of the two"
+            )
         ref = parse_input_ref(self.when)
         if ref.node_id is None or ref.field is None:
             raise ValueError(
-                f"hitl_gate {self.id!r}: when {self.when!r} must name one field of an "
+                f"{self.kind.value} {self.id!r}: when {self.when!r} must name one field of an "
                 f"earlier node's result, `<node_id>.output.<field>`, holding true or false"
             )
         return self
+
+    @property
+    def condition_subject(self) -> str:
+        """How a run's error names this node's ``when``: ``hitl_gate 'ask' waits``,
+        ``external_call 'post' runs``. One phrase for every runtime, so the same
+        broken condition reads the same wherever it fails."""
+        verb = "waits" if self.kind is NodeKind.HITL_GATE else "runs"
+        return f"{self.kind.value} {self.id!r} {verb}"
 
     @model_validator(mode="after")
     def _validate_constant_units(self) -> Self:
@@ -1517,17 +1533,17 @@ class Pipeline(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_gate_conditions(self) -> Self:
-        """A gate's ``when`` reads a boolean that exists before the gate runs,
-        and nothing reads a field of a gate that may be skipped.
+    def _validate_conditions(self) -> Self:
+        """A node's ``when`` reads a boolean that exists before the node runs,
+        and nothing reads a field of a node that may be skipped.
 
-        The condition is evaluated where the gate would wait, so its node must
+        The condition is evaluated where the node would run, so its source must
         finish in an earlier wave (the reachability rule for ``inputs:``). Its
-        field must be one the node declares, and a declared type must be a
+        field must be one the source declares, and a declared type must be a
         boolean: a count or a list would be "truthy" in one language and an
-        error in another. A skipped gate's result is null, so a reader of one
+        error in another. A skipped node's result is null, so a reader of one
         of its fields would fail on every run that skipped it; readers bind the
-        gate whole, a judge's schema must admit null for it, and a fan_out
+        node whole, a judge's schema must admit null for it, and a fan_out
         cannot dispatch over it."""
         waves = self.execution_waves()
         wave_of = {n.id: i for i, wave in enumerate(waves) for n in wave}
@@ -1540,24 +1556,24 @@ class Pipeline(BaseModel):
                 continue
             ref = parse_input_ref(gate.when)
             assert ref.node_id is not None and ref.field is not None
-            head = f"hitl_gate {gate.id!r} when {gate.when!r}"
+            head = f"{gate.kind.value} {gate.id!r} when {gate.when!r}"
             source = by_id.get(ref.node_id)
             if source is None:
                 errors.append(f"{head}: there is no node {ref.node_id!r}")
                 continue
             if source.id in owned or gate.id in owned:
                 errors.append(
-                    f"{head}: a loop_body sub-node binds no top-level result, so a gate "
+                    f"{head}: a loop_body sub-node binds no top-level result, so a "
                     "condition cannot be read from one or set on one"
                 )
                 continue
             if wave_of[source.id] >= wave_of[gate.id]:
                 errors.append(
-                    f"{head}: {source.id!r} does not run before the gate. Add an edge from "
+                    f"{head}: {source.id!r} does not run before {gate.id!r}. Add an edge from "
                     f"{source.id!r} to {gate.id!r} (directly or through other nodes)"
                 )
             if source.id in conditional:
-                errors.append(f"{head}: {source.id!r} is a gate that may be skipped")
+                errors.append(f"{head}: {source.id!r} is a node that may be skipped")
                 continue
             if source.fan_out:
                 errors.append(
@@ -1575,7 +1591,7 @@ class Pipeline(BaseModel):
                 )
             elif declared_type is not None and declared_type != "boolean":
                 errors.append(
-                    f"{head}: {source.id}.{ref.field} is declared {declared_type!r}. A gate "
+                    f"{head}: {source.id}.{ref.field} is declared {declared_type!r}. A "
                     "condition must be true or false; compute a boolean field for it"
                 )
         for node in self.nodes:
@@ -1588,18 +1604,18 @@ class Pipeline(BaseModel):
                 where = f"Node {node.id!r} input {param!r} reads {raw!r}"
                 if ref.field is not None:
                     errors.append(
-                        f"{where}, a field of a gate that may be skipped (it has when:). "
-                        f"A skipped gate's result is null, so bind it whole "
+                        f"{where}, a field of a node that may be skipped (it has when:). "
+                        f"A skipped node's result is null, so bind it whole "
                         f"(`{ref.node_id}.output`) and handle null"
                     )
                 elif node.fan_out and param == _fan_element_or_none(node, self):
                     errors.append(
-                        f"{where}: a fan_out cannot dispatch over a gate that may be "
-                        "skipped, since a skipped gate's result is null"
+                        f"{where}: a fan_out cannot dispatch over a node that may be "
+                        "skipped, since a skipped node's result is null"
                     )
                 elif not _judge_property_admits_null(node, param):
                     errors.append(
-                        f"{where}, a gate that may be skipped, but its input schema "
+                        f"{where}, a node that may be skipped, but its input schema "
                         f"property {param!r} does not admit null. Add null to its type"
                     )
         if errors:
@@ -1607,8 +1623,8 @@ class Pipeline(BaseModel):
         return self
 
     @property
-    def conditional_gates(self) -> frozenset[str]:
-        """The ids of the gates with a ``when``: each may be skipped, with a null result."""
+    def conditional_nodes(self) -> frozenset[str]:
+        """The ids of the nodes with a ``when``: each may be skipped, with a null result."""
         return frozenset(n.id for n in self.nodes if n.when is not None)
 
     def execution_waves(self) -> list[list[Node]]:

@@ -861,17 +861,17 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
 """
 
 
-GATE_CONDITION_HELPER_TS = """\
-/** Why a gate with a `when` cannot tell whether to wait, or null.
+CONDITION_HELPER_TS = """\
+/** Why a node with a `when` cannot tell whether to run, or null.
  *
  * The condition must be exactly true or false: a count or a list would be
  * truthy here and an error on another runtime, so anything else stops the
- * run naming the gate and the reference. The Python runtimes emit the same
- * check (`_gate_condition_error`). */
-function gateConditionError(
+ * run naming the node (`subject`) and the reference. The Python runtimes
+ * emit the same check (`_condition_error`). */
+function conditionError(
     result: unknown,
     field: string,
-    gate: string,
+    subject: string,
     ref: string,
 ): string | null {
     if (
@@ -880,27 +880,51 @@ function gateConditionError(
         Array.isArray(result) ||
         !Object.prototype.hasOwnProperty.call(result, field)
     ) {
-        return (
-            `hitl_gate '${gate}' waits only when ${ref} is true, ` +
-            `but that result has no '${field}'`
-        );
+        return `${subject} only when ${ref} is true, but that result has no '${field}'`;
     }
     const value = (result as Record<string, unknown>)[field];
     if (typeof value === "boolean") {
         return null;
     }
     const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-    return (
-        `hitl_gate '${gate}' waits only when ${ref} is true, ` +
-        `and it is ${kind}, not true or false`
-    );
+    return `${subject} only when ${ref} is true, and it is ${kind}, not true or false`;
 }
 """
 
 
-def gate_condition_helper_ts(pipeline: Pipeline) -> str:
-    """:data:`GATE_CONDITION_HELPER_TS` when a gate has a ``when``, else ""."""
-    return GATE_CONDITION_HELPER_TS if pipeline.conditional_gates else ""
+def condition_helper_ts(pipeline: Pipeline) -> str:
+    """:data:`CONDITION_HELPER_TS` when a node has a ``when``, else ""."""
+    return CONDITION_HELPER_TS if pipeline.conditional_nodes else ""
+
+
+def _condition_check_ts(node: Node, error_class: str, indent: str) -> tuple[str, str]:
+    """The lines that refuse a condition that is not true or false, and the
+    expression that is true when ``node`` runs."""
+    assert node.when is not None
+    ref = parse_input_ref(node.when)
+    assert ref.node_id is not None and ref.field is not None
+    result, field = f"{ref.node_id}_result", json.dumps(ref.field)
+    does = "asks the person" if node.kind is NodeKind.HITL_GATE else "runs"
+    check = (
+        f"{indent}// {node.id} {does} only when {node.when} is true;\n"
+        f"{indent}// otherwise it is skipped and its result is null.\n"
+        f"{indent}const {node.id}_whenError = conditionError(\n"
+        f"{indent}    {result}, {field}, {json.dumps(node.condition_subject)}, "
+        f"{json.dumps(node.when)},\n"
+        f"{indent});\n"
+        f"{indent}if ({node.id}_whenError !== null) {{\n"
+        f"{indent}    throw new {error_class}({node.id}_whenError);\n"
+        f"{indent}}}\n"
+    )
+    # Indexed plainly, as ref_to_ts_expr does: `as Record<...>` fails tsc
+    # (TS2352) when the step returns an interface.
+    return check, f"{result}[{field}] === true"
+
+
+def _nested_ts(block: str) -> str:
+    return "".join(
+        f"    {line}" if line.strip() else line for line in block.splitlines(keepends=True)
+    )
 
 
 def conditional_gate_ts(node: Node, wait_block: str, error_class: str, indent: str) -> str:
@@ -911,30 +935,38 @@ def conditional_gate_ts(node: Node, wait_block: str, error_class: str, indent: s
     the run without a retry (Inngest's retries are function-level)."""
     if node.when is None:
         return wait_block
-    ref = parse_input_ref(node.when)
-    assert ref.node_id is not None and ref.field is not None
     binding = f"{indent}const {node.id}_result = "
     assert wait_block.count(binding) == 1, node.id
     body = wait_block.replace(binding, f"{indent}{node.id}_result = ")
-    nested = "".join(
-        f"    {line}" if line.strip() else line for line in body.splitlines(keepends=True)
-    )
-    result, field = f"{ref.node_id}_result", json.dumps(ref.field)
+    check, runs = _condition_check_ts(node, error_class, indent)
     return (
-        f"{indent}// {node.id} asks the person only when {node.when} is true;\n"
-        f"{indent}// otherwise it is skipped and its result is null.\n"
-        f"{indent}const {node.id}_whenError = gateConditionError(\n"
-        f"{indent}    {result}, {field}, {json.dumps(node.id)}, {json.dumps(node.when)},\n"
-        f"{indent});\n"
-        f"{indent}if ({node.id}_whenError !== null) {{\n"
-        f"{indent}    throw new {error_class}({node.id}_whenError);\n"
-        f"{indent}}}\n"
+        f"{check}"
         f"{indent}let {node.id}_result: Record<string, unknown> | null = null;\n"
-        # Indexed plainly, as ref_to_ts_expr does: `as Record<...>` fails tsc
-        # (TS2352) when the step returns an interface.
-        f"{indent}if ({result}[{field}] === true) {{\n"
-        f"{nested}"
+        f"{indent}if ({runs}) {{\n"
+        f"{_nested_ts(body)}"
         f"{indent}}}\n"
+    )
+
+
+def conditional_step_ts(node: Node, block: str, error_class: str, indent: str) -> str:
+    """``block`` (a step's single-node call) run only when ``node.when`` is
+    true, with its result null otherwise.
+
+    The block runs inside an async function that returns its own
+    ``<id>_result``, so the outer result's type is inferred as the step's
+    type or null. Declaring it up front would need the step's type by name,
+    and a ``Record<string, unknown>`` annotation refuses an interface-typed
+    result (the ``step.do`` cast trap)."""
+    assert f"const {node.id}_result = " in block, node.id
+    check, runs = _condition_check_ts(node, error_class, indent)
+    return (
+        f"{check}"
+        f"{indent}const {node.id}_result = {runs}\n"
+        f"{indent}    ? await (async () => {{\n"
+        f"{_nested_ts(_nested_ts(block))}"
+        f"{indent}        return {node.id}_result;\n"
+        f"{indent}    }})()\n"
+        f"{indent}    : null;\n"
     )
 
 

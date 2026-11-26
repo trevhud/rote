@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
+from rote.adapters._common import _execution_waves
 from rote.adapters.temporal import (
     TemporalAdapter,
     TemporalAdapterConfig,
-    _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
     emit_workflow,

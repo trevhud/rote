@@ -9,6 +9,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `when:` works on any node, not only a gate. A step with
+  `when: <node>.output.<field>` runs only when that boolean is true; when it
+  is false the step is skipped and its result is null, which a later node
+  reads whole. Any other value fails the run naming the step. All six
+  workflow runtimes and the compiled skill honor it: a skipped DO step is
+  never handed to the agent, and a skipped code step never runs. A mandatory
+  node cannot have `when:`. The compiler does not write it for steps yet;
+  a hand-edited or agent-written `pipeline.yaml` can.
+
 ### Changed
 
 - A compiled skill's DO block of several steps can be answered one step per

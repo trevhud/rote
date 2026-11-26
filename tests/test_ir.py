@@ -1351,7 +1351,7 @@ def _conditional(**changes: Any) -> dict[str, Any]:
 
 def test_a_conditional_gate_loads_and_is_listed() -> None:
     pipeline = Pipeline.model_validate(_conditional())
-    assert pipeline.conditional_gates == frozenset({"ask_owner"})
+    assert pipeline.conditional_nodes == frozenset({"ask_owner"})
     assert pipeline.node_by_id("ask_owner").when == "detect_owner.output.ambiguous"
 
 
@@ -1360,11 +1360,10 @@ def test_a_conditional_gate_loads_and_is_listed() -> None:
     [
         ({"ask_owner__when": "pipeline.input.notes"}, "must name one field of an earlier node"),
         ({"ask_owner__when": "detect_owner.output"}, "must name one field of an earlier node"),
-        ({"recap__when": "detect_owner.output.ambiguous"}, "only allowed on hitl_gate"),
         ({"ask_owner__when": "nobody.output.ambiguous"}, "there is no node 'nobody'"),
         ({"ask_owner__when": "detect_owner.output.missing"}, "declares only output keys"),
         ({"ask_owner__when": "detect_owner.output.candidates"}, "is declared 'list'"),
-        ({"ask_owner__when": "recap.output.asked"}, "does not run before the gate"),
+        ({"ask_owner__when": "recap.output.asked"}, "does not run before 'ask_owner'"),
         # A reader of a field of a gate that may be skipped would fail on every skip.
         ({"recap__inputs": {"owner": "ask_owner.output.owner"}}, "bind it whole"),
     ],
@@ -1378,7 +1377,7 @@ def test_a_gate_condition_that_cannot_work_is_refused(
 
 def test_a_fan_out_cannot_dispatch_over_a_gate_that_may_be_skipped() -> None:
     raw = _conditional(recap__fan_out=True)
-    with pytest.raises(ValueError, match="a fan_out cannot dispatch over a gate"):
+    with pytest.raises(ValueError, match="a fan_out cannot dispatch over a node"):
         Pipeline.model_validate(raw)
 
 
@@ -1412,7 +1411,7 @@ def test_a_condition_on_a_node_that_states_no_type_is_left_to_the_run() -> None:
     """Nothing declared, nothing to check: the run's own rule (exactly true or
     false) decides, never a guess here."""
     pipeline = Pipeline.model_validate(_conditional(detect_owner__output=None))
-    assert pipeline.conditional_gates == {"ask_owner"}
+    assert pipeline.conditional_nodes == {"ask_owner"}
 
 
 def test_a_gate_condition_cannot_read_a_fan_out_result() -> None:
@@ -1436,3 +1435,87 @@ def test_a_fan_out_may_share_a_conditional_gate_across_its_elements() -> None:
     raw["edges"].append({"from": "detect_owner", "to": "recap", "fan_out": True})
     pipeline = Pipeline.model_validate(raw)
     assert pipeline.node_by_id("recap").fan_out
+
+
+# ───────── when: on any node, a step that runs only when its condition holds ─────────
+
+
+def _conditional_step(**changes: Any) -> dict[str, Any]:
+    from tests.test_conditional_step_parity import PIPELINE
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    nodes = {n["id"]: n for n in raw["nodes"]}
+    for path, value in changes.items():
+        node_id, field = path.split("__")
+        nodes[node_id][field] = value
+    return raw
+
+
+def test_conditional_steps_load_and_are_listed() -> None:
+    pipeline = Pipeline.model_validate(_conditional_step())
+    assert pipeline.conditional_nodes == frozenset({"post", "ping"})
+    assert pipeline.node_by_id("post").condition_subject == "pure_function 'post' runs"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        # Invariant #4: the skill's "always do this" never carries a condition.
+        ({"post__mandatory": True}, "a mandatory node runs on every run"),
+        ({"post__when": "pipeline.input.flag"}, "must name one field of an earlier node"),
+        ({"post__when": "check.output"}, "must name one field of an earlier node"),
+        ({"post__when": "check.output.channel"}, "is declared 'str'"),
+        ({"post__when": "recap.output.text"}, "does not run before 'post'"),
+        # A condition cannot hang on a step that may itself be skipped.
+        ({"draft__when": "post.output.posted_to"}, "is a node that may be skipped"),
+        # A reader of a field of a step that may be skipped would fail on every skip.
+        ({"recap__inputs": {"text": "post.output.posted_to"}}, "bind it whole"),
+    ],
+)
+def test_a_step_condition_that_cannot_work_is_refused(
+    changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        Pipeline.model_validate(_conditional_step(**changes))
+
+
+def test_a_loop_body_sub_node_cannot_be_conditional() -> None:
+    """The loop's agent decides whether to call a sub-node, and it binds no
+    top-level result a condition could skip."""
+    raw = _conditional_step()
+    raw["nodes"].append(
+        {
+            "id": "loop",
+            "kind": "agent_loop",
+            "description": "Work the list.",
+            "tools": ["search"],
+            "loop_body": ["post"],
+            "inputs": {"text": "draft.output.text"},
+        }
+    )
+    recap = next(n for n in raw["nodes"] if n["id"] == "recap")
+    del recap["inputs"]["post"]
+    raw["edges"] = [e for e in raw["edges"] if "post" not in (e["from"], e["to"])]
+    raw["edges"] += [{"from": "draft", "to": "loop"}, {"from": "loop", "to": "recap"}]
+    with pytest.raises(ValueError, match="a loop_body sub-node binds no top-level result"):
+        Pipeline.model_validate(raw)
+
+
+def test_a_conditional_step_leaves_its_wave_only_at_emission() -> None:
+    """The IR's waves are the graph's; the emitters' put each conditional
+    step after the wave it shared, alone. The unconditional step stays."""
+    from rote.adapters._common import emission_waves
+
+    pipeline = Pipeline.model_validate(_conditional_step())
+    assert [sorted(n.id for n in w) for w in pipeline.execution_waves()] == [
+        ["check"],
+        ["draft", "ping", "post"],
+        ["recap"],
+    ]
+    assert [sorted(n.id for n in w) for w in emission_waves(pipeline)] == [
+        ["check"],
+        ["draft"],
+        ["ping"],
+        ["post"],
+        ["recap"],
+    ]
