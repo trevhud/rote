@@ -121,6 +121,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["output_schema"] = dict(n.output_schema)
         if n.mandatory:
             node["mandatory"] = True
+        if n.when:
+            node["when"] = n.when
         if n.fan_out:
             node["fan_out"] = True
         if n.constants:
@@ -153,8 +155,6 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
-            if n.when:
-                node["when"] = n.when
             if n.message:
                 # No channel or target: the skill names none, and the runtime
                 # that reaches the person (the compiled skill's agent) needs none.
