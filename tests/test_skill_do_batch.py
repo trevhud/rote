@@ -154,7 +154,9 @@ def test_a_do_block_says_how_to_pass_a_long_answer(pulse: Path) -> None:
     assert "no heredoc, no other command" in how
     assert f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: " in how
     assert "answer one step per command, with that step's id in the command" in how
-    assert "--file" not in how
+    # The file form comes last, for one step's answer that is still too long.
+    assert how.index("answer one step per command") < how.index("pass --file <path> instead.")
+    assert "If one step's answer is still that long, write the JSON to a file" in how
     assert command.startswith("rote skill run pulse answer ")
     assert command.rstrip().endswith("'<your JSON>'")
 

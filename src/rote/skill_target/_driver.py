@@ -882,14 +882,17 @@ class Driver:
         way: a client's allow rule for this command matches neither. The
         argument has a ceiling of its own (:data:`MAX_ARGUMENT_CHARS`), so a
         block of ``several`` steps says to answer one step per command, and
-        a single step names the file form for that case only."""
-        limit = f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: "
-        long = limit + (
+        the file form is named for an answer that is still too long: one
+        measured step's own answer was 10,952 characters, and was denied."""
+        by_file = (
+            "write the JSON to a file in the current directory and pass --file <path> instead."
+        )
+        long = f"Past about {MAX_ARGUMENT_CHARS:,} characters the command is refused: " + (
             "if your JSON would be longer, answer one step per command, with that step's id in "
-            "the command and its answer alone as the JSON. You are asked for the rest."
+            "the command and its answer alone as the JSON. You are asked for the rest. If one "
+            f"step's answer is still that long, {by_file}"
             if several
-            else "only then, write the JSON to a file in the current directory and pass "
-            "--file <path> instead."
+            else f"only then, {by_file}"
         )
         return [
             "Pass your JSON as the one single-quoted argument of the command below. Only that "
