@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compiled skill's DO block of several steps can be answered one step per
+  command, and says to do so when the answer would pass about 8,000
+  characters. Claude Code stops approving `rote skill run <name> *` near
+  10,000 characters, so a long answer was denied: on a routing skill with
+  three DO steps, one of three runs finished. Now three of three do. A large
+  input several steps of the block read is printed once (53 KB to 27 KB on
+  that skill), and a block asked again prints only what is still wanted.
+
 - `rote bench --fidelity` counts a breakdown written as a map. One compile
   writes open rows per site as records (`[{"site": "EAST1", "open": 2}]`)
   and the next as `{"EAST1": 2}`; the scorer saw only the records, so the

@@ -21,8 +21,8 @@ from rote.plan import build_plan
 from rote.skill_target._driver import (
     MAX_ANSWER_ATTEMPTS,
     MAX_ARGUMENT_CHARS,
-    MIN_SHARED_INPUT_CHARS,
     MAX_BATCHED_DECISIONS,
+    MIN_SHARED_INPUT_CHARS,
     stops,
 )
 from tests._skill_driver import drive, header, journal, make_skill, result_of
