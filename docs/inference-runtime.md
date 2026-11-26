@@ -210,6 +210,16 @@ Three reasons it cannot be more than that, in order of weight:
 3. Cloudflare Workers has no subprocess at all, so the provider cannot
    be universal regardless.
 
+### The subscription lane shows the model the account's email
+
+Claude Code puts the logged-in account's email address in every `claude -p`
+child's context, and none of the isolation flags rote passes removes it
+(measured 2026-11-22, #365). So a skill run, a judge or an agent loop on
+`claude-cli` can read it, and a skill's text could pass it out as a tool
+argument to a server the run is allowed to call. It is an address, not a
+credential. For a third-party skill run against a server you do not control,
+use the `api` provider, which does not go through Claude Code.
+
 ### The refusal belongs to `deploy`, not `emit`
 
 An earlier draft of this document put it at emit time, by analogy with
