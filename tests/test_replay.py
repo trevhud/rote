@@ -250,10 +250,33 @@ def test_the_report_compares_proposed_writes_and_labels_replay_timing(tmp_path: 
         "compiled": type("Sum", (), {"trials": (trial("compiled", (other,), ("x",)),)})(),
     }
     report = type("R", (), {"subject": subject, "sides": sides})()
-    lines = skill_ab._replay_lines(report)  # type: ignore[arg-type]
-    assert "not live service latency" in lines[0]
-    assert "proposed writes differ (original 1, compiled 1; none sent)" in lines[1]
-    assert lines[2] == '  - original: notes.write_note {"name": "b"}'
+    lines = skill_ab._write_lines(report)  # type: ignore[arg-type]
+    assert "proposed writes differ (original 1, compiled 1; none sent)" in lines[0]
+    assert lines[1] == '  - original: notes.write_note {"name": "b"}'
+
+    # A SQL fixture's writes are compared by the rows they changed, on any
+    # case: two wordings of one change agree, and a different row does not.
+    row = {"reminders": {"added": [{"email": "bo@x.test"}], "removed": []}}
+    sql = {"server": "db", "tool": "query", "answered": True, "effect": row}
+    one = {**sql, "arguments": {"sql": "INSERT INTO reminders VALUES ('bo@x.test')"}}
+    two = {**sql, "arguments": {"sql": "insert into reminders values (?)", "params": ["bo@x.test"]}}
+    far = {**two, "effect": {"reminders": {"added": [{"email": "cy@x.test"}], "removed": []}}}
+    plain = type("S", (), {"label": "reminders/seeded", "replay": False})()
+
+    def lines_for(compiled: dict[str, Any]) -> list[str]:
+        pair = {
+            "original": type("Sum", (), {"trials": (trial("original", (one,)),)})(),
+            "compiled": type("Sum", (), {"trials": (trial("compiled", (compiled,)),)})(),
+        }
+        return skill_ab._write_lines(type("R", (), {"subject": plain, "sides": pair})())  # type: ignore[arg-type]
+
+    assert lines_for(two) == [
+        "- reminders/seeded pair 1: proposed writes agree "
+        "(original 1, compiled 1; fixture database only)"
+    ]
+    differ = lines_for(far)
+    assert "proposed writes differ" in differ[0]
+    assert '"cy@x.test"' in differ[2] and "insert into" not in differ[2]
     assert sides["compiled"].trials[0].problems == ("incomplete: x",)
 
 
@@ -325,11 +348,11 @@ def test_a_retried_write_agrees_on_what_but_not_how_often(tmp_path: Path) -> Non
         "original": type("Sum", (), {"trials": (trial("original", (w,)),)})(),
         "compiled": type("Sum", (), {"trials": (trial("compiled", (w, w, w, w)),)})(),
     }
-    lines = skill_ab._replay_lines(type("R", (), {"subject": subject, "sides": sides})())  # type: ignore[arg-type]
+    lines = skill_ab._write_lines(type("R", (), {"subject": subject, "sides": sides})())  # type: ignore[arg-type]
     assert (
-        "proposed writes agree on what to write, not how often (original 1, compiled 4" in lines[1]
+        "proposed writes agree on what to write, not how often (original 1, compiled 4" in lines[0]
     )
-    assert lines[3] == '  - compiled: notes.write_note {"name": "d"} x4'
+    assert lines[2] == '  - compiled: notes.write_note {"name": "d"} x4'
 
 
 @pytest.mark.asyncio
