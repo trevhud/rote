@@ -1030,29 +1030,42 @@ def _check_run_outputs(answer: dict[str, Any]) -> list[str]:
     exits = [n for n in nodes if n.get("id") not in read]
     named = {str(k) for k in answer.get("run_outputs") or []}
     listing = listing_nodes(list(answer.get("nodes") or []))
+
     # The keys the skeleton renders, not the ones the model named: a tool
     # call's result is the server's own, whatever `outputs` says. A roster
     # skill's compile ended on four raw query results and no word of who was
     # added, and its agent went through the run folder to find out.
-    returned = {k for n in exits for k in result_keys(n, listing, named) or []}
-    tools = [
-        str(n.get("id"))
-        for n in exits
-        if n.get("kind") == "external_call" and system_of(n).get("how") == "declared_tool"
-    ]
-    hint = (
-        f". A tool call ({', '.join(tools)}) returns the server's own answer, never a key "
-        "named here: add a final pure_function that reads the steps that know and returns it"
-        if tools
-        else ""
-    )
-    return [
-        f"run output {key!r} is not returned by an exit node (exit nodes: "
-        f"{[n.get('id') for n in exits]}); add it to an exit node's outputs, or add a final "
-        f"node that reads its producer and returns it{hint}"
-        for key in answer.get("run_outputs") or []
-        if str(key) not in returned
-    ]
+    def is_tool(n: Mapping[str, Any]) -> bool:
+        return n.get("kind") == "external_call" and system_of(n).get("how") == "declared_tool"
+
+    def keys(n: Mapping[str, Any]) -> list[str]:
+        if n.get("fan_out_over") and not is_tool(n):
+            # Its result is the list of per-element results, each holding
+            # the keys it names: the run does return them.
+            return [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
+        return result_keys(n, listing, named) or []
+
+    returned = {k for n in exits for k in keys(n)}
+    out = []
+    for key in answer.get("run_outputs") or []:
+        if str(key) in returned:
+            continue
+        # Only the tool calls that named this key: another exit node that
+        # merely forgot it needs the key added, not a new node.
+        tools = [str(n.get("id")) for n in exits if is_tool(n) and key in (n.get("outputs") or [])]
+        hint = (
+            f". {', '.join(tools)} is a tool call, which returns the server's own answer, "
+            "never a key named here: add a final pure_function that reads the steps that "
+            "know and returns it"
+            if tools
+            else ""
+        )
+        out.append(
+            f"run output {key!r} is not returned by an exit node (exit nodes: "
+            f"{[n.get('id') for n in exits]}); add it to an exit node's outputs, or add a "
+            f"final node that reads its producer and returns it{hint}"
+        )
+    return out
 
 
 def _gates_nothing_waits_for(nodes: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
