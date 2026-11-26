@@ -2217,24 +2217,63 @@ values; touch either converter and run it.
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
 
-### A gate with `when:` is skipped with a null result, on every runtime
+### A node with `when:` is skipped with a null result, on every runtime
 
 A skill that asks the person only when something holds compiled to a gate
-that waited on every run (#309). `Node.when` (hitl_gate only) names
-`<node>.output.<field>`, a boolean an earlier node computes. Rules to keep:
+that waited on every run (#309), and a step it does only when something
+holds ("post it if chat is connected") compiled to a step every run had to
+do. `Node.when` names `<node>.output.<field>`, a boolean an earlier node
+computes. It is allowed on every kind, never on a mandatory node (invariant
+#4: `mandatory` is the skill's "always do this") and never on a loop_body
+sub-node. Rules to keep:
+
+- **A conditional step leaves its wave at emission, not in the IR.**
+  `adapters._common.emission_waves` puts each step with a `when` in a wave
+  of its own, right after the wave it shared, so every emitter wraps its
+  single-node block (`conditional_py`, `conditional_step_ts`) and none needs
+  a conditional variant of `gather` or `Promise.all`. The wave's other nodes
+  stay parallel. A wave that loses a step gives up its gates too, to a wave
+  after the step: emitters run a wave's gates last, and a step that waits on
+  no gate must not sit behind a person's answer. `Pipeline.execution_waves()` is unchanged: validation, the
+  plan and the driver read the real graph.
+- **In TS the wrapped block runs in an async function that returns its own
+  result**, so the outer `const <id>_result` is inferred as the step's type
+  or null. Declaring it up front needs the step's type by name, and
+  `Record<string, unknown> | null` (what a gate uses, whose payload is a
+  record) refuses an interface-typed result. The block's own declaration is
+  `const`, or `let` where a step may park (Cloudflare's MCP-bound steps and
+  agent loops): the wrapper must accept both, or that emit dies on an assert. The negative half of
+  `tests/test_conditional_step_parity_ts_e2e.py` reads a field through the
+  null and requires TS18047: a result typed away to `any` would compile.
+- **The compiled skill decides every skip of a wave before the wave's code
+  runs and before a block is printed** (`_driver._run_forward`,
+  `_step_runs`), so a skipped DO step is never handed to the agent and
+  `do_run` batches only the steps that run. A judge with a `when` in a later
+  wave never joins an earlier DECIDE block (`decision_run`): its condition
+  may be the first decision's answer. `stops` marks a block `conditional`
+  only when every step in it may be skipped, which is what lets the
+  scorecard leave that stop out of its low estimate.
+- **The prefix run decides a skip before it binds the step's inputs**
+  (`_prefix_runner.run`), as every runtime does. A step that runs only when
+  X often reads a field that exists only when X; bound first, a correct
+  pipeline went back to the agent as `prefix_binding_failed`.
+- **One error text.** `Node.condition_subject` (`hitl_gate 'x' waits`,
+  `external_call 'x' runs`) is spliced into the one helper each language
+  emits (`_condition_error`, `conditionError`), and the driver and prefix
+  runner build the same phrase from the plan.
 
 - **Exactly true or false.** Every runtime refuses any other value naming
-  the gate (`_gate_condition_error` in `_py_common`, `gateConditionError`
-  in `_ts_common`, `_gate_waits` in the skill driver and the prefix
+  the gate (`_condition_error` in `_py_common`, `conditionError`
+  in `_ts_common`, `_step_runs` in the skill driver and the prefix
   runner). Truthiness differs between Python and JS, so never "simplify"
   to `if value:`. Temporal raises it non-retryable and Inngest as
   `NonRetriableError`, like the missing-input check.
 - **A skipped gate's result is null, so readers bind it whole.** The IR
   refuses a read of `<gate>.output.<field>` on a conditional gate, a
   fan_out over one, and a judge input schema that does not admit null for
-  it (`Pipeline._validate_gate_conditions`). That is what lets every
+  it (`Pipeline._validate_conditions`). That is what lets every
   emitter leave reference rendering alone: only the wait is wrapped
-  (`conditional_gate_py`, `conditional_gate_ts`, which declares the
+  (`conditional_py`, `conditional_gate_ts`, which declares the
   result `let <id>_result: Record<string, unknown> | null` before the
   branch).
 - **The compiled skill writes nothing for a skip.** The driver derives it
@@ -2254,7 +2293,9 @@ that waited on every run (#309). `Node.when` (hitl_gate only) names
   fails tsc when the step returns an interface (the `step.do` cast trap).
 
 `tests/test_conditional_gate_parity*.py` runs all five workflow runtimes
-live (true, false, and a string), plus tsc on interface-typed steps.
+live (true, false, and a string), plus tsc on interface-typed steps, and
+`tests/test_conditional_step_parity*.py` runs all six for a step (two
+conditional steps, one a fan_out, in a wave with an unconditional one).
 
 ### Optional pipeline inputs are left out; required ones fail on entry
 

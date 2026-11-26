@@ -2121,7 +2121,7 @@ def test_a_conditional_gate_asks_only_when_its_key_is_true(skill: Any) -> None:
     assert {"from": "render_digest", "to": "approve_digest"} in doc["edges"]
     # The node after the gate reads it whole, so a skipped gate's null reaches it.
     assert by_id["send_digest"]["inputs"]["approve_digest"] == "approve_digest.output"
-    assert Pipeline.model_validate(doc).conditional_gates == {"approve_digest"}
+    assert Pipeline.model_validate(doc).conditional_nodes == {"approve_digest"}
 
 
 @pytest.mark.parametrize(

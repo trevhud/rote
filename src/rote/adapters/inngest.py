@@ -103,10 +103,11 @@ from rote.adapters._common import (
     DEFAULT_OPENAI_MODEL,
     STUB_SENTINEL,
     EmitWriter,
-    _execution_waves,
     _pipeline_hash,
     _to_camel_case,
+    emission_waves,
     fan_out_nodes,
+    is_conditional_step,
     mcp_backed_nodes,
     safe_block_comment_line,
 )
@@ -120,7 +121,9 @@ from rote.adapters._ts_common import (
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     SCHEMA_ERRORS_TS,
+    condition_helper_ts,
     conditional_gate_ts,
+    conditional_step_ts,
     constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
@@ -129,7 +132,6 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
-    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -675,7 +677,7 @@ def _hitl_wait_block(node: Node, pipeline: Pipeline) -> str:
 
 def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapterConfig) -> str:
     """Render the createFunction handler body (waves + return)."""
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
     lines: list[str] = []
 
     # Bind the trigger event's data once when any top-level node's
@@ -699,6 +701,7 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
+        block_start = len(lines)
 
         # fan_out nodes dispatch once per element of their bound list —
         # they never share the single/parallel payload shapes below.
@@ -741,6 +744,12 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
             if comment:
                 lines.append(comment.rstrip("\n"))
             lines.extend(_fan_out_lines(node, pipeline, cfg))
+
+        if is_conditional_step(wave):
+            block = "\n".join(lines[block_start:]) + "\n"
+            lines[block_start:] = [
+                conditional_step_ts(wave[0], block, "NonRetriableError", " " * 8).rstrip("\n")
+            ]
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -861,7 +870,7 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
     if gate_helper := gate_message_helper_ts(pipeline):
         sections.append(gate_helper.rstrip("\n"))
-    if condition_helper := gate_condition_helper_ts(pipeline):
+    if condition_helper := condition_helper_ts(pipeline):
         sections.append(condition_helper.rstrip("\n"))
     impl_input = impl_input_type_block(function_block)
     if impl_input:

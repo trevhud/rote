@@ -253,48 +253,50 @@ def gate_message_helper(pipeline: Pipeline) -> str:
     return GATE_MESSAGE_HELPER_PY if needed else ""
 
 
-_GATE_CONDITION_HELPER_PY = '''\
-def _gate_condition_error(result: object, field: str, gate: str, ref: str) -> str | None:
-    """Why a gate with a ``when`` cannot tell whether to wait, or None.
+_CONDITION_HELPER_PY = '''\
+def _condition_error(result: object, field: str, subject: str, ref: str) -> str | None:
+    """Why a node with a ``when`` cannot tell whether to run, or None.
 
     The condition must be exactly true or false: a count or a list would be
     "truthy" here and an error on another runtime, so anything else stops
-    the run naming the gate and the reference."""
+    the run naming the node (``subject``) and the reference."""
     if not isinstance(result, dict) or field not in result:
-        return f"hitl_gate {gate!r} waits only when {ref} is true, but that result has no {field!r}"
+        return f"{subject} only when {ref} is true, but that result has no {field!r}"
     value = result[field]
     if isinstance(value, bool):
         return None
     return (
-        f"hitl_gate {gate!r} waits only when {ref} is true, and it is "
+        f"{subject} only when {ref} is true, and it is "
         f"{type(value).__name__}, not true or false"
     )
 '''
 
 
-def gate_condition_helper(pipeline: Pipeline) -> str:
-    """:data:`_GATE_CONDITION_HELPER_PY` when a gate has a ``when``, else ""."""
-    return _GATE_CONDITION_HELPER_PY if pipeline.conditional_gates else ""
+def condition_helper(pipeline: Pipeline) -> str:
+    """:data:`_CONDITION_HELPER_PY` when a node has a ``when``, else ""."""
+    return _CONDITION_HELPER_PY if pipeline.conditional_nodes else ""
 
 
-def conditional_gate_py(node: Node, wait_block: str, raise_stmt: str, indent: str) -> str:
-    """``wait_block`` (the gate's wait, at ``indent``) run only when ``node.when``
-    is true, with the gate's result None otherwise. A gate with no ``when``
-    gets its block unchanged. ``raise_stmt`` raises ``_when_error`` the way
-    the runtime fails without a retry."""
+def conditional_py(node: Node, block: str, raise_stmt: str, indent: str) -> str:
+    """``block`` (the node's call or a gate's wait, at ``indent``) run only when
+    ``node.when`` is true, with the node's result None otherwise. A node with
+    no ``when`` gets its block unchanged. ``raise_stmt`` raises ``_when_error``
+    the way the runtime fails without a retry."""
     if node.when is None:
-        return wait_block
+        return block
     ref = parse_input_ref(node.when)
     assert ref.node_id is not None and ref.field is not None
     result, field = f"{ref.node_id}_result", json.dumps(ref.field)
     nested = "".join(
-        f"    {line}" if line.strip() else line for line in wait_block.splitlines(keepends=True)
+        f"    {line}" if line.strip() else line for line in block.splitlines(keepends=True)
     )
+    does = "asks the person" if node.kind is NodeKind.HITL_GATE else "runs"
     return (
-        f"{indent}# {node.id} asks the person only when {node.when} is true;\n"
+        f"{indent}# {node.id} {does} only when {node.when} is true;\n"
         f"{indent}# otherwise it is skipped and its result is None.\n"
-        f"{indent}_when_error = _gate_condition_error(\n"
-        f"{indent}    {result}, {field}, {json.dumps(node.id)}, {json.dumps(node.when)}\n"
+        f"{indent}_when_error = _condition_error(\n"
+        f"{indent}    {result}, {field}, {json.dumps(node.condition_subject)}, "
+        f"{json.dumps(node.when)}\n"
         f"{indent})\n"
         f"{indent}if _when_error is not None:\n"
         f"{indent}    {raise_stmt}\n"

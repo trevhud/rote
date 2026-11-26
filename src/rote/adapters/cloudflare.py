@@ -39,12 +39,13 @@ from rote.adapters._common import (
     STUB_SENTINEL,
     EmitResult,
     EmitWriter,
-    _execution_waves,
     _pipeline_hash,
     _to_camel_case,
     effort_env_vars,
+    emission_waves,
     escape_invisible,
     fan_out_nodes,
+    is_conditional_step,
     mcp_backed_nodes,
     override_env_vars,
     pipeline_identity,
@@ -67,7 +68,9 @@ from rote.adapters._ts_common import (
     SCHEMA_ERRORS_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
+    condition_helper_ts,
     conditional_gate_ts,
+    conditional_step_ts,
     constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
@@ -75,7 +78,6 @@ from rote.adapters._ts_common import (
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
-    gate_condition_helper_ts,
     gate_message_helper_ts,
     gate_report_ts,
     impl_input_type_block,
@@ -507,7 +509,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     cfg = cfg or CloudflareAdapterConfig()
     class_name = workflow_class_name(pipeline)
     pipeline_h = _pipeline_hash(pipeline)
-    waves = _execution_waves(pipeline)
+    waves = emission_waves(pipeline)
     mcp_backed = bool(mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend))
     # Anything that can park on an auth failure needs the helpers and the
     # NonRetryableError import — an agent loop's tools are MCP tools.
@@ -681,6 +683,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
 
     for wave_idx, wave in enumerate(waves, start=1):
         body_lines.append(f"        // ─── Wave {wave_idx} ───")
+        block_start = len(body_lines)
 
         # A wave's members have no dependency on each other, so they may
         # run in any order or concurrently. Two shapes stay sequential:
@@ -720,6 +723,12 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         for node in fanned_parkable:
             body_lines.append(_emit_fan_out_parkable(node, cfg, pipeline=pipeline))
 
+        if is_conditional_step(wave):
+            block = "\n".join(body_lines[block_start:]) + "\n"
+            body_lines[block_start:] = [
+                conditional_step_ts(wave[0], block, "Error", " " * 8).rstrip("\n")
+            ]
+
         for node in gates:
             body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
 
@@ -744,7 +753,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
     if gate_helper := gate_message_helper_ts(pipeline):
         helper_block += f"{gate_helper}\n"
-    if condition_helper := gate_condition_helper_ts(pipeline):
+    if condition_helper := condition_helper_ts(pipeline):
         helper_block += f"{condition_helper}\n"
     impl_input = impl_input_type_block(class_block)
     if impl_input:
