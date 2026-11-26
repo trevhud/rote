@@ -53,7 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -942,4 +942,32 @@ def run_stops(
             )
         ),
     )
+    return stops(plan["steps"], helper_judges=judges == "helper")
+
+
+def planned_stops(
+    pipeline: Pipeline,
+    *,
+    judges: JudgeMode = "session",
+    backend: Literal["mcp", "api"] = "mcp",
+    code: Collection[str] = (),
+) -> list[dict[str, Any]]:
+    """The blocks a run would stop at, from a skeleton no module is written for yet.
+
+    :func:`run_stops` reads the shipped modules to tell agent work from code.
+    Before generation there are none, so the caller says which external calls
+    the compile will write as ``code``; every other call with no tool the
+    backend calls is the agent's (a DO block), as it is when left a stub. On
+    the ``api`` backend every call is code: that compile writes each one as a
+    researched vendor call.
+    Raises :class:`rote.plan.PlanError` like :func:`run_stops`.
+    """
+    from rote.plan import build_plan
+    from rote.skill_target._driver import stops
+
+    unbacked = implementations(pipeline, backend, lambda _module, _nodes: "")
+    status: dict[str, str] = {
+        node: "implemented" if backend == "api" or node in code else "stub" for node in unbacked
+    }
+    plan = build_plan(pipeline, mcp="live", backend=backend, judges=judges, implementations=status)
     return stops(plan["steps"], helper_judges=judges == "helper")

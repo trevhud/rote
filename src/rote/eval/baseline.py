@@ -894,19 +894,26 @@ def load_observations(baseline_dir: str | Path) -> list[ObservedToolCall]:
     return [ObservedToolCall(**entry) for entry in raw]
 
 
-def recorded_runs(out_dir: Path) -> list[dict[str, Any]]:
+def recorded_runs(out_dir: Path, skill_dir: Path | None = None) -> list[dict[str, Any]]:
     """The run records a baseline saved under ``out_dir``, or none.
 
     What ``rote eval <out_dir>`` sizes the agent side from, so a scorecard
-    written later agrees with the one the compile wrote.
+    written later agrees with the one the compile wrote. With ``skill_dir``,
+    only a baseline of that skill: an ``--out`` dir used again for another
+    skill still holds the first one's runs.
     """
     path = out_dir / BASELINE_DIRNAME / METRICS_FILENAME
     if not path.is_file():
         return []
     try:
-        runs = json.loads(path.read_text(encoding="utf-8")).get("runs")
+        metrics = json.loads(path.read_text(encoding="utf-8"))
+        runs = metrics.get("runs")
     except (json.JSONDecodeError, AttributeError):
         return []
+    if skill_dir is not None:
+        recorded = metrics.get("skill_dir")
+        if not recorded or Path(str(recorded)).resolve() != skill_dir.resolve():
+            return []
     return [r for r in runs or [] if isinstance(r, dict)]
 
 
