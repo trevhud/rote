@@ -36,17 +36,42 @@ equal judges there; the one skill where they differ is the one above.
 A human gate is not counted: the original skill stops for the person too.
 Judges answered by the inference helper (``--judges helper``) are API calls,
 not round trips, so they are not counted either.
+
+When the compile measured the skill itself (``--baseline``), the count is
+not used: :func:`predict` prices the plan as a conversation
+(``estimate_compiled_skill``) and compares that with the measured run. The
+count cannot see a skill that is already cheap. Predicted low against the
+measured run, with what a paired eval then measured (2026-11-24):
+
+==================  =========  ========  =====  ==========================
+skill               predicted  measured  ratio  compiled, in the eval
+==================  =========  ========  =====  ==========================
+expense-audit       65k        114k      0.6    82k, cheaper
+ops-report          82k        62k       1.3    70k to 76k, even cost
+route-lead          93k        34k       2.7    138k to 179k, 2.5x cost
+inventory-planner   116k       44k       2.6    not run
+==================  =========  ========  =====  ==========================
+
+The compile stops above ``MAX_TOKEN_RATIO``. The line sits between the
+skill that came out even (and gained fixed code for its rules) and the two
+that lost outright. Each eval figure fell inside the predicted range or within
+about 20% of it, so its error does not confuse 1.3 with 2.6.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 #: The most model stops a compiled skill may have and still be compiled
 #: by default. The table above puts the line between 2 and 4.
 MAX_MODEL_STOPS = 2
+
+#: The most a compiled run may be predicted to cost, as a multiple of the
+#: skill's measured run, and still be compiled by default (table above).
+MAX_TOKEN_RATIO = 1.5
 
 
 @dataclass(frozen=True)
@@ -84,3 +109,98 @@ def worth(nodes: Iterable[Any], judges: str | None) -> Worth:
 def _kind(node: Any) -> str:
     kind = node.kind
     return str(getattr(kind, "value", kind))
+
+
+@dataclass(frozen=True)
+class Prediction:
+    """A compiled run's predicted tokens beside the skill's own measured run."""
+
+    #: Every token one compiled run would use, low to high.
+    compiled: tuple[float, float]
+    #: Every token the median measured run of the skill used.
+    measured: float
+    runs: int
+    requests: tuple[float, float]
+    measured_turns: float
+
+    @property
+    def pays_off(self) -> bool:
+        return self.compiled[0] <= self.measured * MAX_TOKEN_RATIO
+
+    def summary(self) -> str:
+        low, high = self.compiled
+        return (
+            f"a compiled run is predicted at {_k(low)} to {_k(high)} tokens "
+            f"({self.requests[0]:.0f} to {self.requests[1]:.0f} requests); the skill's own "
+            f"measured run used {_k(self.measured)} in {self.measured_turns:.0f} turns "
+            f"({self.runs} baseline run(s))"
+        )
+
+    def explain(self) -> str:
+        return (
+            f"compiling this skill would not pay off: {self.summary()}. A compiled skill "
+            "re-reads the conversation at every stop, so a skill that is already this cheap "
+            "costs more compiled; keep it as a skill. Pass --compile-anyway to compile it "
+            "regardless"
+        )
+
+
+def _k(tokens: float) -> str:
+    return f"{tokens / 1000:.0f}k"
+
+
+def predict(
+    pipeline_yaml: Path,
+    runs: Sequence[Mapping[str, Any]],
+    *,
+    judges: str | None,
+    backend: Literal["mcp", "api"],
+    code: Collection[str],
+) -> Prediction | None:
+    """Price the skeleton at ``pipeline_yaml`` as a compiled skill against the
+    skill's measured ``runs`` (``measured_run_record`` dicts).
+
+    None when no run counts or the skill runtime cannot run the plan: the
+    caller falls back to counting stops. ``code`` names the external calls
+    generation writes as code (:func:`rote.adapters.skill.planned_stops`).
+    Nothing here makes a call: tokens are counted by the character heuristic.
+    """
+    from rote.adapters.skill import planned_stops
+    from rote.eval.estimate import (
+        estimate_compiled_skill,
+        estimate_pipeline,
+        median_measured_run,
+        run_total_tokens,
+        total_tokens,
+    )
+    from rote.eval.priors import Priors
+    from rote.eval.tokens import HeuristicTokenCounter
+    from rote.ir import load_pipeline
+    from rote.plan import PlanError
+
+    picked = median_measured_run(runs)
+    if picked is None:
+        return None
+    run, usable = picked
+    pipeline = load_pipeline(pipeline_yaml)
+    try:
+        stops = planned_stops(
+            pipeline,
+            judges="helper" if judges == "helper" else "session",
+            backend=backend,
+            code=code,
+        )
+    except PlanError:
+        return None
+    priors = Priors()
+    estimate = estimate_compiled_skill(
+        stops, estimate_pipeline(pipeline, HeuristicTokenCounter(priors), priors), priors
+    )
+    total = total_tokens(estimate)
+    return Prediction(
+        compiled=(total.low, total.high),
+        measured=run_total_tokens(run),
+        runs=len(usable),
+        requests=(estimate.turns.low, estimate.turns.high),
+        measured_turns=float(run["turns"]),
+    )

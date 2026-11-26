@@ -1210,6 +1210,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
     try:
         from rote.eval.baseline import BASELINE_DIRNAME as _PROBE_BASELINE_DIRNAME
+        from rote.eval.baseline import recorded_runs
 
         result = asyncio.run(
             compiler.compile(
@@ -1221,6 +1222,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 # reads during compilation — observed MCP traffic + schemas.
                 probe_dir=out_dir / _PROBE_BASELINE_DIRNAME,
                 sample_input=args.sample_input,
+                # What the skill costs as written: this compile's baseline,
+                # or one `rote baseline --out` saved here.
+                measured_runs=recorded_runs(out_dir),
             )
         )
     except CompilerError as e:

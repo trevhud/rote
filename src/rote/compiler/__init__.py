@@ -31,7 +31,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -469,8 +469,14 @@ class Compiler:
         extra_instructions: str | None = None,
         probe_dir: Path | str | None = None,
         sample_input: Path | str | None = None,
+        measured_runs: Sequence[Mapping[str, Any]] = (),
     ) -> CompilationResult:
         """Run the full compilation flow.
+
+        ``measured_runs`` are the skill's own baseline runs
+        (``measured_run_record`` dicts). A skill-runtime compile whose plan is
+        predicted to cost more than they did stops before generation
+        (:mod:`rote.compiler.worth`).
 
         Parameters
         ----------
@@ -532,7 +538,13 @@ class Compiler:
             except ValueError as e:
                 raise CompilerError(str(e)) from e
             return await self._compile_inner(
-                skill_dir, output_dir, update, extra_instructions, resolved_probe_dir, sample
+                skill_dir,
+                output_dir,
+                update,
+                extra_instructions,
+                resolved_probe_dir,
+                sample,
+                measured_runs,
             )
         except CompilerError as e:
             self._emit("error", f"compilation failed: {e}")
@@ -546,6 +558,7 @@ class Compiler:
         extra_instructions: str | None = None,
         probe_dir: Path | None = None,
         sample: Sample | None = None,
+        measured_runs: Sequence[Mapping[str, Any]] = (),
     ) -> CompilationResult:
         """The compilation body, bracketed by ``compile``'s error event."""
         self._refuse_api_backend_on_typescript()
@@ -727,7 +740,7 @@ class Compiler:
                     grounding.unlisted[server] = "no step uses its tools"
                     self._emit("log", f"tool schemas: not using {server!r}: no step uses it")
                 grounding.tools.update(adopted)
-                self._refuse_if_not_worth_it(s1_plan)
+                self._refuse_if_not_worth_it(s1_plan, work_dir, measured_runs)
                 st = s1_plan.structure
                 if st is not None:
                     cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
@@ -1178,21 +1191,56 @@ class Compiler:
 
         return run
 
-    def _refuse_if_not_worth_it(self, plan: system1.Plan) -> None:
-        """Stop a skill-runtime compile whose plan stops for the model too
-        often to pay off, before generation spends anything more. Only the
-        structure pass (cents) has run; its cost is in the error."""
-        from rote.compiler.worth import worth
+    def _refuse_if_not_worth_it(
+        self,
+        plan: system1.Plan,
+        work_dir: Path | None = None,
+        measured_runs: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
+        """Stop a skill-runtime compile that would not pay off, before
+        generation spends anything more. Only the structure pass (cents) has
+        run; its cost is in the error.
+
+        With the skill's own ``measured_runs``, the skeleton in ``work_dir`` is
+        priced as a conversation and compared with them. Without, the plan's
+        model stops are counted."""
+        from rote.compiler.system1.generate import LOCAL_FILE_HOWS
+        from rote.compiler.worth import predict, worth
 
         target = self.emit_target
         if target is None or target.runtime != "skill" or self.compile_anyway:
             return
-        verdict = worth(plan.nodes, target.judges)
-        if verdict.pays_off:
-            return
         st = plan.structure
         spent = "" if st is None or st.cost_usd is None else f" (spent so far: ${st.cost_usd:.4f})"
-        raise CompilerError(verdict.explain() + spent)
+        prediction = None
+        if work_dir is not None and measured_runs:
+            # A step that only saves a local file is written as code.
+            code = {
+                n.id
+                for n in plan.nodes
+                if n.mcp is None
+                and any(
+                    d.field == "system"
+                    and isinstance(d.value, dict)
+                    and d.value.get("how") in LOCAL_FILE_HOWS
+                    for d in n.decisions
+                )
+            }
+            prediction = predict(
+                work_dir / "pipeline.yaml",
+                measured_runs,
+                judges=target.judges,
+                backend="api" if target.external_backend == "api" else "mcp",
+                code=code,
+            )
+        if prediction is not None:
+            if not prediction.pays_off:
+                raise CompilerError(prediction.explain() + spent)
+            self._emit("log", f"worth compiling: {prediction.summary()}")
+            return
+        verdict = worth(plan.nodes, target.judges)
+        if not verdict.pays_off:
+            raise CompilerError(verdict.explain() + spent)
 
     async def _tool_schemas(
         self,
