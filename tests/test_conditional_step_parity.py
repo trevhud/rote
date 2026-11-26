@@ -225,3 +225,99 @@ def test_dbos_runs_a_step_only_when_its_condition_holds(case: str, tmp_path: Pat
         park_watch=watch_factory(False),
     )
     check(case, run)
+
+
+def _with_step(step: dict[str, Any], *, gate: bool = False) -> Pipeline:
+    """``check`` and one conditional ``post`` of another kind, optionally
+    beside a gate in ``post``'s wave."""
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    nodes = [n for n in raw["nodes"] if n["id"] == "check"]
+    nodes.append({"id": "post", "description": "Post it.", "when": "check.output.connected"} | step)
+    edges = [{"from": "check", "to": "post"}]
+    if gate:
+        nodes.append(
+            {
+                "id": "approve",
+                "kind": "hitl_gate",
+                "description": "Approve the channel.",
+                "signal": "approved",
+                "inputs": {"channel": "check.output.channel"},
+                "notify": {"message_template": "Post to {channel}?"},
+            }
+        )
+        edges.append({"from": "check", "to": "approve"})
+    return Pipeline.model_validate(
+        raw | {"nodes": nodes, "edges": edges, "exit_nodes": [n["id"] for n in nodes[1:]]}
+    )
+
+
+_MCP_STEP = {
+    "kind": "external_call",
+    "mcp": {"server": "chat", "tool": "post_message"},
+    "inputs": {"channel": "check.output.channel"},
+}
+_LOOP_STEP = {
+    "kind": "agent_loop",
+    "tools": ["search"],
+    "inputs": {"channel": "check.output.channel"},
+}
+
+_WORKFLOW_FILE = {
+    "cloudflare": "src/workflow.ts",
+    "dbos": "main.py",
+    "dbos-ts": "src/main.ts",
+    "inngest": "src/inngest/pipeline.ts",
+    "python": "main.py",
+    "temporal": "workflow.py",
+}
+
+
+@pytest.mark.parametrize(
+    ("runtime", "step"),
+    [
+        *((r, "mcp") for r in ("cloudflare", "dbos", "dbos-ts", "inngest")),
+        *((r, "loop") for r in sorted(_WORKFLOW_FILE)),
+    ],
+)
+def test_a_conditional_tool_call_or_agent_loop_emits_behind_its_condition(
+    runtime: str, step: str, tmp_path: Path
+) -> None:
+    """Found by review: Cloudflare declares a step that may park with ``let``,
+    and the wrapper insisted on ``const``, so any conditional MCP step or
+    agent loop failed the emit with a bare AssertionError."""
+    pipeline = _with_step(_MCP_STEP if step == "mcp" else _LOOP_STEP)
+    get_adapter(runtime).emit(pipeline, tmp_path)
+    text = (tmp_path / _WORKFLOW_FILE[runtime]).read_text(encoding="utf-8")
+    helper = (
+        "conditionError("
+        if runtime in ("cloudflare", "dbos-ts", "inngest")
+        else "_condition_error("
+    )
+    body = text[text.index("Wave 1") :]
+    assert body.index(helper) < body.index("post_result")
+
+
+def test_a_gate_in_the_wave_waits_after_the_conditional_step() -> None:
+    """Found by review: every emitter runs a wave's gates last, so a step
+    that left the wave ran after the gate and sat behind a person's answer
+    it does not read. The gate moves with it; a wave with no conditional step
+    is untouched."""
+    from rote.adapters._common import emission_waves
+
+    waves = [[n.id for n in w] for w in emission_waves(_with_step(_LOOP_STEP, gate=True))]
+    assert waves == [["check"], ["post"], ["approve"]]
+    plain = Pipeline.model_validate(
+        _with_step(_LOOP_STEP, gate=True).model_dump(mode="json", by_alias=True, exclude_none=True)
+        | {
+            "nodes": [
+                n if n["id"] != "post" else {k: v for k, v in n.items() if k != "when"}
+                for n in _with_step(_LOOP_STEP, gate=True).model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                )["nodes"]
+            ]
+        }
+    )
+    assert [sorted(n.id for n in w) for w in emission_waves(plain)] == [
+        ["check"],
+        ["approve", "post"],
+    ]

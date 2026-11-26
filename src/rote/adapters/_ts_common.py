@@ -956,8 +956,12 @@ def conditional_step_ts(node: Node, block: str, error_class: str, indent: str) -
     ``<id>_result``, so the outer result's type is inferred as the step's
     type or null. Declaring it up front would need the step's type by name,
     and a ``Record<string, unknown>`` annotation refuses an interface-typed
-    result (the ``step.do`` cast trap)."""
-    assert f"const {node.id}_result = " in block, node.id
+    result (the ``step.do`` cast trap). The block declares the result with
+    ``const``, or with ``let`` where a step may park (Cloudflare's MCP-bound
+    steps and agent loops)."""
+    # A parkable step declares `let <id>_result!: T` and assigns it later; the
+    # function returns that binding all the same.
+    assert re.search(rf"\b(const|let) {node.id}_result\b", block), node.id
     check, runs = _condition_check_ts(node, error_class, indent)
     return (
         f"{check}"

@@ -166,3 +166,19 @@ def test_a_reader_that_does_not_admit_null_fails_tsc(runtime: str, tmp_path: Pat
     tsc = _tsc(app)
     assert tsc.returncode != 0
     assert "TS18047" in tsc.stdout, tsc.stdout
+
+
+@pytest.mark.parametrize("step", ["mcp", "loop"])
+@pytest.mark.parametrize("runtime", ["cloudflare", "dbos-ts", "inngest"])
+def test_a_conditional_tool_call_or_agent_loop_compiles(
+    runtime: str, step: str, tmp_path: Path
+) -> None:
+    """Cloudflare declares a step that may park with ``let`` and assigns it
+    later; the wrapped block still has to type as the step's result or null."""
+    from tests.test_conditional_step_parity import _LOOP_STEP, _MCP_STEP, _with_step
+
+    app = tmp_path / runtime
+    get_adapter(runtime).emit(_with_step(_MCP_STEP if step == "mcp" else _LOOP_STEP), app)
+    (app / "src" / "extracted" / "check.ts").write_text(_IMPLS["check"], encoding="utf-8")
+    tsc = _tsc(app)
+    assert tsc.returncode == 0, tsc.stdout

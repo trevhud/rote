@@ -259,16 +259,20 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             }
             continue
         try:
+            if when is not None and not _step_runs(step, results):
+                # Skipped, as every runtime skips it: its result is null. Decided
+                # before its inputs are bound, as every runtime does: a step
+                # that runs only when X often reads a field that exists only
+                # when X, and binding it first reported a correct pipeline as
+                # a binding failure.
+                results[node_id] = None
+                report[node_id] = {"status": "ok", "skipped": True, "output": None}
+                continue
             payload = {}
             for binding in step["bindings"]:
                 value = _resolve(binding, sample, results)
                 if value is not _MISSING:
                     payload[binding[0]] = value
-            if when is not None and not _step_runs(step, results):
-                # Skipped, as every runtime skips it: its result is null.
-                results[node_id] = None
-                report[node_id] = {"status": "ok", "skipped": True, "output": None}
-                continue
             if step["kind"] == "gate":
                 if "payload" not in step:
                     report[node_id] = {

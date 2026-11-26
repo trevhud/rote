@@ -2232,13 +2232,17 @@ sub-node. Rules to keep:
   of its own, right after the wave it shared, so every emitter wraps its
   single-node block (`conditional_py`, `conditional_step_ts`) and none needs
   a conditional variant of `gather` or `Promise.all`. The wave's other nodes
-  stay parallel. `Pipeline.execution_waves()` is unchanged: validation, the
+  stay parallel. A wave that loses a step gives up its gates too, to a wave
+  after the step: emitters run a wave's gates last, and a step that waits on
+  no gate must not sit behind a person's answer. `Pipeline.execution_waves()` is unchanged: validation, the
   plan and the driver read the real graph.
 - **In TS the wrapped block runs in an async function that returns its own
   result**, so the outer `const <id>_result` is inferred as the step's type
   or null. Declaring it up front needs the step's type by name, and
   `Record<string, unknown> | null` (what a gate uses, whose payload is a
-  record) refuses an interface-typed result. The negative half of
+  record) refuses an interface-typed result. The block's own declaration is
+  `const`, or `let` where a step may park (Cloudflare's MCP-bound steps and
+  agent loops): the wrapper must accept both, or that emit dies on an assert. The negative half of
   `tests/test_conditional_step_parity_ts_e2e.py` reads a field through the
   null and requires TS18047: a result typed away to `any` would compile.
 - **The compiled skill decides every skip of a wave before the wave's code
@@ -2249,6 +2253,10 @@ sub-node. Rules to keep:
   may be the first decision's answer. `stops` marks a block `conditional`
   only when every step in it may be skipped, which is what lets the
   scorecard leave that stop out of its low estimate.
+- **The prefix run decides a skip before it binds the step's inputs**
+  (`_prefix_runner.run`), as every runtime does. A step that runs only when
+  X often reads a field that exists only when X; bound first, a correct
+  pipeline went back to the agent as `prefix_binding_failed`.
 - **One error text.** `Node.condition_subject` (`hitl_gate 'x' waits`,
   `external_call 'x' runs`) is spliced into the one helper each language
   emits (`_condition_error`, `conditionError`), and the driver and prefix
