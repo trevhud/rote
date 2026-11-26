@@ -311,10 +311,16 @@ def call_key(call: dict[str, Any]) -> str:
     A read is identified by the fixture response that answered it: what
     matters is which data the run looked at, not how it spelled the query.
     A side effect, and a read no fixture answered, by server, tool and
-    normalized arguments: for a write the arguments are the behavior.
+    normalized arguments: for a write the arguments are the behavior. A
+    write a SQL fixture ran is identified by its ``effect`` (the rows it
+    added and removed): two statements worded differently that change the
+    same rows are the same write.
     """
     if not call.get("side_effect") and call.get("response") is not None:
         return f"{call['server']}.{call['tool']}->response[{call['response']}]"
+    if call.get("side_effect") and call.get("effect") is not None:
+        effect = json.dumps(call["effect"], sort_keys=True)
+        return f"{call['server']}.{call['tool']}=>effect[{effect}]"
     args = {k: normalize(v) if _is_scalar(v) else v for k, v in call["arguments"].items()}
     return f"{call['server']}.{call['tool']}({json.dumps(args, sort_keys=True)})"
 
@@ -435,7 +441,7 @@ def effect_key(call: dict[str, Any], fields: dict[str, list[str]] | None) -> str
     (:func:`call_key`). A tool no reference run wrote keeps every argument.
     """
     tool = f"{call['server']}.{call['tool']}"
-    if fields is None or tool not in fields:
+    if fields is None or tool not in fields or call.get("effect") is not None:
         return call_key(call)
     args = {k: _arg_value(call["arguments"][k]) for k in fields[tool] if k in call["arguments"]}
     return f"{tool}({json.dumps(args, sort_keys=True)})"

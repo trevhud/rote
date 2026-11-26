@@ -268,9 +268,12 @@ def fixture_servers(
         for name, server in casefile.servers.items():
             tools = {}
             for tool_name, tool in server["tools"].items():
+                fixture = case.fixtures.get(name, {}).get(tool_name, [])
+                # A list of canned responses, or `{sqlite: ...}`: a database
+                # the tool's SQL runs against (rote.bench.fixture_mcp).
                 tools[tool_name] = {
                     **tool,
-                    "responses": case.fixtures.get(name, {}).get(tool_name, []),
+                    **(fixture if isinstance(fixture, dict) else {"responses": fixture}),
                 }
             spec = work / f"fixture-{name}.json"
             spec.write_text(json.dumps({"server": name, "tools": tools}), encoding="utf-8")
@@ -433,6 +436,8 @@ def _portable_call(call: dict[str, Any]) -> dict[str, Any]:
         "matched",
         "response",
         "invalid_arguments",
+        # A SQL fixture's write: the rows it added and removed, per table.
+        "effect",
         # Set by a recording proxy in front of a live server (never by a
         # fixture): only a live answer can drift (fidelity_score._live).
         "live",

@@ -9,6 +9,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- A fidelity case can answer a SQL tool from a seeded SQLite database
+  (`sqlite:` in place of a list of responses in `cases.yaml`). The fixture
+  server runs each statement against its own in-memory database and answers
+  in the shape the case states. Reads are compared by the rows they
+  returned and writes by the rows they changed, so two wordings of one
+  query or one change count as the same. `rote eval --run --runtime skill`
+  reports the writes each side made, per pair. A skill that sends its own
+  SQL could not be evaluated before: a canned response per query only
+  answers the wordings someone thought of.
+
 ### Changed
 
 - A compiled skill's DO block of several steps can be answered one step per

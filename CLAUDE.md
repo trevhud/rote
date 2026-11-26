@@ -2658,6 +2658,36 @@ through the existing A/B and fixture servers. Rules to keep:
   anything else differs, with the calls listed. Wall times are labeled as
   fixture-server times, not service latency.
 
+### A SQL tool's fixture is a database, not a table of answers
+
+A skill that sends its own SQL (a D1 or warehouse query tool) words each
+query differently on every run, so canned responses matched on the query
+text answer only the wordings someone thought of. A case gives such a tool
+`sqlite: {seed, sql, params, answer}` instead of a response list
+(`rote.bench.fixture_mcp.SqlDatabase`). Rules to keep:
+
+- **The answer shape is the case's, never rote's.** `answer` is the tool's
+  result as the real server sends it, with `$rows`, `$changes` and
+  `$last_row_id` filled in. Take it from the server's own code or a recorded
+  call: Cloudflare's `d1_database_query` returns the REST query's `result`
+  array (`[{results, success, meta}]`), not the bare rows an early private
+  case assumed.
+- **Each server process seeds its own in-memory database**, so one side's
+  write never reaches the other side or the next trial, and a later read in
+  the same run sees the write, as on the real server.
+- **Whether a statement writes is read from the statement** (SQLite's
+  authorizer), not from the row count: an UPDATE that matches nothing is
+  still a write. The call log marks `side_effect` per call, so the tool
+  stays `side_effect: false` in the case and an example's case may use it.
+- **Reads key on the rows returned and writes on the rows changed**
+  (`response: rows:<digest>`, `effect`; `fidelity_score.call_key`,
+  `skill_ab._write_key`). Keyed on the SQL text, no two runs would agree.
+- **ATTACH is refused**: it is the one statement that opens a file by
+  path. `VACUUM INTO` goes through the same authorizer action.
+- One statement per call. A case whose tool takes several needs more than
+  this does today; say so in the case rather than widening the fixture
+  on a guess.
+
 ### A skill run on Codex: the same gate, in Codex's terms (#334)
 
 `rote baseline`, `rote eval --run` and the paired A/B take `--agent codex`
