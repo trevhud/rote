@@ -1087,6 +1087,25 @@ compile through it, so they inherit the check. Workflow runtimes are not
 checked: there a judge is an API call. Move the line only with a measured
 eval behind it.
 
+With the skill's own measured run (`--baseline`, or a `rote baseline` saved
+in the `--out` dir), the count is replaced by a prediction
+(`worth.predict`): the skeleton is priced as a conversation
+(`estimate_compiled_skill`, stops from `adapters.skill.planned_stops`) and
+the compile stops when the predicted low is above `MAX_TOKEN_RATIO` (1.5)
+times the measured run. The count cannot see a skill that is already cheap:
+a routing skill with one judge passed it, cost 34k tokens as written and
+138k to 179k compiled, against a predicted 93k to 216k. Before generation no
+module exists, so the Compiler names the calls generation writes as code
+(the structure pass's `local_file` steps, on a driver with `generate()`);
+every other unbound call is a DO block, except on `--backend api`, where
+every call is code. A skeleton the skill runtime cannot plan yet (an agent
+loop's tools are pinned after generation) raises `NoPrediction`; the
+compile logs why and counts stops. `recorded_runs(out, skill)` ignores a
+baseline of another skill left in a reused `--out` dir. `--update` and
+`--no-system1` compiles never reach the check. Leave one out and expense-audit's prediction goes from 65k to 118k,
+which would refuse a skill that pays off. The table behind the line is in
+`worth.py`.
+
 ### First-run output: three contracts that live in one place each
 
 Found by a fresh-install run of the published wheel, where every one of
