@@ -858,7 +858,7 @@ def check(
             elif ref in seen and seen[ref].get("in_loop") and not n.get("in_loop"):
                 out.append(f"{where}: reads {ref!r}, which runs inside a loop, from outside it")
         out += _check_after(where, n, seen, u)
-        out += _check_when(where, n, seen, u)
+        out += _check_when(where, n, seen, u, listing, run_outputs)
         out += _skipped_reads(where, n, seen)
         fan = n.get("fan_out_over") or ""
         if fan == "pipeline.input":
@@ -1241,6 +1241,8 @@ def _check_when(
     n: Mapping[str, Any],
     earlier: Mapping[str, Mapping[str, Any]],
     u: Any,
+    listing: set[str],
+    run_outputs: set[str],
 ) -> list[str]:
     """A node's condition is a key an earlier node returns, and the node's own
     section states it. Evidence only, as for ``after``: whether the skill's
@@ -1272,11 +1274,6 @@ def _check_when(
             f"{where}: when {when!r} reads {node_id!r}, which may itself be skipped; "
             "name a node that always runs"
         )
-    elif key not in [str(k) for k in source.get("outputs") or []]:
-        out.append(
-            f"{where}: when {when!r} names a key {node_id!r} does not return (its outputs: "
-            f"{[str(k) for k in source.get('outputs') or []]}); add {key!r} to its outputs"
-        )
     elif source.get("in_loop"):
         out.append(f"{where}: when {when!r} reads a node that runs inside a loop")
     elif source.get("fan_out_over"):
@@ -1284,6 +1281,23 @@ def _check_when(
             f"{where}: when {when!r} reads a node that fans out, whose result is a list "
             "with no keys; compute the condition in a node that reads that list"
         )
+    else:
+        # The keys the skeleton renders, not the ones the model named: a tool
+        # call returns the server's own shape, and a node another fans out
+        # over keeps only its list.
+        keys = result_keys(source, listing, run_outputs)
+        if keys is None:
+            out.append(
+                f"{where}: when {when!r} names a key of {node_id!r}, whose result is the "
+                "tool's own and has no key rote decides; compute the condition in a "
+                f"pure_function that reads {node_id!r}"
+            )
+        elif key not in keys:
+            out.append(
+                f"{where}: when {when!r} names a key {node_id!r} does not return (its result "
+                f"keys: {keys}); add {key!r} to its outputs, or, when another node fans out "
+                f"over {node_id!r}, compute the condition in a pure_function that reads it"
+            )
     quote = str(n.get("when_quote") or "")
     if u is None or len(quote.split()) < AFTER_QUOTE_MIN_WORDS or not _appears(quote, u.text):
         out.append(
@@ -1923,14 +1937,14 @@ def resolve(
             )
             n["after"], n["after_quote"] = [], ""
         if n.get("when"):
-            why_not = _check_when(f"`{nid}`", n, {m["id"]: m for m in nodes}, u)
-            # A later node that needs its list or a field cannot take null.
-            why_not += [
-                f"`{m['id']}` {how}"
-                for m in nodes
-                for src, how in _field_reads(m).items()
-                if src == nid
-            ]
+            why_not = _check_when(
+                f"`{nid}`",
+                n,
+                {m["id"]: m for m in nodes},
+                u,
+                listing_nodes(list(answer.get("nodes") or [])),
+                {str(k) for k in answer.get("run_outputs") or []},
+            )
             if why_not:
                 # Never a guessed condition: the step runs (a gate asks) on
                 # every run, and the note says the skill's step was
@@ -2109,6 +2123,21 @@ def resolve(
             )
     if sample is not None and sample.gates:
         notes += _gates_from_sample(nodes, sample)
+    # A later node that needs a skippable step's list or one of its fields
+    # cannot take null. Settled once every node is final, since the reader
+    # comes after the step, and before a gate's shows are resolved.
+    by_id = {str(m["id"]): m for m in nodes}
+    for m in nodes:
+        for src, how in _field_reads(m).items():
+            skipped = by_id.get(src)
+            if skipped is None or not skipped.get("when"):
+                continue
+            does = "the gate asks" if skipped.get("kind") == "hitl_gate" else "the step runs"
+            notes.append(
+                f"`{src}`: the skill may do this only sometimes, but `{m['id']}` {how}, which "
+                f"a skipped step cannot give, so {does} on every run"
+            )
+            skipped["when"], skipped["when_quote"] = "", ""
     notes += _resolve_gate_shows(nodes, answer, sample)
     # Which step a gate guards is a reading of the skill, so no ordering is
     # added here; the gap is listed for a reviewer.

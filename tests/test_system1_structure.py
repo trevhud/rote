@@ -2575,3 +2575,63 @@ def test_a_step_condition_still_unbacked_after_repair_runs_every_time(skill: Any
     note = next(r for r in rec.resolved if r.startswith("`send_digest`"))
     assert "so the step runs on every run" in note
     assert "when" not in next(n for n in pipeline_doc(plan)["nodes"] if n["id"] == "send_digest")
+
+
+def test_a_reader_still_needing_the_list_after_repair_drops_the_condition(skill: Any) -> None:
+    """Found by review: the reader comes after the step, and the resolution
+    looked only at the nodes before it, so the condition and the fan both
+    stayed and the paid pass ended with a skeleton the IR refused."""
+    bad = _conditional_step()
+    bad["nodes"][-1]["fan_out_over"] = "send_digest"
+    plan, rec, _ = run(skill, *[bad] * (structure.REPAIR_ROUNDS + 1))
+    by_id = {n.id: n for n in plan.nodes}
+    assert by_id["send_digest"].when is None
+    assert by_id["log_run"].fan_out
+    note = next(r for r in rec.resolved if r.startswith("`send_digest`"))
+    assert "`log_run` fans out over it" in note and "so the step runs on every run" in note
+    Pipeline.model_validate(pipeline_doc(plan))
+
+
+def test_a_judge_reading_a_conditional_fan_admits_null(skill: Any) -> None:
+    """Found by review: a judge reading a fan's whole result is typed an
+    array by code, which the IR refuses when the fan may be skipped."""
+    answer = good_answer()
+    answer["nodes"][2]["outputs"] = ["digest", "has_flags"]
+    answer["nodes"].append(node("list_recipients", 2, "pure_function", reads=["render_digest"]))
+    fields: dict[str, Any] = {
+        "reads": ["list_recipients"],
+        "fan_out_over": "list_recipients",
+        "mandatory": False,
+        "when": "render_digest.has_flags",
+        "when_quote": "Send the digest to the finance team",
+    }
+    answer["nodes"].append(node("send_each", 3, "pure_function", **fields))
+    answer["nodes"].append(node("review_sends", 3, "llm_judge", reads=["send_each"]))
+    assert _step_findings(answer, skill) == []
+    plan, _, _ = run(skill, answer)
+    doc = pipeline_doc(plan)
+    judge = next(n for n in doc["nodes"] if n["id"] == "review_sends")
+    assert judge["signature_spec"]["input_schema"]["properties"]["send_each"]["type"] == [
+        "array",
+        "null",
+    ]
+    assert Pipeline.model_validate(doc).conditional_nodes == {"send_each"}
+
+
+def test_a_condition_names_a_key_the_skeleton_keeps(skill: Any) -> None:
+    """Found by review: the check read the model's own `outputs`, but a node
+    another fans out over keeps only its list, and a tool call returns the
+    server's shape. Each passed the check and then failed every repair."""
+    fanned_over = _conditional_step()
+    fanned_over["nodes"].append(
+        node("each_line", 3, "pure_function", reads=["render_digest"], fan_out_over="render_digest")
+    )
+    found = [f for f in _step_findings(fanned_over, skill) if "send_digest" in f]
+    assert len(found) == 1 and "its result keys: ['items']" in found[0], found
+
+    from_tool = _conditional_step("fetch_emails.has_mail")
+    from_tool["nodes"][0]["outputs"] = ["has_mail"]
+    from_tool["nodes"][1]["fan_out_over"] = ""  # nothing fans over the call
+    from_tool["nodes"][-2]["reads"] = ["fetch_emails", "render_digest"]
+    found = [f for f in _step_findings(from_tool, skill) if "send_digest" in f]
+    assert len(found) == 1 and "whose result is the tool's own" in found[0], found

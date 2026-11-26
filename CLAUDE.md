@@ -2284,7 +2284,12 @@ sub-node. Rules to keep:
   the key an earlier node returns, the quote, and what the IR would refuse:
   a mandatory node, a node in_loop, a source that may itself be skipped, and
   a later node that fans out over the step or takes one of its fields
-  (`_skipped_reads`). One that still fails after the repairs is dropped, so
+  (`_skipped_reads`). The key is checked against what the skeleton renders
+  (`result_keys`), not the model's own `outputs`: a tool call returns the
+  server's shape and a node another fans out over keeps only its list, so
+  a condition on either goes back asking for a pure_function that computes
+  it. A reader's problem is settled after every node is final, because the
+  reader comes after the step. One that still fails after the repairs is dropped, so
   the step runs (the gate asks) every run, and an Open question says so:
   never a guessed condition. The skeleton types the key `bool`. Two pure
   functions of one section are not merged when one has a `when` the other

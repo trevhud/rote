@@ -415,11 +415,12 @@ class Context:
             # Gmail's search returns, on every run. Untyped, it takes either.
             return {}
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
-        if ref.node_id is not None and self.node(ref.node_id).when is not None:
-            # A skipped node's result is null (the IR has its readers bind it whole).
-            return {"anyOf": [schema, {"type": "null"}]}
         if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
             schema = {"type": "array", "items": schema}
+        if ref.node_id is not None and self.node(ref.node_id).when is not None:
+            # A skipped node's result is null (the IR has its readers bind it
+            # whole): the list of a fan that ran, or null, never one element.
+            return {"anyOf": [schema, {"type": "null"}]}
         if ref.field is not None:
             schema = dict((schema.get("properties") or {}).get(ref.field) or {})
         if node.fan_out and param == fan_out_element_param(node, self.pipeline):

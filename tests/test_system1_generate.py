@@ -1695,3 +1695,34 @@ def test_the_folder_variable_is_always_one_a_node_may_declare(
     assert var.startswith(prefix)
     assert reserved_reason(var) is None
     assert ENV_NAME_RE.fullmatch(var)
+
+
+def test_a_reader_of_a_step_that_may_be_skipped_is_told_it_gets_none(tmp_path: Path) -> None:
+    """The same for a conditional step. A fan that may be skipped hands its
+    reader the list of its results or None: found by review, the null was
+    added before the list, so the reader was typed one element or None."""
+    from dataclasses import replace
+
+    from tests.test_conditional_step_parity import PIPELINE
+
+    raw = PIPELINE.model_dump(mode="json", by_alias=True, exclude_none=True)
+    ctx, _ = _context(tmp_path)
+    stand_in = next(iter(ctx.plan.values()))
+    plans = {n.id: replace(stand_in, id=n.id, kind=n.kind.value) for n in PIPELINE.nodes}
+    ctx = Context(
+        work_dir=ctx.work_dir,
+        doc=raw,
+        pipeline=PIPELINE,
+        plan=plans,
+        grounding=Grounding(),
+        tables=[],
+    )
+    recap = ctx.node("recap")
+    card = "\n".join(generate._node_card(ctx, recap))
+    assert generate.SKIPPABLE_STEP.format(step="post", when="check.output.connected") in card
+    assert "the person's answer" not in card
+    post, pings = ctx.param_schema(recap, "post"), ctx.param_schema(recap, "pings")
+    assert post["anyOf"][1] == {"type": "null"} and post["anyOf"][0].get("type") != "array"
+    assert pings["anyOf"][0]["type"] == "array" and pings["anyOf"][1] == {"type": "null"}
+    # The step beside them always runs.
+    assert "anyOf" not in ctx.param_schema(recap, "text")
