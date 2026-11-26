@@ -2635,3 +2635,58 @@ def test_a_condition_names_a_key_the_skeleton_keeps(skill: Any) -> None:
     from_tool["nodes"][-2]["reads"] = ["fetch_emails", "render_digest"]
     found = [f for f in _step_findings(from_tool, skill) if "send_digest" in f]
     assert len(found) == 1 and "whose result is the tool's own" in found[0], found
+
+
+def test_a_run_output_named_on_a_tool_call_is_not_returned(skill: Any) -> None:
+    """A tool call's result is the server's, whatever keys the model names on
+    it, so a reported result named there never reaches the run's result. The
+    negative half: the same key on a pure_function exit node is returned."""
+    answer = good_answer()
+    answer["run_outputs"] = ["sent_count"]
+    send = node(
+        "send_mail",
+        3,
+        "external_call",
+        reads=["render_digest"],
+        outputs=["sent_count"],
+        system=dict(answer["nodes"][0]["system"], io="write"),
+        args=[{"param": "query", "source": "literal", "value": "to:finance"}],
+    )
+    answer["nodes"].append(send)
+    found = [f for f in _step_findings(answer, skill) if "run output" in f]
+    assert len(found) == 1 and "send_mail is a tool call, which returns the server" in found[0]
+
+    answer["nodes"].append(
+        node("report", 3, "pure_function", reads=["send_mail"], outputs=["sent_count"])
+    )
+    assert [f for f in _step_findings(answer, skill) if "run output" in f] == []
+
+
+def test_a_fanned_exit_node_returns_the_keys_it_names(skill: Any) -> None:
+    """Found by review: a node that fans out has no keys the skeleton decides,
+    but its result is the list of its per-element results, so the run does
+    return what it names. Refusing it sent a correct skeleton back twice."""
+    answer = good_answer()
+    answer["nodes"] = answer["nodes"][:2]
+    answer["nodes"][1]["outputs"] = ["summaries"]
+    answer["run_outputs"] = ["summaries"]
+    assert [f for f in _step_findings(answer, skill) if "run output" in f] == []
+
+
+def test_the_tool_hint_names_only_a_tool_call_that_named_the_key(skill: Any) -> None:
+    """Found by review: a pure_function exit that forgot the key, beside an
+    unrelated tool call, was told to add a node it does not need."""
+    answer = good_answer()
+    answer["run_outputs"] = ["sent_count"]
+    answer["nodes"].append(
+        node(
+            "send_mail",
+            3,
+            "external_call",
+            reads=["render_digest"],
+            system=dict(answer["nodes"][0]["system"], io="write"),
+            args=[{"param": "query", "source": "literal", "value": "to:finance"}],
+        )
+    )
+    found = [f for f in _step_findings(answer, skill) if "run output" in f]
+    assert len(found) == 1 and "tool call" not in found[0], found

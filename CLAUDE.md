@@ -975,6 +975,14 @@ key). The rubric (`node-kinds.md`, external_call) mandates the split;
 declares `output` keys the observed tool result can't provide) and
 `rote compile` prints them as WARNINGs.
 
+The same holds for what a run reports. The structure pass names the run's
+`run_outputs`, and each must be a key an exit node returns
+(`structure._check_run_outputs`). That check reads the keys the skeleton
+renders (`result_keys`), so a result named on a tool call does not count:
+the call returns the server's own answer. A roster skill's compile ended on
+four raw D1 query results with no word of who was added, and its agent
+spent 3 to 6 extra requests going through the run folder to find out.
+
 ### `temperature` is rejected outright by current Claude models
 
 A judge carrying `temperature` 400s on every call against a current
