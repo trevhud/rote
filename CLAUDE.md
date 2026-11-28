@@ -1065,6 +1065,12 @@ three of three, with the block 27 KB where it was 53 KB printed up to four
 times. The run still costs 13 to 14 requests when one step's answer alone
 passes the ceiling, because the agent retypes notes the run already holds:
 that is the pipeline's shape, not the driver's.
+The same ceiling holds for the run's first command. SKILL.md says so
+(`adapters/skill.py`, from `MAX_ARGUMENT_CHARS`) and names `--file`: a skill
+handed its data as input (a 12 KB export) put 11,854 characters on the
+`start` command and was denied, 0 of 2 compiled trials started, 2 of 2 after.
+The agent holds the input in its conversation, not in a file, so it has to be
+told to write one.
 A DECIDE or DO block also asks the person the next gate's question when it is
 already known (`_driver.gate_ahead`: every earlier step done or in the block,
 no `when`, nothing bound from the block's steps), and the reply rides with the

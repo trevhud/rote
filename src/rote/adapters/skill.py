@@ -454,6 +454,8 @@ def skill_md(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) 
         )
     if kinds.decide or kinds.do or kinds.loop or kinds.gate or kinds.login:
         blocks.append(f"- Lost track? `{command} status` prints the pending block again.")
+    from rote.skill_target._driver import MAX_ARGUMENT_CHARS
+
     body = [
         f"# {name} (compiled by rote)",
         "",
@@ -465,7 +467,11 @@ def skill_md(identity: SkillIdentity, pipeline: Pipeline, plan: dict[str, Any]) 
         "",
         f"    {command} start '{example}'",
         "",
-        "If the input is already in a file, pass `--file <path>` instead.",
+        # The command has a ceiling: Claude Code stops approving the allow rule
+        # near 10,000 characters, so a run handed its data as input (a 12 KB
+        # export) was denied at this first command, twice out of two.
+        f"Past about {MAX_ARGUMENT_CHARS:,} characters that command is refused: write the "
+        "input to a file in the current directory and pass `--file <path>` instead.",
         "",
         "It prints one block, and each block gives its next command in full:",
         *blocks,

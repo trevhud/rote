@@ -240,7 +240,9 @@ def test_a_judge_is_the_agents_and_a_gate_is_the_persons_in_so_many_words(
 CHARS_PER_TOKEN = 3.8
 #: The body's budget. Measured at 140 to 205 tokens across the examples
 #: (docs-digest 175, expense-audit 205); the doc's prototype was ~190.
-BODY_TOKEN_BUDGET = 300
+#: 320 since the start command's length ceiling is stated (18 tokens): without
+#: it a run handed a 12 KB input was denied at its first command.
+BODY_TOKEN_BUDGET = 320
 BODY_LINE_BUDGET = 16
 #: name, allowed-tools, compatibility and metadata: measured at 50 to 70.
 FRONTMATTER_TOKEN_BUDGET = 90
@@ -1155,3 +1157,16 @@ def test_a_malformed_registry_is_an_error_block_naming_the_file(tmp_path: Path) 
     assert status == 1 and header(text)["kind"] == "ERROR", text
     assert f"the MCP registry {registry} cannot be read" in text
     assert "Fix: fix or remove that file" in text
+
+
+def test_the_skill_md_says_what_to_do_with_a_long_input(tmp_path: Path) -> None:
+    """Claude Code stops approving the allow rule near 10,000 characters, so
+    an input passed as the command's argument has a ceiling the agent has to
+    be told: it has the input in its conversation, not in a file."""
+    from rote.skill_target._driver import MAX_ARGUMENT_CHARS
+
+    out = tmp_path / "s"
+    emit(DOCS_DIGEST, out)
+    _, body = frontmatter_and_body(out / "SKILL.md")
+    assert f"Past about {MAX_ARGUMENT_CHARS:,} characters that command is refused" in body
+    assert "write the input to a file in the current directory and pass `--file <path>`" in body

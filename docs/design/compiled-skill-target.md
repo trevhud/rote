@@ -167,7 +167,9 @@ Start with one shell command, the input as a single-quoted argument:
 
     rote skill run docs-digest start '{"topic": "...", "repo": "..."}'
 
-If the input is already in a file, pass `--file <path>` instead.
+Past about 8,000 characters the command is refused. If the input is that long, or is
+already in a file, write it to a file in the current directory and pass `--file <path>`
+instead of the argument.
 
 It prints one block. DONE: give the user the result it prints. When it
 prints only a summary, read the result.json it names if they need more.
