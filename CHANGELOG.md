@@ -33,6 +33,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- A compiled skill's SKILL.md says the start command is refused past about
+  8,000 characters and to pass the input by `--file` then. Claude Code stops
+  approving the skill's allow rule near 10,000 characters, so a run handed
+  its data as input (a 12 KB export) was denied at its first command: 0 of 2
+  compiled trials started on a pipeline-review skill, and 2 of 2 do now.
+
 - A compiled skill's DO block of several steps can be answered one step per
   command, and says to do so when the answer would pass about 8,000
   characters. Claude Code stops approving `rote skill run <name> *` near
